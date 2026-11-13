@@ -1,0 +1,17 @@
+# AList：把阿里云盘映射成 WebDAV，供驿站系统写入入库/出库照片。
+# 云盘 refresh_token 在 AList 后台「存储 → 添加 → 阿里云盘 Open → 刷新令牌」里填写，
+# 不通过环境变量注入，也不会出现在本仓库任何被提交的文件里。
+services:
+  alist:
+    image: xhofe/alist:latest
+    container_name: express-station-alist
+    restart: unless-stopped
+    ports:
+      - "5244:5244"
+    volumes:
+      - ./data:/opt/alist/data
+    environment:
+      PUID: "0"
+      PGID: "0"
+      UMASK: "022"
+      TZ: Asia/Shanghai

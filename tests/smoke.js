@@ -106,6 +106,43 @@ check('清空数据后回到初始状态', () => {
   assert.strictEqual(store.stats().inStock, 0);
 });
 
+console.log('照片元数据');
+check('入库照片引用随包裹保存', () => {
+  const s = api.createStore(api.memoryStorage());
+  const r = s.addParcel({
+    trackingNo: 'PHOTO001', zone: 'A',
+    photos: [{ ref: 'webdav:2026-11/a.jpg', name: 'a.jpg', mode: 'webdav', kind: 'inbound', size: 12345 }]
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.parcel.photos.length, 1);
+  assert.strictEqual(r.parcel.photos[0].ref, 'webdav:2026-11/a.jpg');
+  assert.ok(s.listLogs({ type: 'in' })[0].summary.includes('照片'));
+});
+
+check('出库凭证照片可挂载、可移除引用', () => {
+  const s = api.createStore(api.memoryStorage());
+  const p = s.addParcel({ trackingNo: 'PHOTO002' }).parcel;
+  const r = s.checkout([p.id], '本人', [{ ref: 'local:2026-11/b.jpg', name: 'b.jpg', mode: 'local' }]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.parcels[0].photos.length, 1);
+  assert.strictEqual(r.parcels[0].photos[0].kind, 'pickup');
+  const add = s.attachPhoto(p.id, { ref: 'idb:2026-11/c.jpg', name: 'c.jpg' });
+  assert.strictEqual(add.ok, true);
+  assert.strictEqual(s.getDB().parcels[0].photos.length, 2);
+  assert.strictEqual(s.detachPhoto(p.id, add.photos[0].id).ok, true);
+  assert.strictEqual(s.getDB().parcels[0].photos.length, 1);
+  assert.ok(s.listLogs({ type: 'photo' }).length >= 2);
+});
+
+check('备份导入保留照片引用、CSV 含照片数列', () => {
+  const s = api.createStore(api.memoryStorage());
+  s.addParcel({ trackingNo: 'PHOTO003', photos: [{ ref: 'webdav:2026-11/d.jpg', name: 'd.jpg' }] });
+  const fresh = api.createStore(api.memoryStorage());
+  fresh.importJSON(s.exportJSON(), 'replace');
+  assert.strictEqual(fresh.getDB().parcels[0].photos.length, 1);
+  assert.ok(fresh.exportCSV('all').includes('照片数'));
+});
+
 console.log('页面引用');
 check('app.js 引用的 DOM id 都存在于页面或动态模板', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -123,6 +160,31 @@ check('页面引用的本地脚本与样式都存在', () => {
   const refs = Array.from(html.matchAll(/(?:src|href)="([\w./-]+\.(?:js|css))"/g), m => m[1]);
   assert.ok(refs.length >= 4);
   refs.forEach(ref => assert.ok(fs.existsSync(path.join(root, ref)), '缺少文件 ' + ref));
+});
+
+check('photos.js 可加载且导出完整接口', () => {
+  const p = require('../photos.js');
+  ['config', 'saveConfig', 'init', 'pickDirectory', 'put', 'getUrl', 'test', 'status'].forEach(function (k) {
+    assert.strictEqual(typeof p[k], 'function', '缺少接口 ' + k);
+  });
+  assert.strictEqual(p.config().mode, 'webdav');
+});
+
+check('待提交文件里没有硬编码的云盘凭据', () => {
+  function walk(dir) {
+    return fs.readdirSync(dir, { withFileTypes: true }).reduce(function (acc, e) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (['.git', 'node_modules', 'data'].indexOf(e.name) >= 0) return acc;
+        return acc.concat(walk(p));
+      }
+      return acc.concat([p]);
+    }, []);
+  }
+  const secret = /(?:REFRESH_TOKEN|ALIYUN_TOKEN|WEBDAV_PASSWORD)\s*=\s*[0-9a-f]{32}\b/i;
+  walk(root).filter(f => !/\.env$/.test(f)).forEach(function (f) {
+    assert.ok(!secret.test(fs.readFileSync(f, 'utf8')), '疑似凭据泄漏：' + f);
+  });
 });
 
 console.log('\n全部通过：' + passed + ' 项');

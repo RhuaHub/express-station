@@ -4,6 +4,7 @@
 
   var store = StationStore.createStore(localStorage);
   var sync = window.StationSync;
+  var photos = window.StationPhotos;
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -19,8 +20,11 @@
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
-  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '' };
+  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', inFiles: [], proofFiles: [] };
   var syncTimer = null;
+  var inPreviewUrls = [];
+  var proofPreviewUrls = [];
+  var viewerUrls = [];
 
   /* ---------- 基础工具 ---------- */
   function toast(msg, type) {
@@ -101,6 +105,139 @@
     if (msg) toast(msg, type);
     renderAll();
     scheduleSync();
+  }
+
+  /* ---------- 照片 ---------- */
+  function releaseUrls(arr) {
+    arr.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) { /* 忽略 */ } });
+    arr.length = 0;
+  }
+  function renderFilePreview(containerId, files, urlBag, removable) {
+    releaseUrls(urlBag);
+    $(containerId).innerHTML = files.map(function (f, i) {
+      var u = URL.createObjectURL(f);
+      urlBag.push(u);
+      return '<div class="thumb"><img src="' + u + '" alt="待上传照片">' +
+        (removable ? '<button type="button" class="thumb-del" data-remove="' + i + '" title="移除"><svg class="ic"><use href="#i-close"/></svg></button>' : '') +
+        '</div>';
+    }).join('');
+  }
+  function clearFiles(which) {
+    if (which === 'in') {
+      state.inFiles = []; $('inPhotos').value = '';
+      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
+    } else {
+      state.proofFiles = []; $('outProof').value = '';
+      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
+    }
+  }
+  function addFiles(which, fileList) {
+    var files = Array.from(fileList || []).filter(function (f) { return /^image\//.test(f.type); }).slice(0, 12);
+    if (!files.length) { toast('请选择图片文件', 'err'); return; }
+    if (which === 'in') {
+      state.inFiles = state.inFiles.concat(files).slice(0, 12);
+      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
+    } else {
+      state.proofFiles = state.proofFiles.concat(files).slice(0, 12);
+      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
+    }
+    renderPhotoStatus();
+  }
+  async function savePhotos(files, kind) {
+    var items = [], warnings = [], failed = 0;
+    for (var i = 0; i < files.length; i++) {
+      var r;
+      try { r = await photos.put(files[i]); }
+      catch (e) { r = { ok: false, error: e.message || String(e) }; }
+      if (!r.ok) { failed++; continue; }
+      if (r.warning) warnings.push(r.warning);
+      items.push({
+        ref: r.ref, name: r.name, mode: r.mode, kind: kind,
+        size: r.size, at: new Date().toISOString()
+      });
+    }
+    return { items: items, warnings: warnings, failed: failed };
+  }
+  function reportPhotoResult(res) {
+    if (res.failed) toast(res.failed + ' 张照片保存失败，包裹记录已保留', 'err');
+    if (res.warnings.length) toast(res.warnings[0], 'err');
+  }
+  function renderPhotoStatus() {
+    var st = photos.status();
+    $('photoStatus').textContent = st;
+    $('inPhotoState').textContent = state.inFiles.length ? state.inFiles.length + ' 张待上传 · ' + st : st;
+  }
+  function togglePhotoBoxes() {
+    var m = $('phMode').value;
+    $('phWebdavBox').hidden = m !== 'webdav';
+    $('phLocalBox').hidden = m !== 'local';
+  }
+  function fillPhotoSettings() {
+    var c = photos.config();
+    $('phMode').value = c.mode;
+    $('phDir').value = c.dirName;
+    $('phBase').value = c.webdav.baseUrl;
+    $('phUser').value = c.webdav.user;
+    $('phPass').value = c.webdav.pass;
+    $('phMax').value = c.maxSide;
+    $('phQuality').value = c.quality;
+    togglePhotoBoxes();
+    renderPhotoStatus();
+  }
+  function savePhotoForm() {
+    photos.saveConfig({
+      mode: $('phMode').value,
+      dirName: $('phDir').value.trim(),
+      webdav: {
+        baseUrl: $('phBase').value.trim(),
+        user: $('phUser').value,
+        pass: $('phPass').value
+      },
+      maxSide: Number($('phMax').value),
+      quality: Number($('phQuality').value)
+    });
+    renderPhotoStatus();
+  }
+  async function openPhotoViewer(parcelId) {
+    var p = store.getDB().parcels.find(function (x) { return x.id === parcelId; });
+    if (!p || !p.photos || !p.photos.length) return;
+    releaseUrls(viewerUrls);
+    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal" style="width:min(700px,100%)">' +
+      '<h3>' + esc(p.trackingNo) + ' · 照片 ' + p.photos.length + ' 张</h3>' +
+      '<p>图片保存在阿里云盘。移除只删台账里的引用，云盘文件本身保留。</p>' +
+      '<div class="viewer-grid" id="viewerGrid"></div>' +
+      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button></div></div></div>';
+    var root = $('modalRoot');
+    root.querySelector('[data-act="close"]').onclick = function () { releaseUrls(viewerUrls); closeModal(); };
+    root.querySelector('.modal-mask').onclick = function (e) {
+      if (e.target === this) { releaseUrls(viewerUrls); closeModal(); }
+    };
+    var grid = $('viewerGrid');
+    grid.innerHTML = p.photos.map(function (ph) {
+      return '<div class="viewer-item"><div class="viewer-img" data-img>加载中…</div>' +
+        '<div class="viewer-meta"><span class="viewer-kind">' + (ph.kind === 'pickup' ? '取件凭证' : '入库照片') + '</span>' +
+        '<button type="button" data-detach="' + esc(ph.id) + '">移除引用</button></div></div>';
+    }).join('');
+    p.photos.forEach(function (ph, idx) {
+      var box = grid.children[idx] && grid.children[idx].querySelector('[data-img]');
+      if (!box) return;
+      photos.getUrl(ph.ref).then(function (url) {
+        viewerUrls.push(url);
+        box.innerHTML = '<img src="' + url + '" alt="照片">';
+      }).catch(function (e) {
+        box.textContent = e.message || '读取失败';
+      });
+    });
+    grid.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-detach]');
+      if (!b) return;
+      if (!window.confirm('移除这张照片的引用？台账里将不再显示，阿里云盘里的文件保留。')) return;
+      var r = store.detachPhoto(parcelId, b.dataset.detach);
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      releaseUrls(viewerUrls);
+      closeModal();
+      afterWrite('已移除照片引用');
+    });
   }
 
   /* ---------- 视图切换 ---------- */
@@ -280,7 +417,10 @@
         : '<span class="tag ' + (p.overdueLevel === 'danger' ? 'tag-danger' : p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal') + '">' +
           (p.overdueLevel === 'normal' ? '正常' : '滞留') + '</span>';
       return '<tr>' +
-        '<td data-label="运单号" class="td-no">' + esc(p.trackingNo) + '<div class="td-sub">×' + p.count + (p.note ? ' · ' + esc(p.note) : '') + '</div></td>' +
+        '<td data-label="运单号" class="td-no">' + esc(p.trackingNo) +
+          '<div class="td-sub">×' + p.count + (p.note ? ' · ' + esc(p.note) : '') + '</div>' +
+          ((p.photos && p.photos.length) ? '<button class="photo-badge" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>' + p.photos.length + ' 张照片</button>' : '') +
+          '</td>' +
         '<td data-label="公司">' + esc(p.carrier) + '</td>' +
         '<td data-label="收件人">' + esc(p.recipient || '—') + '<div class="td-sub">' + (p.phoneTail ? '尾号 ' + esc(p.phoneTail) : '无尾号') + '</div></td>' +
         '<td data-label="货架位"><span class="slot-chip">' + esc(p.slot || '—') + '</span></td>' +
@@ -351,6 +491,7 @@
     $('syncPath').value = c.path;
     $('syncAuto').checked = !!c.auto;
     renderSyncState();
+    fillPhotoSettings();
   }
   function renderSyncState() {
     $('syncState').textContent = sync.state();
@@ -366,6 +507,7 @@
     renderAnalytics();
     renderLogs();
     renderSyncState();
+    renderPhotoStatus();
   }
 
   /* ---------- 事件绑定 ---------- */
@@ -381,23 +523,45 @@
     $('btnQuickIn').onclick = function () { switchView('inbound'); };
 
     /* 入库 */
-    $('formIn').addEventListener('submit', function (e) {
+    $('formIn').addEventListener('submit', async function (e) {
       e.preventDefault();
+      var btn = $('formIn').querySelector('button[type="submit"]');
+      var tn = $('inTracking').value.trim();
+      var exists = store.getDB().parcels.some(function (p) {
+        return p.status === 'in' && p.trackingNo.toUpperCase() === tn.toUpperCase();
+      });
+      if (exists) { toast('该运单号已在库，请先核对', 'err'); $('inTracking').select(); return; }
+      btn.disabled = true;
+      var pr = await savePhotos(state.inFiles, 'inbound');
       var res = store.addParcel({
-        trackingNo: $('inTracking').value,
+        trackingNo: tn,
         carrier: $('inCarrier').value,
         recipient: $('inRecipient').value,
         phoneTail: $('inPhone').value,
         slot: $('inSlot').value,
         count: $('inCount').value,
-        note: $('inNote').value
+        note: $('inNote').value,
+        photos: pr.items
       });
+      btn.disabled = false;
       if (!res.ok) { toast(res.error, 'err'); $('inTracking').select(); return; }
       $('lastIn').hidden = false;
-      $('lastIn').innerHTML = '已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>，继续扫下一件';
+      $('lastIn').innerHTML = '已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>' +
+        (pr.items.length ? '，照片 ' + pr.items.length + ' 张' : '') + '，继续扫下一件';
       clearInForm(true);
+      clearFiles('in');
       afterWrite('入库成功 · ' + res.parcel.slot);
+      reportPhotoResult(pr);
       $('inTracking').focus();
+    });
+    $('btnInPhotos').onclick = function () { $('inPhotos').click(); };
+    $('inPhotos').addEventListener('change', function () { addFiles('in', this.files); this.value = ''; });
+    $('inPhotoPreview').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-remove]');
+      if (!b) return;
+      state.inFiles.splice(Number(b.dataset.remove), 1);
+      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
+      renderPhotoStatus();
     });
     $('btnReslot').onclick = function () {
       $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
@@ -430,11 +594,13 @@
     };
     $('outClear').onclick = function () {
       $('outSearch').value = ''; state.outKeyword = '';
-      state.selected = {}; renderOutbound(); $('outSearch').focus();
+      state.selected = {}; clearFiles('proof'); renderOutbound(); $('outSearch').focus();
     };
     $('outClearSel').onclick = function () {
       state.selected = {}; renderOutbound();
     };
+    $('btnProof').onclick = function () { $('outProof').click(); };
+    $('outProof').addEventListener('change', function () { addFiles('proof', this.files); this.value = ''; });
     $('btnCheckout').onclick = doCheckout;
 
     /* 在库台账 */
@@ -450,6 +616,8 @@
       toast('台账已导出');
     };
     $('invBody').addEventListener('click', async function (e) {
+      var pv = e.target.closest('[data-photos]');
+      if (pv) { openPhotoViewer(pv.dataset.photos); return; }
       var ed = e.target.closest('[data-edit]');
       var del = e.target.closest('[data-del]');
       if (ed) {
@@ -488,6 +656,25 @@
       var r = store.restoreParcel(b.dataset.restore);
       if (!r.ok) toast(r.error, 'err'); else afterWrite('已撤销出库，包裹恢复在库');
     });
+
+    /* 图片存储 */
+    $('phMode').addEventListener('change', togglePhotoBoxes);
+    $('btnPhPick').onclick = async function () {
+      var r = await photos.pickDirectory();
+      renderPhotoStatus();
+      toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
+    };
+    $('btnPhSave').onclick = function () {
+      savePhotoForm();
+      toast('图片存储设置已保存');
+    };
+    $('btnPhTest').onclick = async function () {
+      savePhotoForm();
+      toast('正在测试图片存储…');
+      var r = await photos.test();
+      renderPhotoStatus();
+      toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
+    };
 
     /* 设置 */
     $('formSettings').addEventListener('submit', function (e) {
@@ -591,16 +778,23 @@
   async function doCheckout() {
     var ids = Object.keys(state.selected);
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
-    var r = store.checkout(ids, $('pickupBy').value);
+    var btn = $('btnCheckout');
+    btn.disabled = true;
+    var pr = await savePhotos(state.proofFiles, 'pickup');
+    var r = store.checkout(ids, $('pickupBy').value, pr.items);
+    btn.disabled = false;
     if (!r.ok) { toast(r.error, 'err'); renderOutbound(); return; }
     state.selected = {};
     $('pickupBy').value = '';
     $('outSearch').value = ''; state.outKeyword = '';
-    afterWrite('已出库 ' + r.count + ' 件');
+    clearFiles('proof');
+    afterWrite('已出库 ' + r.count + ' 件' + (pr.items.length ? ' · 凭证 ' + pr.items.length + ' 张' : ''));
+    reportPhotoResult(pr);
     $('outSearch').focus();
   }
 
-  function init() {
+  async function init() {
+    await photos.init();
     fillSettings();
     bind();
     renderAll();

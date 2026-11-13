@@ -41,6 +41,20 @@
     return { version: 1, settings: defaultSettings(), parcels: [], logs: [], createdAt: isoNow() };
   }
 
+  function normalizePhotos(list) {
+    return (Array.isArray(list) ? list : []).map(function (ph) {
+      return {
+        id: str(ph.id) || uid('ph'),
+        ref: str(ph.ref),
+        name: str(ph.name),
+        mode: str(ph.mode) || 'browser',
+        kind: ph.kind === 'pickup' ? 'pickup' : 'inbound',
+        at: ph.at || isoNow(),
+        size: Number(ph.size) || 0
+      };
+    }).filter(function (ph) { return !!ph.ref; });
+  }
+
   function normalize(raw) {
     var base = defaultDB();
     if (!raw || typeof raw !== 'object') return base;
@@ -70,7 +84,8 @@
         outAt: p.outAt || null,
         pickupBy: str(p.pickupBy),
         operatorIn: str(p.operatorIn),
-        operatorOut: str(p.operatorOut)
+        operatorOut: str(p.operatorOut),
+        photos: normalizePhotos(p.photos)
       };
     });
     base.logs = (Array.isArray(raw.logs) ? raw.logs : []).map(function (l) {
@@ -182,10 +197,12 @@
         outAt: null,
         pickupBy: '',
         operatorIn: str(input.operator) || db.settings.operator,
-        operatorOut: ''
+        operatorOut: '',
+        photos: normalizePhotos(input.photos)
       };
       db.parcels.unshift(p);
-      log('in', '入库 ' + p.trackingNo + ' → ' + p.slot + (p.recipient ? ' / ' + p.recipient : ''), p);
+      log('in', '入库 ' + p.trackingNo + ' → ' + p.slot + (p.recipient ? ' / ' + p.recipient : '') +
+        (p.photos.length ? ' · 含 ' + p.photos.length + ' 张照片' : ''), p);
       save();
       return { ok: true, parcel: p };
     }
@@ -227,7 +244,7 @@
       return { ok: true, parcel: p };
     }
 
-    function checkout(ids, pickupBy) {
+    function checkout(ids, pickupBy, photos) {
       var list = Array.isArray(ids) ? ids : [ids];
       if (!list.length) return { ok: false, error: '请先选择要出库的包裹' };
       var picked = [];
@@ -240,15 +257,40 @@
       var at = isoNow();
       var who = str(pickupBy) || '本人';
       var operator = db.settings.operator;
+      var proof = normalizePhotos(photos).map(function (ph) { ph.kind = 'pickup'; return ph; });
       picked.forEach(function (p) {
         p.status = 'out';
         p.outAt = at;
         p.pickupBy = who;
         p.operatorOut = operator;
       });
-      log('out', '出库 ' + picked.length + ' 件：' + picked.map(function (p) { return p.trackingNo; }).join('、'), picked[0]);
+      if (proof.length) picked[0].photos = picked[0].photos.concat(proof);
+      log('out', '出库 ' + picked.length + ' 件：' + picked.map(function (p) { return p.trackingNo; }).join('、') +
+        (proof.length ? ' · 含 ' + proof.length + ' 张取件凭证' : ''), picked[0]);
       save();
       return { ok: true, count: picked.length, parcels: picked };
+    }
+
+    function attachPhoto(parcelId, photos) {
+      var p = db.parcels.find(function (x) { return x.id === parcelId; });
+      if (!p) return { ok: false, error: '包裹不存在' };
+      var list = normalizePhotos(Array.isArray(photos) ? photos : [photos]);
+      if (!list.length) return { ok: false, error: '照片引用无效' };
+      p.photos = p.photos.concat(list);
+      log('photo', '为 ' + p.trackingNo + ' 添加 ' + list.length + ' 张照片', p);
+      save();
+      return { ok: true, photos: list };
+    }
+
+    function detachPhoto(parcelId, photoId) {
+      var p = db.parcels.find(function (x) { return x.id === parcelId; });
+      if (!p) return { ok: false, error: '包裹不存在' };
+      var idx = p.photos.findIndex(function (ph) { return ph.id === photoId; });
+      if (idx < 0) return { ok: false, error: '照片记录不存在' };
+      var removed = p.photos.splice(idx, 1)[0];
+      log('photo', '移除 ' + p.trackingNo + ' 的 1 张照片记录（云盘文件保留）', p);
+      save();
+      return { ok: true, photo: removed };
     }
 
     function restoreParcel(id) {
@@ -401,10 +443,11 @@
           rows.push([fmtTime(l.at), logTypeName(l.type), l.summary, l.trackingNo]);
         });
       } else {
-        rows.push(['运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '备注']);
+        rows.push(['运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '照片数', '备注']);
         listParcels({ status: kind === 'instock' ? 'in' : undefined, sortBy: 'inAt' }).forEach(function (p) {
           rows.push([p.trackingNo, p.carrier, p.recipient, p.phoneTail, p.slot, p.count,
-            p.status === 'in' ? '在库' : '已出库', fmtTime(p.inAt), p.outAt ? fmtTime(p.outAt) : '', p.pickupBy, p.note]);
+            p.status === 'in' ? '在库' : '已出库', fmtTime(p.inAt), p.outAt ? fmtTime(p.outAt) : '', p.pickupBy,
+            (p.photos || []).length, p.note]);
         });
       }
       return '\ufeff' + rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
@@ -416,7 +459,7 @@
       return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
     function logTypeName(t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片' }[t] || t;
     }
 
     function clearAll() {
@@ -465,7 +508,8 @@
           outAt: outAt,
           pickupBy: isOut ? '本人' : '',
           operatorIn: s.operator,
-          operatorOut: isOut ? s.operator : ''
+          operatorOut: isOut ? s.operator : '',
+          photos: []
         });
         added++;
       }
@@ -477,6 +521,9 @@
 
     return {
       seedDemo: seedDemo,
+      attachPhoto: attachPhoto,
+      detachPhoto: detachPhoto,
+      normalizePhotos: normalizePhotos,
       KEY: KEY,
       getDB: function () { return db; },
       settings: settings,
@@ -516,7 +563,7 @@
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     },
     logTypeName: function (t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片' }[t] || t;
     }
   };
   global.StationStore = api;

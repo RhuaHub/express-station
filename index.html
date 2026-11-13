@@ -28,6 +28,7 @@
   <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z"/><path d="M12 9v5M12 17.5h.01"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 4v7h-7"/></symbol>
   <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 9.5 4.3 4.3 0 0 0 7 18z"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
 </svg>
 
 <div class="app">
@@ -145,6 +146,15 @@
                 <label for="inNote">备注</label>
                 <input id="inNote" name="note" class="input" placeholder="易碎、大件、代收等，选填" autocomplete="off">
               </div>
+              <div class="field">
+                <label>面单 / 包裹照片（可选，可多张）</label>
+                <div class="photo-picker">
+                  <input type="file" id="inPhotos" accept="image/*" multiple hidden>
+                  <button type="button" class="btn btn-ghost btn-sm" id="btnInPhotos"><svg class="ic"><use href="#i-camera"/></svg>拍照 / 选图</button>
+                  <span class="muted" id="inPhotoState"></span>
+                </div>
+                <div class="photo-preview" id="inPhotoPreview"></div>
+              </div>
               <div class="form-foot">
                 <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-check"/></svg>确认入库</button>
               </div>
@@ -188,6 +198,9 @@
         <div id="outResults" class="pick-grid"></div>
         <div class="checkout-bar" id="checkoutBar">
           <div class="checkout-info"><strong id="pickCount">0</strong><span>件已选</span></div>
+          <input type="file" id="outProof" accept="image/*" multiple hidden>
+          <button class="btn btn-ghost btn-sm" id="btnProof" title="多件出库时，凭证记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>取件凭证</button>
+          <div class="proof-preview" id="proofPreview"></div>
           <input id="pickupBy" class="input" placeholder="取件人（选填，默认本人）" autocomplete="off">
           <button class="btn btn-primary" id="btnCheckout"><svg class="ic"><use href="#i-check"/></svg>确认出库</button>
         </div>
@@ -278,6 +291,7 @@
               <option value="restore">撤销出库</option>
               <option value="settings">设置</option>
               <option value="import">导入</option>
+              <option value="photo">照片</option>
               <option value="clear">清空</option>
             </select>
             <button class="btn btn-ghost btn-sm" id="btnLogExport"><svg class="ic"><use href="#i-download"/></svg>导出流水</button>
@@ -290,6 +304,40 @@
 
       <!-- 设置 -->
       <section class="view" id="view-settings">
+        <div class="card">
+          <div class="card-head"><h3>图片存储 · 阿里云盘</h3><span class="muted" id="photoStatus"></span></div>
+          <p class="hint">所有入库照片、出库取件凭证统一写入阿里云盘。阿里云盘接口只能由服务端调用，浏览器直连会被跨域拦截；请在 NAS / 本机用 AList（「阿里云盘 Open」驱动 + WebDAV）做中转。云盘 token 只填在 AList 后台，绝不写进本仓库或页面源码。GitHub Pages 是 https，WebDAV 地址也必须是 https。</p>
+          <div class="field-row">
+            <div class="field">
+              <label for="phMode">写入方式</label>
+              <select id="phMode" class="input">
+                <option value="webdav">阿里云盘 WebDAV（推荐，手机也能用）</option>
+                <option value="local">阿里云盘 PC 客户端同步文件夹</option>
+                <option value="browser">仅暂存浏览器（不写入云盘）</option>
+              </select>
+            </div>
+            <div class="field"><label for="phDir">云盘内目录名</label><input id="phDir" class="input" placeholder="express-station"></div>
+          </div>
+          <div id="phWebdavBox" class="ph-box">
+            <div class="field"><label for="phBase">WebDAV 地址（须 https）</label><input id="phBase" class="input" placeholder="https://dav.example.com/dav" autocomplete="off"></div>
+            <div class="field-row">
+              <div class="field"><label for="phUser">WebDAV 用户名</label><input id="phUser" class="input" autocomplete="off"></div>
+              <div class="field"><label for="phPass">WebDAV 密码</label><input id="phPass" class="input" type="password" autocomplete="off"></div>
+            </div>
+          </div>
+          <div id="phLocalBox" class="ph-box" hidden>
+            <button class="btn btn-outline btn-sm" id="btnPhPick">选择阿里云盘同步文件夹</button>
+            <span class="muted">仅桌面版 Chrome / Edge 支持，需 https 页面</span>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="phMax">图片最长边（px）</label><input id="phMax" class="input" type="number" min="600" max="4000"></div>
+            <div class="field"><label for="phQuality">JPEG 质量（0.4–1）</label><input id="phQuality" class="input" type="number" step="0.05" min="0.4" max="1"></div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary btn-sm" id="btnPhSave">保存图片设置</button>
+            <button class="btn btn-outline btn-sm" id="btnPhTest">测试连接</button>
+          </div>
+        </div>
         <div class="two-col">
           <div class="card">
             <div class="card-head"><h3>驿站设置</h3></div>
@@ -362,7 +410,8 @@
             <div><h4>日常流程</h4><p>入库登记 → 包裹按货架位上架 → 取件时按手机后四位检索 → 勾选后确认出库。所有动作自动写入操作流水，误操作可在流水里撤销出库。</p></div>
             <div><h4>数据在哪</h4><p>默认保存在浏览器 localStorage，无需服务器、无需登录。开启 GitHub 同步后，台账会写入指定仓库的 JSON 文件；仓库建议设为私有，Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
-            <div><h4>安全提醒</h4><p>手机号只保留后四位。若把同步 token 填进公开电脑，请用完即清；token 不要提交到仓库，也不要写进页面源码。</p></div>
+            <div><h4>照片存到阿里云盘</h4><p>入库可拍面单 / 包裹照，出库可拍取件凭证，压缩后按「年-月」写入云盘的 express-station 目录。用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList：管理 → 存储 → 添加 → 选「阿里云盘 Open」→ 刷新令牌填云盘 token、根文件夹 ID 填 root、WebDAV 策略选「本机代理」→ 在设置里开启 WebDAV。最后把 <b>https://你的域名/dav</b> 和管理员账号填进「图片存储」。Pages 是 https，WebDAV 也必须是 https，否则浏览器会拦截混合内容；可用 Cloudflare Tunnel / Nginx 反代并开启跨域。</p></div>
+            <div><h4>安全提醒</h4><p>手机号只保留后四位。云盘 token 只填 AList 后台；本机 <b>deploy/.env</b> 与 <b>deploy/data/</b> 已被 .gitignore 排除，绝不提交到公开仓库。凭据用完即清，建议定期轮换 token。</p></div>
           </div>
         </div>
       </section>
@@ -376,6 +425,7 @@
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
 <script src="store.js"></script>
+<script src="photos.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
 </body>
