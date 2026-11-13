@@ -209,6 +209,26 @@ check('photos.js 可加载且导出完整接口', () => {
   p.saveConfig({ requireProof: true });
 });
 
+check('坚果云 CORS 代理 Worker 存在且不含硬编码凭据', () => {
+  const worker = fs.readFileSync(path.join(root, 'deploy', 'nutstore-worker.js'), 'utf8');
+  ['export default', 'dav.jianguoyun.com/dav', 'Access-Control-Allow-Origin',
+    'Access-Control-Allow-Methods', 'MKCOL', 'PROPFIND', 'X-Proxy-Key']
+    .forEach(k => assert.ok(worker.includes(k), 'Worker 缺少 ' + k));
+  assert.ok(!/(?:password|token|secret)\s*=\s*['"][^'"]{8,}['"]/i.test(worker), 'Worker 里疑似写死凭据');
+});
+
+check('页面含坚果云配置入口与代理密钥字段', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['phProxyKey', 'nut-tip', 'nutstore-worker.js', '应用密码'].forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+});
+
+check('代理密钥配置可写入并回读', () => {
+  const s = require('../photos.js');
+  assert.strictEqual(s.config().webdav.proxyKey, '');
+  assert.strictEqual(s.saveConfig({ webdav: { proxyKey: 'my-key' } }).webdav.proxyKey, 'my-key');
+  s.saveConfig({ webdav: { proxyKey: '' } });
+});
+
 check('待提交文件里没有硬编码的云盘凭据', () => {
   function walk(dir) {
     return fs.readdirSync(dir, { withFileTypes: true }).reduce(function (acc, e) {

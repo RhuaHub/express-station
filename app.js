@@ -204,6 +204,7 @@
     $('phBase').value = c.webdav.baseUrl;
     $('phUser').value = c.webdav.user;
     $('phPass').value = c.webdav.pass;
+    $('phProxyKey').value = c.webdav.proxyKey;
     $('phMax').value = c.maxSide;
     $('phQuality').value = c.quality;
     $('phRequireProof').checked = c.requireProof !== false;
@@ -217,7 +218,8 @@
       webdav: {
         baseUrl: $('phBase').value.trim(),
         user: $('phUser').value,
-        pass: $('phPass').value
+        pass: $('phPass').value,
+        proxyKey: $('phProxyKey').value.trim()
       },
       maxSide: Number($('phMax').value),
       quality: Number($('phQuality').value),

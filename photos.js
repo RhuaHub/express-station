@@ -15,7 +15,7 @@
     return {
       mode: 'webdav',
       dirName: 'express-station',
-      webdav: { baseUrl: '', user: '', pass: '' },
+      webdav: { baseUrl: '', user: '', pass: '', proxyKey: '' },
       maxSide: 1600,
       quality: 0.82,
       requireProof: true
@@ -41,7 +41,8 @@
         c.webdav = {
           baseUrl: String((p.webdav && p.webdav.baseUrl) || '').trim().replace(/\/+$/, ''),
           user: String((p.webdav && p.webdav.user) || ''),
-          pass: String((p.webdav && p.webdav.pass) || '')
+          pass: String((p.webdav && p.webdav.pass) || ''),
+          proxyKey: String((p.webdav && p.webdav.proxyKey) || '')
         };
         c.maxSide = Math.max(600, Math.min(4000, Number(p.maxSide) || c.maxSide));
         c.quality = Math.max(0.4, Math.min(1, Number(p.quality) || c.quality));
@@ -144,6 +145,12 @@
     return btoa(bin);
   }
   function basic(w) { return 'Basic ' + toBase64((w.user || '') + ':' + (w.pass || '')); }
+  /* 统一 WebDAV 请求头；proxyKey 仅用于自建 CORS 代理（如坚果云 Worker），可留空 */
+  function wdHeaders(w, extra) {
+    var h = Object.assign({ 'Authorization': basic(w) }, extra || {});
+    if (w && w.proxyKey) h['X-Proxy-Key'] = w.proxyKey;
+    return h;
+  }
   function joinUrl(base, segments) {
     var out = String(base || '').replace(/\/+$/, '');
     segments.forEach(function (seg) {
@@ -159,7 +166,7 @@
   async function mkcol(w, segments) {
     try {
       await fetch(joinUrl(w.baseUrl, segments), {
-        method: 'MKCOL', headers: { 'Authorization': basic(w) }
+        method: 'MKCOL', headers: wdHeaders(w)
       });
     } catch (e) { /* 目录已存在或跨域预检被拒，交给 PUT 给出真实错误 */ }
   }
@@ -171,13 +178,13 @@
     var url = joinUrl(w.baseUrl, segs);
     var res = await fetch(url, {
       method: 'PUT',
-      headers: { 'Authorization': basic(w), 'Content-Type': 'image/jpeg' },
+      headers: wdHeaders(w, { 'Content-Type': 'image/jpeg' }),
       body: blob
     });
     if (!res.ok) {
-      var extra = res.status === 401 ? '（账号或密码错误）'
-        : res.status === 403 ? '（无写入权限或跨域被拒绝）'
-          : res.status === 409 ? '（上级目录不存在，请先在 AList 里手动创建）' : '';
+      var extra = res.status === 401 ? '（账号或应用密码错误，坚果云要用「应用密码」而非登录密码）'
+        : res.status === 403 ? '（无写入权限、跨域被拒绝或代理密钥不对）'
+          : res.status === 409 ? '（上级目录不存在，请先在云盘网页端建好目录）' : '';
       throw new Error('HTTP ' + res.status + extra);
     }
   }
@@ -285,7 +292,7 @@
     if (String(ref).indexOf('webdav:') === 0) {
       var rel = String(ref).slice(7);
       var url = joinUrl(c.webdav.baseUrl, wdSegments(c.webdav, rel));
-      var res = await fetch(url, { headers: { 'Authorization': basic(c.webdav) } });
+      var res = await fetch(url, { headers: wdHeaders(c.webdav) });
       if (!res.ok) throw new Error('WebDAV 读取失败 HTTP ' + res.status);
       return URL.createObjectURL(await res.blob());
     }
@@ -311,20 +318,20 @@
     try {
       var res = await fetch(joinUrl(c.webdav.baseUrl, []), {
         method: 'PROPFIND',
-        headers: { 'Authorization': basic(c.webdav), 'Depth': '0' }
+        headers: wdHeaders(c.webdav, { 'Depth': '0' })
       });
-      if (res.status === 401) return { ok: false, error: '账号或密码错误（401）' };
+      if (res.status === 401) return { ok: false, error: '账号或密码错误（401）· 坚果云请填「应用密码」' };
       if (!res.ok && res.status !== 207) return { ok: false, error: 'WebDAV 返回 HTTP ' + res.status };
       return { ok: true, message: 'WebDAV 可访问（' + c.webdav.baseUrl + '）' };
     } catch (e) {
-      return { ok: false, error: '连不上 WebDAV：' + (e.message || e) + '。若 AList 是 http 内网地址，Pages 的 https 页面会被浏览器拦截，请给 AList 配 https 并开启跨域。' };
+      return { ok: false, error: '连不上 WebDAV：' + (e.message || e) + '。坚果云不能用 dav.jianguoyun.com 直连（无 CORS 头），请部署 deploy/nutstore-worker.js 并填 Worker 地址；AList 若是 http 内网地址，也会被 https 页面拦截。' };
     }
   }
 
   function status() {
     var c = config();
     if (c.mode === 'browser') return '浏览器暂存模式 · 图片不写入云盘';
-    if (c.mode === 'webdav') return c.webdav.baseUrl ? '阿里云盘 WebDAV · ' + c.webdav.baseUrl : '阿里云盘 WebDAV 未填地址 · 照片暂存浏览器';
+    if (c.mode === 'webdav') return c.webdav.baseUrl ? 'WebDAV · ' + c.webdav.baseUrl : 'WebDAV 未填地址 · 照片暂存浏览器';
     if (!isLocalSupported()) return '当前浏览器不支持文件夹授权，请改用 WebDAV';
     return dirHandleRecord && dirHandleRecord.handle
       ? '已授权同步文件夹 · ' + (dirHandleRecord.handle.name || '') + '/' + c.dirName
