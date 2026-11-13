@@ -173,8 +173,12 @@
   async function webdavPut(rel, blob, w) {
     if (!w.baseUrl) throw new Error('未填写 WebDAV 地址');
     var segs = wdSegments(w, rel);
+    var parts = rel.split('/');
     await mkcol(w, [segs[0]]);
-    await mkcol(w, [segs[0], rel.split('/')[0]]);
+    /* 出库凭证多一层目录，逐层 MKCOL，避免坚果云返回 409 */
+    for (var i = 0; i < parts.length - 1; i++) {
+      await mkcol(w, [segs[0], parts.slice(0, i + 1).join('/')]);
+    }
     var url = joinUrl(w.baseUrl, segs);
     var res = await fetch(url, {
       method: 'PUT',
@@ -218,11 +222,25 @@
     var d = new Date();
     return d.getFullYear() + '-' + pad(d.getMonth() + 1);
   }
-  function newName() {
+  function newName(prefix) {
     var d = new Date();
-    return String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' +
+    return (prefix || '') + String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' +
       pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '-' +
       Math.random().toString(36).slice(2, 7) + '.jpg';
+  }
+  /* 云盘目录：入库照片与出库凭证分开归档，各按年月再分一层，便于事后按日期取证 */
+  function buildRel(kind) {
+    var pickup = kind === 'pickup';
+    return (pickup ? '出库凭证' : '入库照片') + '/' + monthKey() + '/' + newName(pickup ? 'CK-' : 'RK-');
+  }
+  /* 逐级打开/创建目录，兼容任意层数的 rel（旧版两段路径也能正常读取） */
+  async function ensureDirs(root, rel, create) {
+    var parts = String(rel).split('/');
+    var dir = root;
+    for (var i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i], { create: !!create });
+    }
+    return dir;
   }
 
   /* ---------- 对外主流程 ---------- */
@@ -238,37 +256,38 @@
     try { return await fallback(blob, rel, warning); }
     catch (e) { return { ok: false, error: '暂存浏览器也失败：' + (e.message || e) }; }
   }
-  async function put(file) {
+  async function put(file, kind) {
     var c = config();
     var blob;
     try { blob = await compress(file, c.maxSide, c.quality); }
     catch (e) { return { ok: false, error: e.message }; }
-    var rel = monthKey() + '/' + newName();
+    var rel = buildRel(kind);
+    var name = rel.split('/').pop();
     if (c.mode === 'local') {
       if (!dirHandleRecord || !dirHandleRecord.handle || !(await ensurePermission())) {
-        return safeFallback(blob, rel,'未授权阿里云盘同步文件夹，本次照片暂存浏览器');
+        return safeFallback(blob, rel, '未授权云盘同步文件夹，本次照片暂存浏览器');
       }
       try {
         var root = await localRoot(true);
-        var sub = await root.getDirectoryHandle(monthKey(), { create: true });
-        var fh = await sub.getFileHandle(rel.split('/')[1], { create: true });
+        var dir = await ensureDirs(root, rel, true);
+        var fh = await dir.getFileHandle(name, { create: true });
         var writer = await fh.createWritable();
         await writer.write(blob);
         await writer.close();
-        return { ok: true, ref: 'local:' + rel, mode: 'local', size: blob.size, name: rel.split('/')[1], warning: '' };
+        return { ok: true, ref: 'local:' + rel, mode: 'local', size: blob.size, name: name, warning: '' };
       } catch (e) {
-        return safeFallback(blob, rel,'写入同步目录失败，已暂存浏览器：' + (e.message || e));
+        return safeFallback(blob, rel, '写入同步目录失败，已暂存浏览器：' + (e.message || e));
       }
     }
     if (c.mode === 'webdav') {
       try {
         await webdavPut(rel, blob, c.webdav);
-        return { ok: true, ref: 'webdav:' + rel, mode: 'webdav', size: blob.size, name: rel.split('/')[1], warning: '' };
+        return { ok: true, ref: 'webdav:' + rel, mode: 'webdav', size: blob.size, name: name, warning: '' };
       } catch (e) {
-        return safeFallback(blob, rel,'WebDAV 上传失败，已暂存浏览器：' + (e.message || e));
+        return safeFallback(blob, rel, 'WebDAV 上传失败，已暂存浏览器：' + (e.message || e));
       }
     }
-    return safeFallback(blob, rel,'');
+    return safeFallback(blob, rel, '');
   }
 
   async function getUrl(ref) {
@@ -280,12 +299,12 @@
     }
     if (String(ref).indexOf('local:') === 0) {
       if (!dirHandleRecord || !dirHandleRecord.handle || !(await ensurePermission())) {
-        throw new Error('需要重新授权阿里云盘同步文件夹');
+        throw new Error('需要重新授权云盘同步文件夹');
       }
       var parts = String(ref).slice(6).split('/');
-      var root = await localRoot(false);
-      var sub = await root.getDirectoryHandle(parts[0]);
-      var fh = await sub.getFileHandle(parts[1]);
+      /* 旧版是「年-月/文件」两段，新版是「出库凭证/年-月/文件」三段，逐层进入都兼容 */
+      var dir = await ensureDirs(await localRoot(false), String(ref).slice(6), false);
+      var fh = await dir.getFileHandle(parts[parts.length - 1]);
       var file = await fh.getFile();
       return URL.createObjectURL(file);
     }
@@ -304,12 +323,12 @@
     if (c.mode === 'browser') return { ok: true, message: '当前为浏览器暂存模式，图片不会写入云盘' };
     if (c.mode === 'local') {
       if (!isLocalSupported()) return { ok: false, error: '此浏览器不支持文件夹授权，请改用 WebDAV 模式' };
-      if (!dirHandleRecord || !dirHandleRecord.handle) return { ok: false, error: '请先选择阿里云盘同步文件夹' };
+      if (!dirHandleRecord || !dirHandleRecord.handle) return { ok: false, error: '请先选择云盘同步文件夹' };
       if (!(await ensurePermission())) return { ok: false, error: '文件夹读写权限未授予' };
       try {
         var root = await localRoot(true);
-        await root.getDirectoryHandle(monthKey(), { create: true });
-        return { ok: true, message: '可写：' + c.dirName + '/' + monthKey() + '/（阿里云盘客户端会自动同步）' };
+        await ensureDirs(root, buildRel('pickup'), true);
+        return { ok: true, message: '可写：' + c.dirName + '/出库凭证/（云盘客户端会自动同步）' };
       } catch (e) {
         return { ok: false, error: '写入测试失败：' + (e.message || e) };
       }
@@ -335,13 +354,13 @@
     if (!isLocalSupported()) return '当前浏览器不支持文件夹授权，请改用 WebDAV';
     return dirHandleRecord && dirHandleRecord.handle
       ? '已授权同步文件夹 · ' + (dirHandleRecord.handle.name || '') + '/' + c.dirName
-      : '尚未选择阿里云盘同步文件夹 · 照片暂存浏览器';
+      : '尚未选择云盘同步文件夹 · 照片暂存浏览器';
   }
 
   var api = {
     config: config, saveConfig: saveConfig, init: init,
     isLocalSupported: isLocalSupported, pickDirectory: pickDirectory,
-    put: put, getUrl: getUrl, test: test, status: status
+    put: put, getUrl: getUrl, test: test, status: status, buildRel: buildRel
   };
   global.StationPhotos = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

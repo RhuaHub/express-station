@@ -149,7 +149,7 @@
     var items = [], warnings = [], failed = 0;
     for (var i = 0; i < files.length; i++) {
       var r;
-      try { r = await photos.put(files[i]); }
+      try { r = await photos.put(files[i], kind); }
       catch (e) { r = { ok: false, error: e.message || String(e) }; }
       if (!r.ok) { failed++; continue; }
       if (r.warning) warnings.push(r.warning);

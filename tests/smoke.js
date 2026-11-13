@@ -200,7 +200,7 @@ check('页面引用的本地脚本与样式都存在', () => {
 
 check('photos.js 可加载且导出完整接口', () => {
   const p = require('../photos.js');
-  ['config', 'saveConfig', 'init', 'pickDirectory', 'put', 'getUrl', 'test', 'status'].forEach(function (k) {
+  ['config', 'saveConfig', 'init', 'pickDirectory', 'put', 'getUrl', 'test', 'status', 'buildRel'].forEach(function (k) {
     assert.strictEqual(typeof p[k], 'function', '缺少接口 ' + k);
   });
   assert.strictEqual(p.config().mode, 'webdav');
@@ -227,6 +227,29 @@ check('代理密钥配置可写入并回读', () => {
   assert.strictEqual(s.config().webdav.proxyKey, '');
   assert.strictEqual(s.saveConfig({ webdav: { proxyKey: 'my-key' } }).webdav.proxyKey, 'my-key');
   s.saveConfig({ webdav: { proxyKey: '' } });
+});
+
+check('出库凭证独立目录、按年月分层、文件名带类型前缀', () => {
+  const p = require('../photos.js');
+  const out = p.buildRel('pickup');
+  const inn = p.buildRel('inbound');
+  const parts = out.split('/');
+  assert.strictEqual(parts.length, 3, '应为 类型/年-月/文件 三层');
+  assert.strictEqual(parts[0], '出库凭证');
+  assert.ok(/^\d{4}-\d{2}$/.test(parts[1]), '第二层应为年-月');
+  assert.ok(/^CK-\d{8}-\d{6}-[a-z0-9]{1,5}\.jpg$/.test(parts[2]), '出库文件名应有 CK- 前缀：' + parts[2]);
+  assert.ok(inn.indexOf('入库照片/') === 0, '入库照片应独立目录');
+  assert.ok(/\/RK-/.test(inn) || inn.includes('/RK-'), '入库文件名应有 RK- 前缀');
+  assert.notStrictEqual(out, p.buildRel('pickup'), '连续出库不应产生同名文件');
+});
+
+check('上传时传入照片类型，且 WebDAV / 本地目录均逐层创建', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const ph = fs.readFileSync(path.join(root, 'photos.js'), 'utf8');
+  assert.ok(/photos\.put\(files\[i\], kind\)/.test(app), '上传时未传入照片类型');
+  assert.ok(/parts\.slice\(0, i \+ 1\)/.test(ph), 'WebDAV 未逐层 MKCOL');
+  assert.ok(/ensureDirs\(/.test(ph), '本地同步目录未逐级创建');
+  assert.ok(/rel\.split\('\/\'\)\.pop\(\)/.test(ph), '文件名未取最后一段');
 });
 
 check('待提交文件里没有硬编码的云盘凭据', () => {
