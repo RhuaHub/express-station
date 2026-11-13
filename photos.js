@@ -17,13 +17,18 @@
       dirName: 'express-station',
       webdav: { baseUrl: '', user: '', pass: '' },
       maxSide: 1600,
-      quality: 0.82
+      quality: 0.82,
+      requireProof: true
     };
   }
+  var fallbackStore = {};
   function storage() {
     if (typeof localStorage !== 'undefined') return localStorage;
-    var m = {};
-    return { getItem: function (k) { return m[k] || null; }, setItem: function (k, v) { m[k] = v; }, removeItem: function (k) { delete m[k]; } };
+    return {
+      getItem: function (k) { return fallbackStore[k] || null; },
+      setItem: function (k, v) { fallbackStore[k] = v; },
+      removeItem: function (k) { delete fallbackStore[k]; }
+    };
   }
   function config() {
     var c = defaults();
@@ -40,6 +45,7 @@
         };
         c.maxSide = Math.max(600, Math.min(4000, Number(p.maxSide) || c.maxSide));
         c.quality = Math.max(0.4, Math.min(1, Number(p.quality) || c.quality));
+        c.requireProof = p.requireProof !== false;
       }
     } catch (e) { /* 配置损坏则用默认值 */ }
     return c;

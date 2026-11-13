@@ -344,6 +344,33 @@
       return out;
     }
 
+    /* 查件：取件窗口的快速检索。在库优先、精确命中优先、最近优先，含已出库记录 */
+    function lookup(keyword, scope) {
+      var kw = str(keyword).trim().toLowerCase();
+      if (!kw) return [];
+      var rows = listParcels({ keyword: kw, status: scope || undefined });
+      var digits = kw.replace(/\D/g, '');
+      function score(p) {
+        var no = str(p.trackingNo).toLowerCase();
+        var tail = str(p.phoneTail).toLowerCase();
+        var slot = str(p.slot).toLowerCase();
+        var s = 0;
+        if (digits.length >= 4 && tail === digits) s += 100;
+        if (no === kw) s += 90;
+        if (slot && slot === kw) s += 80;
+        if (p.status === 'in') s += 40;
+        if (tail && tail.indexOf(kw) === 0) s += 20;
+        if (no.indexOf(kw) === 0) s += 15;
+        return s;
+      }
+      rows.sort(function (a, b) {
+        var d = score(b) - score(a);
+        if (d) return d;
+        return String(b.inAt || '').localeCompare(String(a.inAt || ''));
+      });
+      return rows.slice(0, 60);
+    }
+
     function listLogs(filter) {
       filter = filter || {};
       var kw = str(filter.keyword).toLowerCase();
@@ -536,6 +563,7 @@
       checkout: checkout,
       restoreParcel: restoreParcel,
       listParcels: listParcels,
+      lookup: lookup,
       listLogs: listLogs,
       stats: stats,
       exportJSON: exportJSON,

@@ -29,6 +29,10 @@
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 4v7h-7"/></symbol>
   <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 9.5 4.3 4.3 0 0 0 7 18z"/></symbol>
   <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+  <symbol id="i-find" viewBox="0 0 24 24"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5"/><path d="M12 12v9"/><circle cx="17.5" cy="16.5" r="3.5"/><path d="m20.2 19.3 2.3 2.3"/></symbol>
+  <symbol id="i-shutter" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2"/></symbol>
+  <symbol id="i-switch-cam" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><path d="M9 12.5a3.5 3.5 0 0 0 6 2.2"/><path d="M15 11.5a3.5 3.5 0 0 0-6-2.2"/><path d="m14 9.5 1 1.8 1.8-1M10 14.5l-1-1.8-1.8 1"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
 </svg>
 
 <div class="app">
@@ -37,11 +41,12 @@
       <div class="brand-mark"><svg class="ic"><use href="#i-box"/></svg></div>
       <div class="brand-text">
         <strong id="brandName">我的快递驿站</strong>
-        <span>入库 · 出库 · 台账</span>
+        <span>查件 · 入库 · 出库</span>
       </div>
     </div>
     <nav class="nav" id="nav">
       <button class="nav-item active" data-view="dash"><svg class="ic"><use href="#i-dash"/></svg><span>工作台</span></button>
+      <button class="nav-item" data-view="lookup"><svg class="ic"><use href="#i-find"/></svg><span>查件</span></button>
       <button class="nav-item" data-view="inbound"><svg class="ic"><use href="#i-in"/></svg><span>入库登记</span></button>
       <button class="nav-item" data-view="outbound"><svg class="ic"><use href="#i-out"/></svg><span>取件出库</span></button>
       <button class="nav-item" data-view="inventory"><svg class="ic"><use href="#i-box"/></svg><span>在库台账</span></button>
@@ -78,8 +83,16 @@
             <p id="heroDesc">入库、取件、滞留件都在这里汇总。</p>
           </div>
           <div class="hero-actions">
-            <button class="btn btn-primary" data-goto="inbound"><svg class="ic"><use href="#i-in"/></svg>登记入库</button>
+            <button class="btn btn-primary" data-goto="lookup"><svg class="ic"><use href="#i-find"/></svg>查件</button>
+            <button class="btn btn-outline" data-goto="inbound"><svg class="ic"><use href="#i-in"/></svg>登记入库</button>
             <button class="btn btn-outline" data-goto="outbound"><svg class="ic"><use href="#i-out"/></svg>办理取件</button>
+          </div>
+        </div>
+        <div class="card quick-lookup">
+          <div class="ql-label"><svg class="ic"><use href="#i-find"/></svg><span>快速查件</span></div>
+          <div class="ql-row">
+            <input id="quickLookup" class="input" placeholder="手机号后四位 / 运单号 / 收件人，扫码枪可直接扫" autocomplete="off">
+            <button class="btn btn-primary btn-sm" id="btnQuickLookup">查件</button>
           </div>
         </div>
         <div class="kpi-grid" id="dashKpi"></div>
@@ -97,6 +110,38 @@
           <div class="card-head"><h3>最近入库</h3><button class="link" data-goto="inbound">继续录入</button></div>
           <div id="dashRecent" class="list-box"></div>
         </div>
+      </section>
+
+      <!-- 查件 -->
+      <section class="view" id="view-lookup">
+        <div class="card search-card">
+          <div class="lookup-head">
+            <div>
+              <h3>查件</h3>
+              <p class="muted">报尾号或扫单号，立刻看到货架位与取件状态</p>
+            </div>
+            <span class="tag tag-out" id="lookupStock">在库 0 件</span>
+          </div>
+          <div class="search-wrap">
+            <svg class="ic search-ic"><use href="#i-search"/></svg>
+            <input id="lookupKey" class="input input-xl" placeholder="手机号后四位 / 运单号 / 收件人 / 货架位" autocomplete="off">
+            <button class="btn btn-primary btn-sm" id="btnLookup">查件</button>
+            <button class="btn btn-ghost btn-sm" id="lookupClear">清空</button>
+          </div>
+          <div class="search-meta">
+            <span id="lookupMeta" class="muted">在库与已出库记录都能查，扫码枪扫完自动出结果</span>
+            <div class="btn-row">
+              <span class="muted">范围</span>
+              <select id="lookupScope" class="input input-sm">
+                <option value="">全部记录</option>
+                <option value="in">仅看在库</option>
+                <option value="out">仅看已出库</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div id="lookupSummary" class="lookup-summary" hidden></div>
+        <div id="lookupResults" class="lookup-grid"></div>
       </section>
 
       <!-- 入库 -->
@@ -150,7 +195,8 @@
                 <label>面单 / 包裹照片（可选，可多张）</label>
                 <div class="photo-picker">
                   <input type="file" id="inPhotos" accept="image/*" multiple hidden>
-                  <button type="button" class="btn btn-ghost btn-sm" id="btnInPhotos"><svg class="ic"><use href="#i-camera"/></svg>拍照 / 选图</button>
+                  <button type="button" class="btn btn-outline btn-sm" id="btnInCamera"><svg class="ic"><use href="#i-camera"/></svg>打开摄像头</button>
+                  <button type="button" class="btn btn-ghost btn-sm" id="btnInPhotos">从相册选图</button>
                   <span class="muted" id="inPhotoState"></span>
                 </div>
                 <div class="photo-preview" id="inPhotoPreview"></div>
@@ -199,7 +245,8 @@
         <div class="checkout-bar" id="checkoutBar">
           <div class="checkout-info"><strong id="pickCount">0</strong><span>件已选</span></div>
           <input type="file" id="outProof" accept="image/*" multiple hidden>
-          <button class="btn btn-ghost btn-sm" id="btnProof" title="多件出库时，凭证记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>取件凭证</button>
+          <button class="btn btn-outline btn-sm" id="btnProof" title="调用摄像头拍取件凭证；多件出库时记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>拍取件凭证</button>
+          <button class="btn btn-ghost btn-sm" id="btnProofPick" title="从相册里选已有照片">选图</button>
           <div class="proof-preview" id="proofPreview"></div>
           <input id="pickupBy" class="input" placeholder="取件人（选填，默认本人）" autocomplete="off">
           <button class="btn btn-primary" id="btnCheckout"><svg class="ic"><use href="#i-check"/></svg>确认出库</button>
@@ -333,6 +380,7 @@
             <div class="field"><label for="phMax">图片最长边（px）</label><input id="phMax" class="input" type="number" min="600" max="4000"></div>
             <div class="field"><label for="phQuality">JPEG 质量（0.4–1）</label><input id="phQuality" class="input" type="number" step="0.05" min="0.4" max="1"></div>
           </div>
+          <label class="switch"><input type="checkbox" id="phRequireProof" checked><span>出库必须拍取件凭证：勾选后，点「确认出库」会自动调起摄像头，未拍照不出库（可关闭）</span></label>
           <div class="btn-row">
             <button class="btn btn-primary btn-sm" id="btnPhSave">保存图片设置</button>
             <button class="btn btn-outline btn-sm" id="btnPhTest">测试连接</button>
@@ -407,7 +455,9 @@
         <div class="card help-card">
           <div class="card-head"><h3>使用说明与部署</h3></div>
           <div class="help-grid">
-            <div><h4>日常流程</h4><p>入库登记 → 包裹按货架位上架 → 取件时按手机后四位检索 → 勾选后确认出库。所有动作自动写入操作流水，误操作可在流水里撤销出库。</p></div>
+            <div><h4>查件（最常用）</h4><p>顾客报手机号后四位或扫面单，在「查件」页输入即可看到货架位、在库天数，若已取走则显示取件人与出库时间；在库件可一键跳到「取件出库」并自动勾选。工作台顶部也有快速查件框。</p></div>
+            <div><h4>日常流程</h4><p>入库登记（可拍面单照）→ 包裹按货架位上架 → 取件时按后四位检索 → 拍照留证后确认出库。所有动作写入操作流水，误操作可撤销出库。</p></div>
+            <div><h4>摄像头与拍照</h4><p>「打开摄像头 / 拍取件凭证」会直接调用设备摄像头，可连拍、切换前后镜头；拍照后自动压缩并写入阿里云盘。摄像头需要 https 页面（GitHub Pages 满足）并授权相机权限，用本地 file:// 打开或浏览器不支持时会自动回退到系统相机 / 相册。出库默认要求先拍照，可在「图片存储」里关闭。</p></div>
             <div><h4>数据在哪</h4><p>默认保存在浏览器 localStorage，无需服务器、无需登录。开启 GitHub 同步后，台账会写入指定仓库的 JSON 文件；仓库建议设为私有，Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
             <div><h4>照片存到阿里云盘</h4><p>入库可拍面单 / 包裹照，出库可拍取件凭证，压缩后按「年-月」写入云盘的 express-station 目录。用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList：管理 → 存储 → 添加 → 选「阿里云盘 Open」→ 刷新令牌填云盘 token、根文件夹 ID 填 root、WebDAV 策略选「本机代理」→ 在设置里开启 WebDAV。最后把 <b>https://你的域名/dav</b> 和管理员账号填进「图片存储」。Pages 是 https，WebDAV 也必须是 https，否则浏览器会拦截混合内容；可用 Cloudflare Tunnel / Nginx 反代并开启跨域。</p></div>
@@ -422,10 +472,12 @@
 
 <div id="toast" class="toast" aria-live="polite"></div>
 <div id="modalRoot"></div>
+<div id="cameraRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
 <script src="store.js"></script>
 <script src="photos.js"></script>
+<script src="camera.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
 </body>

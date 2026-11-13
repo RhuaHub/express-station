@@ -143,7 +143,43 @@ check('备份导入保留照片引用、CSV 含照片数列', () => {
   assert.ok(fresh.exportCSV('all').includes('照片数'));
 });
 
+console.log('查件');
+check('查件命中在库/已出库、精确尾号优先、范围过滤', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'YT900001', phoneTail: '13800001234', recipient: '赵六' }).parcel;
+  const b = s.addParcel({ trackingNo: 'YT900002', phoneTail: '13900005678' }).parcel;
+  assert.strictEqual(s.checkout([b.id], '代取').ok, true);
+  assert.strictEqual(s.lookup('1234').length, 1);
+  assert.strictEqual(s.lookup('1234')[0].id, a.id);
+  const out = s.lookup('YT900002');
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].status, 'out');
+  assert.strictEqual(out[0].pickupBy, '代取');
+  assert.strictEqual(s.lookup('YT900002', 'in').length, 0);
+  assert.strictEqual(s.lookup('YT900002', 'out').length, 1);
+  assert.strictEqual(s.lookup('90000').length, 2);
+  assert.strictEqual(s.lookup('90000')[0].id, a.id, '在库件应排在已出库件之前');
+  assert.deepStrictEqual(s.lookup(''), []);
+});
+
 console.log('页面引用');
+check('页面含查件视图、拍照按钮与摄像头容器', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['view-lookup', 'lookupKey', 'lookupResults', 'lookupScope', 'quickLookup',
+    'btnInCamera', 'btnProof', 'btnProofPick', 'phRequireProof', 'cameraRoot', 'camera.js']
+    .forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/capture['"], ['"]environment['"]/.test(app), '缺少系统相机 capture 回退');
+  assert.ok(/ensureProof/.test(app), '缺少出库强制拍照逻辑');
+  assert.ok(/store\.lookup\(/.test(app), '查件页未接数据层');
+});
+
+check('camera.js 可加载且导出完整接口', () => {
+  const c = require('../camera.js');
+  ['supported', 'open'].forEach(k => assert.strictEqual(typeof c[k], 'function', '缺少接口 ' + k));
+  assert.strictEqual(typeof c.lastError, 'string');
+  assert.strictEqual(c.supported(), false, 'Node 环境应判定为不支持摄像头');
+});
 check('app.js 引用的 DOM id 都存在于页面或动态模板', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
@@ -168,6 +204,9 @@ check('photos.js 可加载且导出完整接口', () => {
     assert.strictEqual(typeof p[k], 'function', '缺少接口 ' + k);
   });
   assert.strictEqual(p.config().mode, 'webdav');
+  assert.strictEqual(p.config().requireProof, true, '出库凭证默认应为必拍');
+  assert.strictEqual(p.saveConfig({ requireProof: false }).requireProof, false);
+  p.saveConfig({ requireProof: true });
 });
 
 check('待提交文件里没有硬编码的云盘凭据', () => {

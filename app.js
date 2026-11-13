@@ -5,6 +5,7 @@
   var store = StationStore.createStore(localStorage);
   var sync = window.StationSync;
   var photos = window.StationPhotos;
+  var camera = window.StationCamera;
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -13,6 +14,7 @@
   };
   var viewTitles = {
     dash: ['工作台', '今天也要把包裹安排明白'],
+    lookup: ['查件', '报尾号或扫单号，货架位与取件状态一屏看清'],
     inbound: ['入库登记', '扫码、回车、下一件'],
     outbound: ['取件出库', '按后四位或单号找件，支持一次多件'],
     inventory: ['在库台账', '所有包裹的记录、修改与检索'],
@@ -20,7 +22,7 @@
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
-  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', inFiles: [], proofFiles: [] };
+  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '', inFiles: [], proofFiles: [] };
   var syncTimer = null;
   var inPreviewUrls = [];
   var proofPreviewUrls = [];
@@ -166,6 +168,29 @@
     var st = photos.status();
     $('photoStatus').textContent = st;
     $('inPhotoState').textContent = state.inFiles.length ? state.inFiles.length + ' 张待上传 · ' + st : st;
+    var n = state.proofFiles.length;
+    $('btnProof').innerHTML = '<svg class="ic"><use href="#i-camera"/></svg>' + (n ? '凭证 ' + n + ' 张 · 再拍' : '拍取件凭证');
+  }
+  /* 拍照：优先调用设备摄像头实时预览，不可用时回退到系统相机 / 相册 */
+  function nativeCapture(which) {
+    var input = $(which === 'in' ? 'inPhotos' : 'outProof');
+    input.setAttribute('capture', 'environment');
+    input.click();
+    setTimeout(function () { input.removeAttribute('capture'); }, 1500);
+  }
+  async function takePhoto(which) {
+    var single = which === 'proof';
+    if (camera && camera.supported()) {
+      var files = await camera.open({
+        single: single,
+        title: single ? '取件凭证 · 拍照' : '面单 / 包裹照片'
+      });
+      if (files && files.length) { addFiles(which, files); return files; }
+      if (camera.lastError) { toast(camera.lastError, 'err'); nativeCapture(which); }
+      return null;
+    }
+    nativeCapture(which);
+    return null;
   }
   function togglePhotoBoxes() {
     var m = $('phMode').value;
@@ -181,6 +206,7 @@
     $('phPass').value = c.webdav.pass;
     $('phMax').value = c.maxSide;
     $('phQuality').value = c.quality;
+    $('phRequireProof').checked = c.requireProof !== false;
     togglePhotoBoxes();
     renderPhotoStatus();
   }
@@ -194,7 +220,8 @@
         pass: $('phPass').value
       },
       maxSide: Number($('phMax').value),
-      quality: Number($('phQuality').value)
+      quality: Number($('phQuality').value),
+      requireProof: $('phRequireProof').checked
     });
     renderPhotoStatus();
   }
@@ -252,6 +279,7 @@
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (name === 'inbound') setTimeout(function () { $('inTracking').focus(); }, 120);
     if (name === 'outbound') setTimeout(function () { $('outSearch').focus(); }, 120);
+    if (name === 'lookup') setTimeout(function () { $('lookupKey').focus(); }, 120);
   }
 
   /* ---------- 渲染：公共 ---------- */
@@ -369,6 +397,84 @@
     if (!keepMeta) { $('inCarrier').selectedIndex = 0; $('inZone').selectedIndex = 0; }
     $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
     $('inTracking').focus();
+  }
+
+  /* ---------- 渲染：查件 ---------- */
+  function lookupCardHTML(p) {
+    var inStock = p.status === 'in';
+    var tagCls = inStock
+      ? (p.overdueLevel === 'danger' ? 'tag-danger' : (p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal'))
+      : 'tag-out';
+    var tagText = inStock ? '在库 · 待取' + (p.overdueLevel !== 'normal' ? ' · 滞留' : '') : '已取出';
+    var photoCount = (p.photos || []).length;
+    return '<div class="lookup-card ' + (inStock ? 'is-in' : 'is-out') + '">' +
+      '<div class="lc-top"><span class="tag ' + tagCls + '">' + tagText + '</span>' +
+      '<span class="lc-carrier">' + esc(p.carrier) + '</span>' +
+      '<button type="button" class="lc-copy" data-copy="' + esc(p.trackingNo) + '" title="复制运单号"><svg class="ic"><use href="#i-copy"/></svg></button></div>' +
+      '<div class="lc-no">' + esc(p.trackingNo) + '</div>' +
+      '<div class="lc-slot"><div><span>货架位</span><strong>' + esc(p.slot || '未分配') + '</strong></div>' +
+      '<span class="lc-stay">' + (inStock ? '已存放 ' + p.stayDays + ' 天' : '原货位') + '</span></div>' +
+      '<div class="lc-grid">' +
+      '<div><span>收件人</span><b>' + esc(p.recipient || '—') + '</b></div>' +
+      '<div><span>手机尾号</span><b>' + esc(p.phoneTail || '—') + '</b></div>' +
+      '<div><span>件数</span><b>' + p.count + '</b></div>' +
+      '<div><span>' + (inStock ? '入库时间' : '出库时间') + '</span><b>' + esc(store.fmtTime(inStock ? p.inAt : (p.outAt || p.inAt))) + '</b></div>' +
+      (inStock ? '' : '<div class="lc-wide"><span>取件人</span><b>' + esc(p.pickupBy || '本人') + '</b></div>') +
+      '</div>' +
+      (p.note ? '<div class="lc-note">备注：' + esc(p.note) + '</div>' : '') +
+      '<div class="lc-foot"><span class="muted">' + (inStock ? '登记 ' + esc(p.operatorIn || '—') : '办理 ' + esc(p.operatorOut || '—')) + '</span>' +
+      '<div class="btn-row">' +
+      (photoCount ? '<button type="button" class="btn btn-ghost btn-sm" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>照片 ' + photoCount + '</button>' : '') +
+      (inStock ? '<button type="button" class="btn btn-primary btn-sm" data-lookup-out="' + esc(p.id) + '"><svg class="ic"><use href="#i-out"/></svg>去出库</button>' : '') +
+      '</div></div></div>';
+  }
+  function renderLookup() {
+    var kw = state.lookupKey.trim();
+    var scope = $('lookupScope').value;
+    var rows = kw ? store.lookup(kw, scope) : [];
+    var st = store.stats();
+    $('lookupStock').textContent = '当前在库 ' + st.inStock + ' 件';
+    var summary = $('lookupSummary');
+    var box = $('lookupResults');
+    if (!kw) {
+      summary.hidden = true;
+      var recent = store.listParcels({ status: 'in', sortBy: 'inAt' }).slice(0, 6);
+      var chips = recent.filter(function (p) { return p.phoneTail; }).map(function (p) {
+        return '<button type="button" class="chip" data-quick="' + esc(p.phoneTail) + '">尾号 ' + esc(p.phoneTail) + '</button>';
+      }).join('');
+      box.innerHTML = '<div class="card lookup-empty">' + emptyHTML('输入手机号后四位、运单号或收件人开始查件；扫码枪扫面单会直接出结果。') +
+        (chips ? '<div class="lookup-quick"><span class="muted">最近入库的尾号</span><div class="chip-row">' + chips + '</div></div>' : '') + '</div>';
+      return;
+    }
+    var inCount = rows.filter(function (p) { return p.status === 'in'; }).length;
+    summary.hidden = false;
+    summary.innerHTML = '<strong>「' + esc(kw) + '」找到 ' + rows.length + ' 件</strong>' +
+      '<span>在库 ' + inCount + ' 件 · 已取出 ' + (rows.length - inCount) + ' 件</span>' +
+      (rows.length >= 60 ? '<span>仅显示最相关的 60 条，可补全单号缩小范围</span>' : '');
+    box.innerHTML = rows.length ? rows.map(lookupCardHTML).join('')
+      : '<div class="card lookup-empty">' + emptyHTML('没有匹配「' + kw + '」的包裹。请核对尾号，或在「范围」里切到全部记录（可能已被取走）。') + '</div>';
+  }
+  function goCheckout(id) {
+    var p = store.getDB().parcels.find(function (x) { return x.id === id; });
+    if (!p || p.status !== 'in') { toast('该包裹已出库，请刷新查件结果', 'err'); renderLookup(); return; }
+    state.selected = {};
+    state.selected[id] = true;
+    $('outSearch').value = p.trackingNo;
+    state.outKeyword = p.trackingNo;
+    switchView('outbound');
+    renderAll();
+    toast('已勾选 ' + p.trackingNo + '，拍照后确认出库');
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { toast('已复制 ' + text); })
+        .catch(function () { toast('复制失败，请长按选择单号', 'err'); });
+      return;
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); toast('已复制 ' + text); } catch (e) { toast('复制失败', 'err'); }
+    document.body.removeChild(ta);
   }
 
   /* ---------- 渲染：出库 ---------- */
@@ -501,6 +607,7 @@
   function renderAll() {
     renderHeader();
     renderDash();
+    renderLookup();
     renderInbound();
     renderOutbound();
     renderInventory();
@@ -521,6 +628,42 @@
       if (g) switchView(g.dataset.goto);
     });
     $('btnQuickIn').onclick = function () { switchView('inbound'); };
+
+    /* 查件（工作台快捷入口 + 独立查件页） */
+    function quickLookup() {
+      var v = $('quickLookup').value.trim();
+      if (v) { $('lookupKey').value = v; state.lookupKey = v; }
+      switchView('lookup');
+      renderLookup();
+      $('lookupKey').focus();
+    }
+    $('btnQuickLookup').onclick = quickLookup;
+    $('quickLookup').addEventListener('keydown', function (e) { if (e.key === 'Enter') quickLookup(); });
+    $('lookupKey').addEventListener('input', function () {
+      state.lookupKey = this.value;
+      renderLookup();
+    });
+    $('lookupKey').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { this.select(); renderLookup(); }
+    });
+    $('btnLookup').onclick = function () { state.lookupKey = $('lookupKey').value; renderLookup(); $('lookupKey').focus(); };
+    $('lookupScope').addEventListener('change', renderLookup);
+    $('lookupClear').onclick = function () {
+      $('lookupKey').value = ''; state.lookupKey = ''; renderLookup(); $('lookupKey').focus();
+    };
+    $('lookupResults').addEventListener('click', function (e) {
+      var q = e.target.closest('[data-quick]');
+      if (q) {
+        $('lookupKey').value = q.dataset.quick; state.lookupKey = q.dataset.quick;
+        renderLookup(); $('lookupKey').focus(); return;
+      }
+      var pv = e.target.closest('[data-photos]');
+      if (pv) { openPhotoViewer(pv.dataset.photos); return; }
+      var go = e.target.closest('[data-lookup-out]');
+      if (go) { goCheckout(go.dataset.lookupOut); return; }
+      var cp = e.target.closest('[data-copy]');
+      if (cp) { copyText(cp.dataset.copy); return; }
+    });
 
     /* 入库 */
     $('formIn').addEventListener('submit', async function (e) {
@@ -554,7 +697,8 @@
       reportPhotoResult(pr);
       $('inTracking').focus();
     });
-    $('btnInPhotos').onclick = function () { $('inPhotos').click(); };
+    $('btnInCamera').onclick = function () { takePhoto('in'); };
+    $('btnInPhotos').onclick = function () { $('inPhotos').removeAttribute('capture'); $('inPhotos').click(); };
     $('inPhotos').addEventListener('change', function () { addFiles('in', this.files); this.value = ''; });
     $('inPhotoPreview').addEventListener('click', function (e) {
       var b = e.target.closest('[data-remove]');
@@ -599,7 +743,8 @@
     $('outClearSel').onclick = function () {
       state.selected = {}; renderOutbound();
     };
-    $('btnProof').onclick = function () { $('outProof').click(); };
+    $('btnProof').onclick = function () { takePhoto('proof'); };
+    $('btnProofPick').onclick = function () { $('outProof').removeAttribute('capture'); $('outProof').click(); };
     $('outProof').addEventListener('change', function () { addFiles('proof', this.files); this.value = ''; });
     $('btnCheckout').onclick = doCheckout;
 
@@ -775,9 +920,25 @@
     };
   }
 
+  /* 出库留证：开启「必须拍凭证」且尚未拍照时，自动调起摄像头，拍完继续出库 */
+  async function ensureProof() {
+    if (state.proofFiles.length) return true;
+    if (!photos.config().requireProof) return true;
+    if (!camera || !camera.supported()) {
+      toast('已开启「出库必须拍凭证」，请先点「拍取件凭证」；也可到设置里关闭', 'err');
+      return false;
+    }
+    var files = await camera.open({ single: true, title: '取件凭证 · 拍照后自动出库' });
+    if (camera.lastError) toast(camera.lastError, 'err');
+    if (!files || !files.length) { toast('未拍照，已取消出库', 'err'); return false; }
+    addFiles('proof', files);
+    return true;
+  }
+
   async function doCheckout() {
     var ids = Object.keys(state.selected);
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
+    if (!(await ensureProof())) return;
     var btn = $('btnCheckout');
     btn.disabled = true;
     var pr = await savePhotos(state.proofFiles, 'pickup');
