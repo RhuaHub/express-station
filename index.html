@@ -7,7 +7,7 @@
 <title>快递驿站 · 入库出库管理</title>
 <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="auth-locked">
 
 <svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
   <symbol id="i-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
@@ -36,7 +36,53 @@
   <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M12 6v2M12 11v2M12 16v2"/></symbol>
   <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 15h12v6H6z"/></symbol>
   <symbol id="i-merge" viewBox="0 0 24 24"><path d="M4 5h5a4 4 0 0 1 4 4v6a4 4 0 0 0 4 4h3"/><path d="M4 19h5a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4h3"/><path d="m17 16 3 3-3 3"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M17.5 14.5a6.5 6.5 0 0 1 4 5.5"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M15 8l4 4-4 4M19 12H9"/></symbol>
 </svg>
+
+<!-- 登录 / 注册门：未登录时业务界面整体隐藏 -->
+<div id="authGate" class="auth-gate">
+  <div class="auth-panel">
+    <div class="auth-brand">
+      <div class="auth-mark"><svg class="ic"><use href="#i-box"/></svg></div>
+      <div><strong id="authStationName">我的快递驿站</strong><span>查件 · 入库 · 出库</span></div>
+    </div>
+
+    <div id="authSetup" class="auth-pane">
+      <div class="auth-head"><h2>注册站长账号</h2><p>首次使用，先创建一个站长账号。之后可在「账号管理」里给店员开子账号。</p></div>
+      <form id="formRegister" autocomplete="off">
+        <div class="field"><label for="regName">你的姓名 / 称呼</label><input id="regName" class="input" placeholder="如：李站长" required autocomplete="off"></div>
+        <div class="field"><label for="regUser">登录账号</label><input id="regUser" class="input" placeholder="2–32 位字母、数字、_ . -" required autocomplete="off"></div>
+        <div class="field-row">
+          <div class="field"><label for="regPass">密码（至少 6 位）</label><input id="regPass" class="input" type="password" required autocomplete="new-password"></div>
+          <div class="field"><label for="regConfirm">确认密码</label><input id="regConfirm" class="input" type="password" required autocomplete="new-password"></div>
+        </div>
+        <label class="switch"><input type="checkbox" id="regRemember" checked><span>在这台设备上记住登录（7 天）</span></label>
+        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-lock"/></svg>创建并登录</button>
+      </form>
+    </div>
+
+    <div id="authLogin" class="auth-pane" hidden>
+      <div class="auth-head"><h2>登录驿站</h2><p>请用站长或店员账号登录，所有操作都会记下操作人。</p></div>
+      <form id="formLogin" autocomplete="off">
+        <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username"></div>
+        <div class="field"><label for="loginPass">密码</label><input id="loginPass" class="input" type="password" required autocomplete="current-password"></div>
+        <label class="switch"><input type="checkbox" id="loginRemember"><span>在这台设备上记住登录（7 天）</span></label>
+        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-user"/></svg>登录</button>
+      </form>
+      <div class="auth-links">
+        <button class="link" id="btnAuthImport">已有备份？导入恢复账号与数据</button>
+      </div>
+    </div>
+
+    <div id="authMsg" class="auth-msg" hidden></div>
+    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库。忘记密码且没有备份时，需要清空站点数据重新注册。</span></div>
+  </div>
+</div>
+<input type="file" id="authImportFile" accept="application/json,.json" hidden>
+<input type="file" id="acImportFile" accept="application/json,.json" hidden>
 
 <div class="app">
   <aside class="sidebar">
@@ -55,7 +101,8 @@
       <button class="nav-item" data-view="inventory"><svg class="ic"><use href="#i-box"/></svg><span>在库台账</span></button>
       <button class="nav-item" data-view="analytics"><svg class="ic"><use href="#i-chart"/></svg><span>统计看板</span></button>
       <button class="nav-item" data-view="logs"><svg class="ic"><use href="#i-list"/></svg><span>操作流水</span></button>
-      <button class="nav-item" data-view="settings"><svg class="ic"><use href="#i-gear"/></svg><span>设置与数据</span></button>
+      <button class="nav-item" data-perm="owner" data-view="accounts"><svg class="ic"><use href="#i-users"/></svg><span>账号管理</span></button>
+      <button class="nav-item" data-perm="manage" data-view="settings"><svg class="ic"><use href="#i-gear"/></svg><span>设置与数据</span></button>
     </nav>
     <div class="side-foot">
       <div class="store-badge"><span class="dot"></span><span id="storeMode">数据存于本机浏览器</span></div>
@@ -71,7 +118,9 @@
       </div>
       <div class="topbar-right">
         <div class="today" id="todayText"></div>
-        <button class="btn btn-ghost btn-sm" id="btnQuickIn"><svg class="ic"><use href="#i-plus"/></svg>快速入库</button>
+        <button class="btn btn-ghost btn-sm" data-perm="write" id="btnQuickIn"><svg class="ic"><use href="#i-plus"/></svg>快速入库</button>
+        <button class="user-chip" id="btnUserMenu" title="当前登录账号"><svg class="ic"><use href="#i-user"/></svg><span id="userChip">未登录</span></button>
+        <button class="btn btn-ghost btn-sm" id="btnLogout" title="退出登录"><svg class="ic"><use href="#i-logout"/></svg>退出</button>
       </div>
     </header>
 
@@ -152,7 +201,7 @@
         <div class="two-col wide-left">
           <div class="card">
             <div class="card-head"><h3>登记新包裹</h3><span class="muted">回车提交 · 连续录入</span></div>
-            <form id="formIn" autocomplete="off">
+            <form id="formIn" data-perm="write" autocomplete="off">
               <div class="field">
                 <label for="inTracking">运单号 <em>*</em></label>
                 <input id="inTracking" name="trackingNo" class="input input-lg" placeholder="扫码或输入运单号" required autocomplete="off">
@@ -206,8 +255,8 @@
                 <label>面单 / 包裹照片（可选，可多张）</label>
                 <div class="photo-picker">
                   <input type="file" id="inPhotos" accept="image/*" multiple hidden>
-                  <button type="button" class="btn btn-outline btn-sm" id="btnInCamera"><svg class="ic"><use href="#i-camera"/></svg>打开摄像头</button>
-                  <button type="button" class="btn btn-ghost btn-sm" id="btnInPhotos">从相册选图</button>
+                  <button type="button" class="btn btn-outline btn-sm" data-perm="write" id="btnInCamera"><svg class="ic"><use href="#i-camera"/></svg>打开摄像头</button>
+                  <button type="button" class="btn btn-ghost btn-sm" data-perm="write" id="btnInPhotos">从相册选图</button>
                   <span class="muted" id="inPhotoState"></span>
                 </div>
                 <div class="photo-preview" id="inPhotoPreview"></div>
@@ -259,11 +308,11 @@
             <span class="merge-hint" id="mergeHint" hidden><svg class="ic"><use href="#i-merge"/></svg>合并出库 · 共用一张凭证，可整批撤销</span>
           </div>
           <input type="file" id="outProof" accept="image/*" multiple hidden>
-          <button class="btn btn-outline btn-sm" id="btnProof" title="调用摄像头拍取件凭证；多件出库时记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>拍取件凭证</button>
-          <button class="btn btn-ghost btn-sm" id="btnProofPick" title="从相册里选已有照片">选图</button>
+          <button class="btn btn-outline btn-sm" data-perm="write" id="btnProof" title="调用摄像头拍取件凭证；多件出库时记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>拍取件凭证</button>
+          <button class="btn btn-ghost btn-sm" data-perm="write" id="btnProofPick" title="从相册里选已有照片">选图</button>
           <div class="proof-preview" id="proofPreview"></div>
           <input id="pickupBy" class="input" placeholder="取件人（选填，默认本人）" autocomplete="off">
-          <button class="btn btn-primary" id="btnCheckout"><svg class="ic"><use href="#i-check"/></svg>确认出库</button>
+          <button class="btn btn-primary" data-perm="write" id="btnCheckout"><svg class="ic"><use href="#i-check"/></svg>确认出库</button>
         </div>
       </section>
 
@@ -364,6 +413,55 @@
       </section>
 
       <!-- 设置 -->
+      <!-- 账号管理（仅站长可见） -->
+      <section class="view" id="view-accounts">
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head"><h3>我的账号</h3><svg class="ic muted"><use href="#i-user"/></svg></div>
+            <div id="myAccount" class="my-account"></div>
+            <div class="divider"></div>
+            <form id="formChangePwd" class="settings-form" autocomplete="off">
+              <div class="field"><label for="oldPwd">原密码</label><input id="oldPwd" class="input" type="password" required autocomplete="current-password"></div>
+              <div class="field-row">
+                <div class="field"><label for="newPwd">新密码（至少 6 位）</label><input id="newPwd" class="input" type="password" required autocomplete="new-password"></div>
+                <div class="field"><label for="confirmPwd">确认新密码</label><input id="confirmPwd" class="input" type="password" required autocomplete="new-password"></div>
+              </div>
+              <button type="submit" class="btn btn-outline btn-sm"><svg class="ic"><use href="#i-lock"/></svg>修改我的密码</button>
+            </form>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>新增子账号</h3><svg class="ic muted"><use href="#i-users"/></svg></div>
+            <p class="hint">给店员各开一个账号，入库、出库、拍照都会记下操作人。操作员可办日常业务；只读访客只能查件和看台账。</p>
+            <form id="formAddSub" data-perm="owner" class="settings-form" autocomplete="off">
+              <div class="field-row">
+                <div class="field"><label for="subName">显示姓名</label><input id="subName" class="input" placeholder="如：小王" required></div>
+                <div class="field"><label for="subUser">登录账号</label><input id="subUser" class="input" placeholder="字母 / 数字，如 wang" required autocomplete="off"></div>
+              </div>
+              <div class="field-row">
+                <div class="field"><label for="subPass">初始密码（至少 6 位）</label><input id="subPass" class="input" type="password" required autocomplete="new-password"></div>
+                <div class="field"><label for="subRole">角色</label>
+                  <select id="subRole" class="input">
+                    <option value="operator">操作员 · 入库出库改台账</option>
+                    <option value="viewer">只读访客 · 仅查件看板</option>
+                  </select>
+                </div>
+              </div>
+              <button type="submit" class="btn btn-primary btn-sm"><svg class="ic"><use href="#i-plus"/></svg>创建子账号</button>
+            </form>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>账号列表</h3><span class="muted" id="acCount"></span></div>
+          <div id="accountList" class="account-list"></div>
+          <div class="divider"></div>
+          <div class="btn-row">
+            <button class="btn btn-outline btn-sm" data-perm="owner" id="btnAccountsExport"><svg class="ic"><use href="#i-download"/></svg>导出账号库</button>
+            <button class="btn btn-outline btn-sm" data-perm="owner" id="btnAccountsImport"><svg class="ic"><use href="#i-upload"/></svg>导入账号库</button>
+          </div>
+          <p class="hint"><b>换设备怎么办</b>：账号只存在本机浏览器，不会自动上传。用「JSON 全量备份」导出，或开启 GitHub 私有仓库同步，账号库会随台账一起写进备份文件；新设备打开后点登录页的「导入备份恢复」即可用同一套账号登录。备份文件里是加盐哈希而非明文密码，但仍请当作敏感文件保存，别放进公开仓库。</p>
+        </div>
+      </section>
+
       <section class="view" id="view-settings">
         <div class="card">
           <div class="card-head"><h3>图片存储 · 云盘</h3><span class="muted" id="photoStatus"></span></div>
@@ -401,14 +499,14 @@
           </div>
           <label class="switch"><input type="checkbox" id="phRequireProof" checked><span>出库必须拍取件凭证：勾选后，点「确认出库」会自动调起摄像头，未拍照不出库（可关闭）</span></label>
           <div class="btn-row">
-            <button class="btn btn-primary btn-sm" id="btnPhSave">保存图片设置</button>
-            <button class="btn btn-outline btn-sm" id="btnPhTest">测试连接</button>
+            <button class="btn btn-primary btn-sm" data-perm="manage" id="btnPhSave">保存图片设置</button>
+            <button class="btn btn-outline btn-sm" data-perm="manage" id="btnPhTest">测试连接</button>
           </div>
         </div>
         <div class="two-col">
           <div class="card">
             <div class="card-head"><h3>驿站设置</h3></div>
-            <form id="formSettings" class="settings-form">
+            <form id="formSettings" data-perm="manage" class="settings-form">
               <div class="field"><label for="setName">驿站名称</label><input id="setName" class="input" required></div>
               <div class="field"><label for="setOperator">默认值班员</label><input id="setOperator" class="input"></div>
               <div class="field-row">
@@ -437,14 +535,14 @@
               <div class="card-head"><h3>数据备份</h3><svg class="ic muted"><use href="#i-download"/></svg></div>
               <p class="hint">数据默认保存在当前浏览器。换设备、清缓存前请先导出备份。</p>
               <div class="btn-row">
-                <button class="btn btn-outline btn-sm" data-export="json">JSON 全量备份</button>
+                <button class="btn btn-outline btn-sm" data-perm="manage" data-export="json">JSON 全量备份</button>
                 <button class="btn btn-outline btn-sm" data-export="all">全部包裹 CSV</button>
                 <button class="btn btn-outline btn-sm" data-export="instock">在库件 CSV</button>
                 <button class="btn btn-outline btn-sm" data-export="logs">流水 CSV</button>
               </div>
               <div class="divider"></div>
               <div class="btn-row">
-                <button class="btn btn-ghost btn-sm" id="btnImport"><svg class="ic"><use href="#i-upload"/></svg>导入备份</button>
+                <button class="btn btn-ghost btn-sm" data-perm="manage" id="btnImport"><svg class="ic"><use href="#i-upload"/></svg>导入备份</button>
                 <select id="importMode" class="input input-sm">
                   <option value="merge">合并到现有数据</option>
                   <option value="replace">覆盖现有数据</option>
@@ -452,8 +550,8 @@
               </div>
               <div class="divider"></div>
               <div class="btn-row">
-                <button class="btn btn-ghost btn-sm" id="btnDemo">载入演示数据</button>
-                <button class="btn btn-ghost btn-sm danger" id="btnClearAll"><svg class="ic"><use href="#i-trash"/></svg>清空全部数据</button>
+                <button class="btn btn-ghost btn-sm" data-perm="manage" id="btnDemo">载入演示数据</button>
+                <button class="btn btn-ghost btn-sm danger" data-perm="manage" id="btnClearAll"><svg class="ic"><use href="#i-trash"/></svg>清空全部数据</button>
               </div>
             </div>
 
@@ -468,10 +566,10 @@
               </div>
               <label class="switch"><input type="checkbox" id="syncAuto"><span>写操作后自动上传（后写覆盖，避免多端同时编辑）</span></label>
               <div class="btn-row">
-                <button class="btn btn-outline btn-sm" id="btnSyncSave">保存配置</button>
-                <button class="btn btn-outline btn-sm" id="btnSyncTest">测试连接</button>
-                <button class="btn btn-outline btn-sm" id="btnSyncPush"><svg class="ic"><use href="#i-upload"/></svg>上传</button>
-                <button class="btn btn-outline btn-sm" id="btnSyncPull"><svg class="ic"><use href="#i-download"/></svg>拉取</button>
+                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncSave">保存配置</button>
+                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncTest">测试连接</button>
+                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncPush"><svg class="ic"><use href="#i-upload"/></svg>上传</button>
+                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncPull"><svg class="ic"><use href="#i-download"/></svg>拉取</button>
               </div>
               <div class="sync-state muted" id="syncState">未配置</div>
             </div>
@@ -486,7 +584,8 @@
             <div><h4>合并出库</h4><p>同一顾客的多件包裹一起勾选出库即自动合并为一个批次：共用同一张取件凭证（每件记录里都能翻到）、流水只记一条。误操作可在「操作流水」点「整批撤销」一次性把整批恢复在库；若某个货位已被新件占用，会整批拒绝并提示，避免只撤一半。批次号也能直接粘进查件框查同批所有件。</p></div>
             <div><h4>日常流程</h4><p>入库登记（生成取件码、可拍面单照）→ 包裹按货架位上架 → 顾客报码或尾号检索 → 拍照留证后确认出库（多件自动合并出库）。所有动作写入操作流水，误操作可撤销出库。</p></div>
             <div><h4>摄像头与拍照</h4><p>「打开摄像头 / 拍取件凭证」会直接调用设备摄像头，可连拍、切换前后镜头；拍照后自动压缩并写入云盘。摄像头需要 https 页面（GitHub Pages 满足）并授权相机权限，用本地 file:// 打开或浏览器不支持时会自动回退到系统相机 / 相册。出库默认要求先拍照，可在「图片存储」里关闭。</p></div>
-            <div><h4>数据在哪</h4><p>默认保存在浏览器 localStorage，无需服务器、无需登录。开启 GitHub 同步后，台账会写入指定仓库的 JSON 文件；仓库建议设为私有，Pages 站点本身不要放任何令牌。</p></div>
+            <div><h4>账号与权限</h4><p>首次打开注册站长账号，之后在「账号管理」里给店员开子账号。站长可改设置、导入备份、管账号；操作员可入库出库与改台账；只读访客只能查件和看板。每条流水都记录操作人，可在流水页按姓名搜索。账号随 JSON 全量备份 / GitHub 同步迁移，换设备打开后点登录页「导入备份恢复」即可。</p></div>
+            <div><h4>数据在哪</h4><p>台账与账号都保存在浏览器 localStorage，无需服务器。开启 GitHub 同步后，台账与账号库会一起写入指定仓库的 JSON 文件；<b>仓库必须是私有</b>，里面含账号密码哈希与收件人后四位。Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
             <div><h4>照片存云盘：坚果云（推荐）</h4><p>入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库取件凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间，按日期就能在云盘里翻到凭证。坚果云不用 NAS：网页版生成<b>应用密码</b> → 把 <b>deploy/nutstore-worker.js</b> 部署成 Cloudflare Worker → 在「图片存储」填 Worker 根地址 + 邮箱 + 应用密码。坚果云本身没有 CORS 头，直接填 dav.jianguoyun.com 会被浏览器拦，这个 Worker 就是补这一步。免费版每月上传 1GB / 下载 3GB；只拍出库凭证、把「图片最长边」设为 1200 更省额度。</p></div>
             <div><h4>照片存云盘：阿里云盘（AList）</h4><p>用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList：管理 → 存储 → 添加 → 选「阿里云盘 Open」→ 刷新令牌填云盘 token、根文件夹 ID 填 root、WebDAV 策略选「本机代理」→ 在设置里开启 WebDAV。把 <b>https://你的域名/dav</b> 和管理员账号填进「图片存储」。AList 自带 CORS 头，但仍是 https：内网 http 地址会被 Pages 拦截，可用 Cloudflare Tunnel / Nginx 反代。</p></div>
@@ -505,6 +604,7 @@
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
 <script src="store.js"></script>
+<script src="auth.js"></script>
 <script src="photos.js"></script>
 <script src="camera.js"></script>
 <script src="sync.js"></script>

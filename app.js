@@ -3,6 +3,7 @@
   'use strict';
 
   var store = StationStore.createStore(localStorage);
+  var auth = window.StationAuth;
   var sync = window.StationSync;
   var photos = window.StationPhotos;
   var camera = window.StationCamera;
@@ -20,6 +21,7 @@
     inventory: ['在库台账', '所有包裹的记录、修改与检索'],
     analytics: ['统计看板', '流转、滞留与货架占用'],
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
+    accounts: ['账号管理', '子账号、角色权限与密码'],
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
   var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '',
@@ -321,6 +323,267 @@
     });
   }
 
+  /* ---------- 账号、登录门与权限 ---------- */
+  function guard(perm) {
+    if (auth.can(perm)) return true;
+    var c = auth.current();
+    toast('当前账号（' + (c ? c.roleName : '未登录') + '）没有此操作权限', 'err');
+    return false;
+  }
+  function renderUserChip() {
+    var c = auth.current();
+    $('userChip').textContent = c ? c.name + ' · ' + c.roleName : '未登录';
+  }
+  function applyPermissions() {
+    document.querySelectorAll('[data-perm]').forEach(function (el) {
+      var ok = auth.can(el.dataset.perm);
+      if (el.classList.contains('nav-item')) { el.hidden = !ok; return; }
+      if (el.tagName === 'FORM') {
+        el.querySelectorAll('input, select, button, textarea').forEach(function (x) { x.disabled = !ok; });
+      } else el.disabled = !ok;
+      el.classList.toggle('perm-locked', !ok);
+    });
+    renderUserChip();
+    if (!viewTitles[state.view]) state.view = 'dash';
+    var activeNav = $('nav').querySelector('[data-view="' + state.view + '"]');
+    if (!activeNav || activeNav.hidden) state.view = 'dash';
+  }
+  function authMsg(text, isErr) {
+    var box = $('authMsg');
+    box.textContent = text;
+    box.className = 'auth-msg' + (isErr ? ' err' : ' ok');
+    box.hidden = false;
+  }
+  function showGate(mode) {
+    document.body.classList.add('auth-locked');
+    $('authGate').hidden = false;
+    $('authSetup').hidden = mode !== 'setup';
+    $('authLogin').hidden = mode !== 'login';
+    $('authStationName').textContent = store.settings().stationName;
+    $('authMsg').hidden = true;
+    ['regPass', 'regConfirm', 'loginPass'].forEach(function (id) { $(id).value = ''; });
+    var focusId = mode === 'setup' ? 'regName' : 'loginUser';
+    setTimeout(function () { $(focusId).focus(); }, 80);
+  }
+  function hideGate() {
+    document.body.classList.remove('auth-locked');
+    $('authGate').hidden = true;
+  }
+  function enterApp() {
+    var c = auth.current();
+    if (!c) { showGate(auth.status().needSetup ? 'setup' : 'login'); return; }
+    store.setActor(c.name);
+    store.logEvent('login', c.name + ' 登录（' + c.roleName + '）');
+    hideGate();
+    applyPermissions();
+    fillSettings();
+    renderAll();
+    switchView('dash');
+    toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
+  }
+  function leaveApp() {
+    var c = auth.current();
+    if (c) store.logEvent('logout', c.name + ' 退出登录');
+    auth.logout();
+    store.setActor('');
+    state.selected = {}; state.outKeyword = ''; state.lookupKey = '';
+    ['outSearch', 'lookupKey', 'quickLookup'].forEach(function (id) { $(id).value = ''; });
+    showGate('login');
+  }
+  function bindAuth() {
+    $('formRegister').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var r = auth.register({
+        name: $('regName').value, username: $('regUser').value,
+        password: $('regPass').value, confirm: $('regConfirm').value,
+        remember: $('regRemember').checked
+      });
+      if (!r.ok) { authMsg(r.error, true); return; }
+      enterApp();
+    });
+    $('formLogin').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var r = auth.login({
+        username: $('loginUser').value, password: $('loginPass').value,
+        remember: $('loginRemember').checked
+      });
+      if (!r.ok) { authMsg(r.error, true); return; }
+      enterApp();
+    });
+    $('btnAuthImport').onclick = function () { $('authImportFile').click(); };
+    $('authImportFile').addEventListener('change', async function () {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      var text = await file.text();
+      this.value = '';
+      var r = store.importJSON(text, 'replace');
+      if (!r.ok) { authMsg(r.error, true); return; }
+      fillSettings();
+      showGate('login');
+      authMsg('已恢复 ' + r.count + ' 条记录' +
+        (r.accounts && r.accounts.ok ? '和 ' + r.accounts.count + ' 个账号' : '') + '，请用原密码登录', false);
+    });
+  }
+
+  /* ---------- 账号管理（仅站长） ---------- */
+  function renderMyAccount() {
+    var c = auth.current();
+    $('myAccount').innerHTML = c
+      ? '<div class="ma-avatar"><svg class="ic"><use href="#i-user"/></svg></div>' +
+        '<div class="ma-info"><strong>' + esc(c.name) + '</strong>' +
+        '<span>@' + esc(c.username) + ' · <b>' + esc(c.roleName) + '</b></span>' +
+        '<span class="muted">最近登录 ' + esc(c.lastLoginAt ? store.fmtTime(c.lastLoginAt) : '本次') + '</span></div>'
+      : emptyHTML('未登录');
+  }
+  function accountCardHTML(a) {
+    var me = auth.current() && auth.current().id === a.id;
+    var badge = a.role === 'owner' ? 'tag-normal' : (a.role === 'operator' ? 'tag-warn' : 'tag-out');
+    return '<div class="account-row' + (a.active ? '' : ' is-off') + '">' +
+      '<div class="ar-avatar"><svg class="ic"><use href="#i-user"/></svg></div>' +
+      '<div class="ar-main"><div class="ar-name">' + esc(a.name) +
+      '<span class="tag ' + badge + '">' + esc(a.roleName) + '</span>' +
+      (a.active ? '' : '<span class="tag tag-danger">已停用</span>') +
+      (me ? '<span class="tag tag-out">当前账号</span>' : '') + '</div>' +
+      '<div class="ar-meta">@' + esc(a.username) + ' · ' +
+      (a.createdBy ? '由 ' + esc(a.createdBy) + ' 创建 · ' : '') +
+      '最近登录 ' + esc(a.lastLoginAt ? store.fmtTime(a.lastLoginAt) : '从未') + '</div></div>' +
+      '<div class="ar-actions">' +
+      '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="edit" data-id="' + esc(a.id) + '">编辑</button>' +
+      '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="reset" data-id="' + esc(a.id) + '">重置密码</button>' +
+      (me ? '' : '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="toggle" data-id="' + esc(a.id) + '">' +
+        (a.active ? '停用' : '启用') + '</button>' +
+        '<button class="btn btn-ghost btn-sm danger" data-perm="owner" data-account-act="remove" data-id="' + esc(a.id) + '">删除</button>') +
+      '</div></div>';
+  }
+  function renderAccounts() {
+    renderMyAccount();
+    var list = auth.list();
+    $('acCount').textContent = '共 ' + list.length + ' 个账号';
+    $('accountList').innerHTML = list.length ? list.map(accountCardHTML).join('') : emptyHTML('暂无账号');
+  }
+  function accountEditDialog(a) {
+    return new Promise(function (resolve) {
+      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
+        '<h3>编辑账号 · ' + esc(a.name) + '</h3><p>登录账号 @' + esc(a.username) + ' 不可修改。</p>' +
+        '<div class="field"><label>显示姓名</label><input class="input" id="acEditName" value="' + esc(a.name) + '"></div>' +
+        '<div class="field"><label>角色</label><select class="input" id="acEditRole"' + (a.role === 'owner' ? ' disabled' : '') + '>' +
+        '<option value="owner"' + (a.role === 'owner' ? ' selected' : '') + '>站长（不可授予）</option>' +
+        '<option value="operator"' + (a.role === 'operator' ? ' selected' : '') + '>操作员 · 入库出库改台账</option>' +
+        '<option value="viewer"' + (a.role === 'viewer' ? ' selected' : '') + '>只读访客 · 仅查件看板</option>' +
+        '</select></div>' +
+        '<label class="switch"><input type="checkbox" id="acEditActive"' + (a.active ? ' checked' : '') +
+        (a.role === 'owner' ? ' disabled' : '') + '><span>启用该账号（停用后不能登录）</span></label>' +
+        '<div class="field"><label>重设密码（留空表示不改）</label><input class="input" id="acEditPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>' +
+        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
+        '<button class="btn btn-primary" data-act="ok">保存</button></div></div></div>';
+      var root = $('modalRoot');
+      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
+      root.querySelector('[data-act="ok"]').onclick = function () {
+        var patch = {
+          name: $('acEditName').value,
+          role: $('acEditRole').value,
+          active: $('acEditActive').checked,
+          password: $('acEditPass').value
+        };
+        closeModal(); resolve(patch);
+      };
+      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
+    });
+  }
+  function accountResetDialog(a) {
+    return new Promise(function (resolve) {
+      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
+        '<h3>重置密码 · ' + esc(a.name) + '</h3><p>设置后请线下告知本人，密码只以哈希形式保存。</p>' +
+        '<div class="field"><label>新密码</label><input class="input" id="acResetPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>' +
+        '<div class="field"><label>确认新密码</label><input class="input" id="acResetConfirm" type="password" autocomplete="new-password"></div>' +
+        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
+        '<button class="btn btn-primary" data-act="ok">确认重置</button></div></div></div>';
+      var root = $('modalRoot');
+      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
+      root.querySelector('[data-act="ok"]').onclick = function () {
+        var pw = $('acResetPass').value, cf = $('acResetConfirm').value;
+        closeModal(); resolve(pw && pw === cf ? pw : null);
+        if (pw !== cf) toast('两次输入的新密码不一致', 'err');
+      };
+      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
+    });
+  }
+  function bindAccounts() {
+    $('btnUserMenu').onclick = function () {
+      var c = auth.current();
+      if (auth.can('owner')) switchView('accounts');
+      else toast(c ? c.name + ' · ' + c.roleName + '（只读或操作权限）' : '未登录');
+    };
+    $('btnLogout').onclick = leaveApp;
+
+    $('formAddSub').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (!guard('owner')) return;
+      var r = auth.createSub({
+        name: $('subName').value, username: $('subUser').value,
+        password: $('subPass').value, role: $('subRole').value
+      });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      this.reset();
+      store.logEvent('account', '创建子账号 ' + r.account.name + '（' + r.account.roleName + '）');
+      renderAccounts();
+      toast('已创建子账号 ' + r.account.name + '（' + r.account.roleName + '）');
+    });
+    $('formChangePwd').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var r = auth.changePassword($('oldPwd').value, $('newPwd').value, $('confirmPwd').value);
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      this.reset();
+      store.logEvent('account', '修改自己的登录密码');
+      toast('密码已修改，请牢记新密码');
+    });
+    $('accountList').addEventListener('click', async function (e) {
+      var b = e.target.closest('[data-account-act]');
+      if (!b || !guard('owner')) return;
+      var id = b.dataset.id, act = b.dataset.accountAct;
+      var a = auth.list().find(function (x) { return x.id === id; });
+      if (!a) return;
+      var r = null;
+      if (act === 'toggle') {
+        r = auth.updateSub(id, { active: !a.active });
+        if (r.ok) toast(a.active ? '已停用 ' + a.name : '已启用 ' + a.name);
+      } else if (act === 'edit') {
+        var patch = await accountEditDialog(a);
+        if (patch) { r = auth.updateSub(id, patch); if (r.ok) toast('账号资料已更新'); }
+      } else if (act === 'reset') {
+        var pw = await accountResetDialog(a);
+        if (pw) { r = auth.updateSub(id, { password: pw }); if (r.ok) toast('已重置 ' + a.name + ' 的密码'); }
+      } else if (act === 'remove') {
+        var ok = await confirmDialog('删除账号？', '账号 ' + a.name + ' 将被删除，历史流水里的操作人姓名会保留。', '确认删除', true);
+        if (ok) { r = auth.removeSub(id); if (r.ok) toast('已删除账号 ' + a.name); }
+      }
+      if (r && !r.ok) toast(r.error, 'err');
+      if (r && r.ok) {
+        store.logEvent('account', ({ edit: '编辑账号资料', reset: '重置账号密码', toggle: '切换账号启用状态', remove: '删除账号' }[act] || '账号操作') + '：' + a.name);
+      }
+      renderAccounts();
+    });
+    $('btnAccountsExport').onclick = function () {
+      if (!guard('owner')) return;
+      downloadFile('accounts-' + dateStamp() + '.json', auth.exportAccounts(), 'application/json');
+      toast('账号库已导出（含密码哈希，请妥善保管）');
+    };
+    $('btnAccountsImport').onclick = function () { $('acImportFile').click(); };
+    $('acImportFile').addEventListener('change', async function () {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      var text = await file.text();
+      this.value = '';
+      var ok = await confirmDialog('导入并覆盖账号库？', '本机现有账号会被备份文件里的账号替换，可能需要用备份中的密码重新登录。', '确认导入', true);
+      if (!ok) return;
+      var r = auth.importAccounts(text);
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      if (!auth.current()) { leaveApp(); return; }
+      enterApp();
+      toast('已导入 ' + r.count + ' 个账号');
+    });
+  }
+
   /* ---------- 视图切换 ---------- */
   function switchView(name) {
     if (!viewTitles[name]) name = 'dash';
@@ -488,7 +751,7 @@
       '<div class="lc-foot"><span class="muted">' + (inStock ? '登记 ' + esc(p.operatorIn || '—') : '办理 ' + esc(p.operatorOut || '—')) + '</span>' +
       '<div class="btn-row">' +
       (photoCount ? '<button type="button" class="btn btn-ghost btn-sm" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>照片 ' + photoCount + '</button>' : '') +
-      (inStock ? '<button type="button" class="btn btn-primary btn-sm" data-lookup-out="' + esc(p.id) + '"><svg class="ic"><use href="#i-out"/></svg>去出库</button>' : '') +
+      (inStock ? '<button type="button" class="btn btn-primary btn-sm" data-perm="write" data-lookup-out="' + esc(p.id) + '"><svg class="ic"><use href="#i-out"/></svg>去出库</button>' : '') +
       '</div></div></div>';
   }
   function renderLookup() {
@@ -518,6 +781,7 @@
       : '<div class="card lookup-empty">' + emptyHTML('没有匹配「' + kw + '」的包裹。请核对尾号，或在「范围」里切到全部记录（可能已被取走）。') + '</div>';
   }
   function goCheckout(id) {
+    if (!guard('write')) return;
     var p = store.getDB().parcels.find(function (x) { return x.id === id; });
     if (!p || p.status !== 'in') { toast('该包裹已出库，请刷新查件结果', 'err'); renderLookup(); return; }
     state.selected = {};
@@ -566,7 +830,7 @@
     var n = Object.keys(state.selected).length;
     $('pickCount').textContent = n;
     $('mergeHint').hidden = n < 2;
-    $('btnCheckout').disabled = n === 0;
+    $('btnCheckout').disabled = n === 0 || !auth.can('write');
     $('btnCheckout').innerHTML = n > 1
       ? '<svg class="ic"><use href="#i-merge"/></svg>合并出库 ' + n + ' 件'
       : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
@@ -605,8 +869,8 @@
         '<td data-label="停留">' + p.stayDays + ' 天</td>' +
         '<td data-label="状态">' + tag + '</td>' +
         '<td data-label="操作" class="td-actions"><div class="row-actions">' +
-        '<button class="icon-btn" data-edit="' + esc(p.id) + '" title="修改"><svg class="ic"><use href="#i-edit"/></svg></button>' +
-        '<button class="icon-btn danger" data-del="' + esc(p.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
+        '<button class="icon-btn" data-perm="write" data-edit="' + esc(p.id) + '" title="修改"><svg class="ic"><use href="#i-edit"/></svg></button>' +
+        '<button class="icon-btn danger" data-perm="write" data-del="' + esc(p.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
         '</div></td></tr>';
     }).join('') : '<tr><td colspan="9">' + emptyHTML('没有符合条件的记录') + '</td></tr>';
   }
@@ -646,11 +910,12 @@
         return x.status === 'out' && x.batchId === l.batchId;
       }).length : 0;
       var btn = (l.batchId && batchCount > 0)
-        ? '<button class="btn btn-outline btn-sm" data-restore-batch="' + esc(l.batchId) + '"><svg class="ic"><use href="#i-merge"/></svg>' +
+        ? '<button class="btn btn-outline btn-sm" data-perm="write" data-restore-batch="' + esc(l.batchId) + '"><svg class="ic"><use href="#i-merge"/></svg>' +
           (batchCount > 1 ? '整批撤销 ' + batchCount + ' 件' : '撤销剩余 1 件') + '</button>'
-        : (canRestore ? '<button class="btn btn-ghost btn-sm" data-restore="' + esc(l.parcelId) + '">撤销出库</button>' : '');
+        : (canRestore ? '<button class="btn btn-ghost btn-sm" data-perm="write" data-restore="' + esc(l.parcelId) + '">撤销出库</button>' : '');
       return '<div class="log-item"><div class="log-time">' + esc(store.fmtTime(l.at)) + '</div>' +
         '<span class="log-badge t-' + esc(l.type) + '">' + esc(store.logTypeName(l.type)) + '</span>' +
+        (l.actor ? '<span class="log-actor">' + esc(l.actor) + '</span>' : '') +
         '<div class="log-text">' + esc(l.summary) + '</div>' + btn + '</div>';
     }).join('') : emptyHTML('暂无操作流水');
   }
@@ -690,12 +955,31 @@
     renderInventory();
     renderAnalytics();
     renderLogs();
+    if (auth.can('owner')) renderAccounts();
     renderSyncState();
     renderPhotoStatus();
   }
 
   /* ---------- 事件绑定 ---------- */
   function bind() {
+    /* 捕获阶段统一拦截越权操作：按钮与表单上标注 data-perm，静态页面也能做角色隔离 */
+    document.addEventListener('click', function (e) {
+      var t = e.target && e.target.closest && e.target.closest('[data-perm]');
+      if (!t || !auth.current()) return;
+      if (!auth.can(t.dataset.perm)) {
+        e.preventDefault(); e.stopPropagation();
+        toast('当前账号（' + auth.current().roleName + '）没有此操作权限', 'err');
+      }
+    }, true);
+    document.addEventListener('submit', function (e) {
+      var f = e.target && e.target.closest && e.target.closest('form[data-perm]');
+      if (!f || !auth.current()) return;
+      if (!auth.can(f.dataset.perm)) {
+        e.preventDefault(); e.stopPropagation();
+        toast('当前账号（' + auth.current().roleName + '）没有此操作权限', 'err');
+      }
+    }, true);
+
     $('nav').addEventListener('click', function (e) {
       var b = e.target.closest('.nav-item');
       if (b) switchView(b.dataset.view);
@@ -756,6 +1040,7 @@
     /* 入库 */
     $('formIn').addEventListener('submit', async function (e) {
       e.preventDefault();
+      if (!guard('write')) return;
       var btn = $('formIn').querySelector('button[type="submit"]');
       var tn = $('inTracking').value.trim();
       var exists = store.getDB().parcels.some(function (p) {
@@ -868,6 +1153,7 @@
       if (pv) { openPhotoViewer(pv.dataset.photos); return; }
       var ed = e.target.closest('[data-edit]');
       var del = e.target.closest('[data-del]');
+      if ((ed || del) && !guard('write')) return;
       if (ed) {
         var p = store.getDB().parcels.find(function (x) { return x.id === ed.dataset.edit; });
         if (!p) return;
@@ -899,6 +1185,8 @@
       store.clearLogs(); renderLogs(); toast('流水已清空');
     };
     $('logList').addEventListener('click', function (e) {
+      if (!e.target.closest('[data-restore-batch]') && !e.target.closest('[data-restore]')) return;
+      if (!guard('write')) return;
       var bb = e.target.closest('[data-restore-batch]');
       if (bb) {
         var rb = store.restoreBatch(bb.dataset.restoreBatch);
@@ -975,7 +1263,13 @@
       var r = store.importJSON(text, mode);
       this.value = '';
       if (!r.ok) toast(r.error, 'err');
-      else afterWrite('导入完成，处理 ' + r.count + ' 条记录');
+      else {
+        fillSettings();
+        afterWrite('导入完成，处理 ' + r.count + ' 条记录' +
+          (r.accounts && r.accounts.ok ? ' · 账号库已恢复' : ''));
+        /* 备份里的账号库替换了本机账号，需要重新登录 */
+        if (!auth.current()) showGate('login');
+      }
     });
     $('btnClearAll').onclick = async function () {
       var ok = await confirmDialog('清空全部数据？', '所有包裹、流水和设置都会恢复到初始状态，此操作不可撤销。请务必先导出 JSON 备份。', '我确认清空', true);
@@ -1027,7 +1321,12 @@
       var imp = store.importJSON(r.text, 'replace');
       renderSyncState();
       if (!imp.ok) toast(imp.error, 'err');
-      else { fillSettings(); afterWrite('已拉取 ' + imp.count + ' 条记录'); }
+      else {
+        fillSettings();
+        afterWrite('已拉取 ' + imp.count + ' 条记录' +
+          (imp.accounts && imp.accounts.ok ? ' · 账号库已同步' : ''));
+        if (!auth.current()) showGate('login');
+      }
     };
   }
 
@@ -1047,6 +1346,7 @@
   }
 
   async function doCheckout() {
+    if (!guard('write')) return;
     var ids = Object.keys(state.selected);
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
     if (!(await ensureProof())) return;
@@ -1066,12 +1366,17 @@
     $('outSearch').focus();
   }
 
-  async function init() {
-    await photos.init();
+  function init() {
+    /* 账号库随台账 JSON 备份 / GitHub 同步一起迁移 */
+    store.registerAccountsProvider(auth);
+    bind();            /* 事件只绑定一次，登录/退出只切换门与重新渲染 */
+    bindAuth();
+    bindAccounts();
     fillSettings();
-    bind();
-    renderAll();
-    switchView('dash');
+    if (auth.current()) enterApp();
+    else showGate(auth.status().needSetup ? 'setup' : 'login');
+    /* 恢复本地目录句柄放后台：IndexedDB 不可用时也不能拖住登录与业务界面 */
+    photos.init().catch(function () { /* 照片模块会回退到 WebDAV / 浏览器暂存 */ });
   }
   init();
 })();

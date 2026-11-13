@@ -282,7 +282,138 @@ check('查件可按取件码与批次号命中，备份/CSV 保留新字段', ()
   assert.ok(s.exportCSV('logs').includes('出库批次'));
 });
 
+console.log('账号与权限');
+const authApi = require('../auth.js');
+const crypto = require('crypto');
+const auth = authApi.createAuth(authApi.memoryStorage(), authApi.memoryStorage());
+
+check('SHA-256 实现与标准一致（含中文与空串）', () => {
+  ['abc', '中文密码123', '', 'a'.repeat(200)].forEach(function (s) {
+    assert.strictEqual(authApi.sha256Hex(s), crypto.createHash('sha256').update(s, 'utf8').digest('hex'));
+  });
+});
+check('首次注册站长并自动登录', () => {
+  assert.strictEqual(auth.status().needSetup, true);
+  const r = auth.register({ name: '李站长', username: 'Boss', password: 'abc12345', confirm: 'abc12345' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.account.role, 'owner');
+  assert.strictEqual(auth.current().username, 'boss');
+  assert.strictEqual(auth.can('owner'), true);
+});
+check('密码只存加盐哈希，错误密码被拒', () => {
+  const raw = JSON.stringify(auth.snapshot());
+  assert.ok(!raw.includes('abc12345'), '账号库不得出现明文密码');
+  assert.ok(raw.includes('hash') && raw.includes('salt'));
+  assert.notStrictEqual(auth.snapshot().accounts[0].hash, authApi.sha256Hex('abc12345'));
+  auth.logout();
+  assert.strictEqual(auth.login({ username: 'boss', password: 'wrong' }).ok, false);
+  assert.strictEqual(auth.login({ username: 'boss', password: 'abc12345' }).ok, true);
+});
+check('重复注册、账号格式与密码强度都被拒绝', () => {
+  assert.strictEqual(auth.register({ username: 'x', password: '123456', confirm: '123456' }).ok, false);
+  assert.strictEqual(auth.createSub({ username: 'Bad User', password: '123456' }).ok, false);
+  assert.strictEqual(auth.createSub({ username: 'short', password: '123' }).ok, false);
+});
+check('创建子账号并检查角色权限矩阵', () => {
+  assert.strictEqual(auth.createSub({ name: '小王', username: 'clerk', password: 'pass123', role: 'operator' }).ok, true);
+  assert.strictEqual(auth.createSub({ name: '访客', username: 'guest', password: 'pass123', role: 'viewer' }).ok, true);
+  assert.strictEqual(auth.list().length, 3);
+  assert.strictEqual(auth.createSub({ username: 'clerk', password: 'pass123' }).ok, false);
+});
+check('切换账号后权限随角色变化，越权创建子账号被拒', () => {
+  auth.logout();
+  assert.strictEqual(auth.login({ username: 'clerk', password: 'pass123' }).ok, true);
+  assert.strictEqual(auth.can('write'), true);
+  assert.strictEqual(auth.can('manage'), false);
+  assert.strictEqual(auth.createSub({ username: 'hack', password: 'pass123' }).ok, false);
+  auth.logout();
+  assert.strictEqual(auth.login({ username: 'guest', password: 'pass123' }).ok, true);
+  assert.strictEqual(auth.can('read'), true);
+  assert.strictEqual(auth.can('write'), false);
+});
+check('停用账号无法登录；不能停用或删除自己', () => {
+  auth.logout();
+  assert.strictEqual(auth.login({ username: 'boss', password: 'abc12345' }).ok, true);
+  const clerk = auth.list().find(a => a.username === 'clerk');
+  assert.strictEqual(auth.updateSub(clerk.id, { active: false }).ok, true);
+  const me = auth.current();
+  assert.strictEqual(auth.updateSub(me.id, { active: false }).ok, false);
+  assert.strictEqual(auth.updateSub(me.id, { role: 'viewer' }).ok, false);
+  assert.strictEqual(auth.removeSub(me.id).ok, false);
+  auth.logout();
+  assert.strictEqual(auth.login({ username: 'clerk', password: 'pass123' }).ok, false);
+  assert.strictEqual(auth.login({ username: 'boss', password: 'abc12345' }).ok, true);
+  assert.strictEqual(auth.updateSub(clerk.id, { password: 'newpass1', active: true, role: 'viewer' }).ok, true);
+  assert.strictEqual(auth.removeSub(clerk.id).ok, true);
+});
+check('改自己密码需验证旧密码，账号库可导出导入', () => {
+  assert.strictEqual(auth.changePassword('bad', 'zzz999', 'zzz999').ok, false);
+  assert.strictEqual(auth.changePassword('abc12345', 'zzz999', 'zzz9999').ok, false);
+  assert.strictEqual(auth.changePassword('abc12345', 'zzz999', 'zzz999').ok, true);
+  const text = auth.exportAccounts();
+  assert.ok(!text.includes('zzz999'), '导出文件不得含明文密码');
+  const other = authApi.createAuth(authApi.memoryStorage(), authApi.memoryStorage());
+  assert.strictEqual(other.importAccounts(text).ok, true);
+  assert.strictEqual(other.login({ username: 'boss', password: 'zzz999' }).ok, true);
+});
+check('数据层记录操作人：包裹、流水、CSV 与检索', () => {
+  const s2 = api.createStore(api.memoryStorage());
+  s2.setActor('小王');
+  const pp = s2.addParcel({ trackingNo: 'AUTH001', zone: 'A' }).parcel;
+  assert.strictEqual(pp.operatorIn, '小王');
+  s2.checkout([pp.id], '本人');
+  assert.strictEqual(s2.getDB().parcels.find(x => x.id === pp.id).operatorOut, '小王');
+  assert.strictEqual(s2.getDB().logs.find(l => l.type === 'out').actor, '小王');
+  assert.ok(s2.exportCSV('logs').includes('操作人'));
+  assert.ok(s2.listLogs({ keyword: '小王' }).length >= 2);
+  assert.strictEqual(s2.logEvent('login', '小王 登录（操作员）'), true);
+  assert.ok(s2.exportCSV('logs').includes('登录'));
+});
+check('账号库随 JSON 备份导出，导入时恢复', () => {
+  const s3 = api.createStore(api.memoryStorage());
+  s3.registerAccountsProvider(auth);
+  const backup = s3.exportJSON();
+  assert.strictEqual(JSON.parse(backup).accounts.accounts.length, 2);
+  const s4 = api.createStore(api.memoryStorage());
+  let restored = 0;
+  s4.registerAccountsProvider({
+    snapshot: function () { return auth.snapshot(); },
+    restore: function (p) { restored = (p.accounts || []).length; return { ok: true }; }
+  });
+  assert.strictEqual(s4.importJSON(backup, 'replace').ok, true);
+  assert.strictEqual(restored, 2);
+});
+
 console.log('页面引用');
+check('页面含登录门、账号管理视图与权限标记', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['authGate', 'authSetup', 'authLogin', 'authStationName', 'formRegister', 'formLogin',
+    'regUser', 'regPass', 'loginUser', 'loginPass', 'btnAuthImport', 'authImportFile',
+    'view-accounts', 'formAddSub', 'formChangePwd', 'accountList', 'acCount',
+    'btnAccountsExport', 'btnAccountsImport', 'btnLogout', 'userChip', 'auth.js']
+    .forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  assert.ok(/<body class="auth-locked">/.test(html), '未登录时业务界面应默认隐藏');
+  ['owner', 'write', 'manage'].forEach(p => assert.ok(html.includes('data-perm="' + p + '"'), '缺少权限标记 ' + p));
+});
+check('交互层有登录门禁、权限拦截与账号库绑定', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+  ['StationAuth', 'registerAccountsProvider', 'bindAuth', 'bindAccounts', 'enterApp',
+    'showGate', 'leaveApp', 'applyPermissions', 'store.setActor', 'data-perm', 'log-actor',
+    "addEventListener('click', function (e) {", "addEventListener('submit', function (e) {"]
+    .forEach(k => assert.ok(app.includes(k), '交互逻辑缺少 ' + k));
+  ['body.auth-locked .app', '.auth-gate[hidden]', '.account-row', '.log-actor', '.user-chip']
+    .forEach(k => assert.ok(css.includes(k), '样式缺少 ' + k));
+});
+
+check('登录不依赖 IndexedDB 初始化，照片模块有超时兜底', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const ph = fs.readFileSync(path.join(root, 'photos.js'), 'utf8');
+  assert.ok(!/await photos\.init\(\)/.test(app), 'photos.init 不能阻塞登录门绑定');
+  assert.ok(/photos\.init\(\)\.catch\(/.test(app), '照片初始化应放后台执行');
+  assert.ok(/IndexedDB 打开超时/.test(ph), 'IndexedDB 需要超时兜底');
+});
+
 check('页面含查件视图、拍照按钮与摄像头容器', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   ['view-lookup', 'lookupKey', 'lookupResults', 'lookupScope', 'quickLookup',

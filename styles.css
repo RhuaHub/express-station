@@ -418,6 +418,70 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   body.printing-label .label-sheet { width: 80mm; border: 1px dashed #333; }
 }
 
+/* ---------- 登录 / 注册门 ---------- */
+body.auth-locked .app { display: none; }
+.auth-gate[hidden], .auth-pane[hidden], .auth-msg[hidden] { display: none !important; }
+.auth-gate {
+  position: fixed; inset: 0; z-index: 80; display: flex; align-items: center;
+  justify-content: center; padding: 24px; overflow-y: auto;
+  background: radial-gradient(circle at 20% 0%, var(--gold-soft), transparent 55%), var(--bg);
+}
+.auth-panel {
+  width: 100%; max-width: 440px; background: var(--card); padding: 28px;
+  border: 1px solid var(--gold-line); border-radius: 18px; box-shadow: var(--shadow-lg);
+}
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.auth-mark {
+  width: 42px; height: 42px; border-radius: 12px; background: var(--gold-soft);
+  color: var(--gold-deep); display: flex; align-items: center; justify-content: center; flex: none;
+}
+.auth-mark .ic { width: 24px; height: 24px; }
+.auth-brand strong { display: block; font-size: 16px; }
+.auth-brand span { font-size: 12px; color: var(--muted); }
+.auth-head h2 { font-size: 20px; margin-bottom: 6px; }
+.auth-head p { font-size: 12px; color: var(--sub); line-height: 1.6; margin-bottom: 18px; }
+.auth-pane .field { margin-bottom: 12px; }
+.auth-pane .field-row { gap: 10px; }
+.auth-pane .btn-block { margin-top: 6px; }
+.auth-links { margin-top: 14px; text-align: center; }
+.auth-msg { margin-top: 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; background: var(--ok-bg); color: var(--ok); }
+.auth-msg.err { background: var(--danger-bg); color: var(--danger); }
+.auth-note {
+  display: flex; gap: 8px; margin-top: 20px; padding-top: 16px;
+  border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); line-height: 1.6;
+}
+.auth-note .ic { width: 14px; height: 14px; margin-top: 2px; flex: none; }
+body.printing-label .auth-gate { display: none !important; }
+
+/* ---------- 账号、角色与操作人 ---------- */
+.user-chip {
+  display: flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+  background: var(--card); border-radius: 999px; padding: 6px 12px; font-size: 12px; color: var(--sub);
+}
+.user-chip:hover { border-color: var(--gold-line); color: var(--gold-deep); }
+.perm-locked { opacity: .55; }
+.log-actor {
+  font-size: 11px; color: var(--gold-deep); background: var(--gold-soft);
+  padding: 3px 8px; border-radius: 6px; flex: none; white-space: nowrap;
+}
+.log-badge.t-login, .log-badge.t-logout, .log-badge.t-account { background: var(--line-soft); color: var(--sub); }
+.my-account { display: flex; align-items: center; gap: 14px; padding: 6px 0 12px; }
+.ma-avatar, .ar-avatar {
+  width: 42px; height: 42px; border-radius: 12px; background: var(--gold-soft);
+  color: var(--gold-deep); display: flex; align-items: center; justify-content: center; flex: none;
+}
+.ma-avatar .ic, .ar-avatar .ic { width: 22px; height: 22px; }
+.ma-info { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--sub); }
+.ma-info strong { font-size: 16px; color: var(--text); }
+.account-list { display: flex; flex-direction: column; }
+.account-row { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid var(--line-soft); }
+.account-row:last-child { border-bottom: 0; }
+.account-row.is-off { opacity: .6; }
+.ar-main { flex: 1; min-width: 0; }
+.ar-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.ar-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.ar-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
@@ -471,6 +535,13 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   .merge-hint { flex-basis: 100%; }
   .cam-stage { aspect-ratio: 4 / 3; }
   .cam-actions .btn { flex: 1 1 auto; }
+  .auth-panel { padding: 22px; }
+  .auth-gate { align-items: flex-start; padding: 16px; }
+  .account-row { flex-wrap: wrap; }
+  .ar-actions { width: 100%; justify-content: flex-start; }
+  .user-chip { padding: 6px 9px; }
+  .log-item { flex-wrap: wrap; }
+  .log-actor { order: 3; }
 }
 @media (max-width: 460px) {
   .pick-grid { grid-template-columns: 1fr; }

@@ -108,7 +108,8 @@
         summary: str(l.summary),
         parcelId: str(l.parcelId),
         trackingNo: str(l.trackingNo),
-        batchId: str(l.batchId)
+        batchId: str(l.batchId),
+        actor: str(l.actor)
       };
     });
     base.createdAt = raw.createdAt || base.createdAt;
@@ -127,6 +128,8 @@
   function createStore(storage) {
     var st = storage || (typeof localStorage !== 'undefined' ? localStorage : memoryStorage());
     var db = read();
+    var actorName = '';                 /* 当前登录账号，登录后由 app.js 注入 */
+    var accountsProvider = null;        /* auth.js 的 snapshot / restore，让账号库随备份迁移 */
 
     function read() {
       try {
@@ -144,11 +147,25 @@
       db.logs.unshift({
         id: uid('l'), at: isoNow(), type: type, summary: summary,
         parcelId: parcel ? parcel.id : '', trackingNo: parcel ? parcel.trackingNo : '',
-        batchId: batchId || ''
+        batchId: batchId || '', actor: actorName || db.settings.operator
       });
       if (db.logs.length > 3000) db.logs.length = 3000;
     }
+    /* 账号相关动作也写进流水，便于按操作人审计 */
+    function logEvent(type, summary) {
+      log(type, summary, null);
+      save();
+      return true;
+    }
     function settings() { return db.settings; }
+    function setActor(name) { actorName = str(name); return actorName; }
+    function actor() { return actorName || db.settings.operator; }
+    function registerAccountsProvider(provider) {
+      if (provider && typeof provider.snapshot === 'function' && typeof provider.restore === 'function') {
+        accountsProvider = provider;
+      }
+      return !!accountsProvider;
+    }
 
     function updateSettings(patch) {
       if (!patch || typeof patch !== 'object') return { ok: false, error: '设置内容无效' };
@@ -269,7 +286,7 @@
         inAt: isoNow(),
         outAt: null,
         pickupBy: '',
-        operatorIn: str(input.operator) || db.settings.operator,
+        operatorIn: str(input.operator) || actorName || db.settings.operator,
         operatorOut: '',
         photos: normalizePhotos(input.photos)
       };
@@ -343,7 +360,7 @@
       }
       var at = isoNow();
       var who = str(pickupBy) || '本人';
-      var operator = db.settings.operator;
+      var operator = actorName || db.settings.operator;
       var proof = normalizePhotos(photos).map(function (ph) { ph.kind = 'pickup'; return ph; });
       var batchId = nextBatchId();
       var merged = opts && opts.merge !== undefined ? !!opts.merge : picked.length > 1;
@@ -496,7 +513,7 @@
       var kw = str(filter.keyword).toLowerCase();
       return db.logs.filter(function (l) {
         if (filter.type && l.type !== filter.type) return false;
-        if (kw && [l.summary, l.trackingNo, l.type].join(' ').toLowerCase().indexOf(kw) === -1) return false;
+        if (kw && [l.summary, l.trackingNo, l.type, l.actor].join(' ').toLowerCase().indexOf(kw) === -1) return false;
         return true;
       });
     }
@@ -549,7 +566,11 @@
     }
 
     function exportJSON() {
-      return JSON.stringify({ app: 'express-station', version: 1, exportedAt: isoNow(), data: db }, null, 2);
+      var out = { app: 'express-station', version: 2, exportedAt: isoNow(), data: db };
+      if (accountsProvider) {
+        try { out.accounts = accountsProvider.snapshot(); } catch (e) { /* 账号库不可用时仍可导出台账 */ }
+      }
+      return JSON.stringify(out, null, 2);
     }
     function importJSON(text, mode) {
       var parsed;
@@ -557,6 +578,12 @@
       var payload = parsed && parsed.data ? parsed.data : parsed;
       if (!payload || !Array.isArray(payload.parcels)) return { ok: false, error: '备份文件缺少包裹数据' };
       var incoming = normalize(payload);
+      /* 备份里带账号库时一并恢复，换设备后同一套账号可直接登录 */
+      var accResult = null;
+      var accPayload = (parsed && parsed.accounts) || payload.accounts;
+      if (accountsProvider && accPayload) {
+        try { accResult = accountsProvider.restore(accPayload); } catch (e) { accResult = { ok: false, error: e.message }; }
+      }
       if (mode === 'merge') {
         var seen = {};
         db.parcels.forEach(function (p) { seen[p.id] = true; });
@@ -570,12 +597,12 @@
         db.logs.sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
         log('import', '合并导入备份，新增 ' + added + ' 条包裹');
         save();
-        return { ok: true, count: added };
+        return { ok: true, count: added, accounts: accResult };
       }
       db = incoming;
       log('import', '覆盖导入备份，共 ' + db.parcels.length + ' 条包裹');
       save();
-      return { ok: true, count: db.parcels.length };
+      return { ok: true, count: db.parcels.length, accounts: accResult };
     }
 
     function csvCell(v) {
@@ -585,9 +612,9 @@
     function exportCSV(kind) {
       var rows = [];
       if (kind === 'logs') {
-        rows.push(['时间', '类型', '摘要', '关联运单号', '出库批次']);
+        rows.push(['时间', '类型', '操作人', '摘要', '关联运单号', '出库批次']);
         db.logs.forEach(function (l) {
-          rows.push([fmtTime(l.at), logTypeName(l.type), l.summary, l.trackingNo, l.batchId]);
+          rows.push([fmtTime(l.at), logTypeName(l.type), l.actor || '', l.summary, l.trackingNo, l.batchId]);
         });
       } else {
         rows.push(['取件码', '运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '照片数', '出库批次', '备注']);
@@ -606,7 +633,7 @@
       return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
     function logTypeName(t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
     }
 
     function clearAll() {
@@ -657,8 +684,8 @@
           inAt: inAt,
           outAt: outAt,
           pickupBy: isOut ? '本人' : '',
-          operatorIn: s.operator,
-          operatorOut: isOut ? s.operator : '',
+          operatorIn: actorName || s.operator,
+          operatorOut: isOut ? (actorName || s.operator) : '',
           photos: []
         });
         added++;
@@ -677,6 +704,10 @@
       KEY: KEY,
       getDB: function () { return db; },
       settings: settings,
+      setActor: setActor,
+      actor: actor,
+      logEvent: logEvent,
+      registerAccountsProvider: registerAccountsProvider,
       updateSettings: updateSettings,
       suggestSlot: suggestSlot,
       slotAvailable: slotAvailable,
@@ -719,7 +750,7 @@
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     },
     logTypeName: function (t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
     }
   };
   global.StationStore = api;

@@ -62,14 +62,25 @@
   function openDB() {
     return new Promise(function (resolve, reject) {
       if (typeof indexedDB === 'undefined') return reject(new Error('当前环境不支持 IndexedDB'));
-      var req = indexedDB.open(DB_NAME, DB_VERSION);
+      var settled = false;
+      /* 某些环境（file://、隐私模式）open 既不成功也不报错，必须超时兜底 */
+      var timer = setTimeout(function () {
+        finish(reject, new Error('IndexedDB 打开超时'));
+      }, 3000);
+      function finish(fn, value) {
+        if (settled) return;
+        settled = true; clearTimeout(timer); fn(value);
+      }
+      var req;
+      try { req = indexedDB.open(DB_NAME, DB_VERSION); }
+      catch (e) { return finish(reject, e); }
       req.onupgradeneeded = function () {
         var db = req.result;
         if (!db.objectStoreNames.contains(S_FILES)) db.createObjectStore(S_FILES, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(S_META)) db.createObjectStore(S_META, { keyPath: 'key' });
       };
-      req.onsuccess = function () { resolve(req.result); };
-      req.onerror = function () { reject(req.error || new Error('IndexedDB 打开失败')); };
+      req.onsuccess = function () { finish(resolve, req.result); };
+      req.onerror = function () { finish(reject, req.error || new Error('IndexedDB 打开失败')); };
     });
   }
   function idbPut(name, value) {
