@@ -162,6 +162,126 @@ check('查件命中在库/已出库、精确尾号优先、范围过滤', () => 
   assert.deepStrictEqual(s.lookup(''), []);
 });
 
+console.log('取件码（货号）');
+check('取件码默认由货架位压缩生成，且不与在库件重复', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'CODE001', zone: 'A' }).parcel;
+  assert.strictEqual(a.slot, 'A-01-1');
+  assert.strictEqual(a.pickupCode, 'A011');
+  assert.strictEqual(s.compactSlot('A-01-1'), 'A011');
+  assert.strictEqual(s.previewPickupCode('B-03-2'), 'B032');
+  const b = s.addParcel({ trackingNo: 'CODE002', zone: 'A' }).parcel;
+  assert.notStrictEqual(a.pickupCode, b.pickupCode);
+  const dup = s.addParcel({ trackingNo: 'CODE003', pickupCode: 'A011' }).parcel;
+  assert.strictEqual(dup.pickupCode, 'A013', '建议码被占用时应自动换成可用码');
+});
+
+check('手改取件码、重复码拒绝、换货位自动重算', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'CODE011', zone: 'A' }).parcel;
+  const b = s.addParcel({ trackingNo: 'CODE012', zone: 'A' }).parcel;
+  assert.strictEqual(s.updateParcel(a.id, { pickupCode: 'VIP1' }).parcel.pickupCode, 'VIP1');
+  assert.strictEqual(s.updateParcel(b.id, { pickupCode: 'VIP1' }).ok, false);
+  assert.strictEqual(s.updateParcel(b.id, { slot: 'C-02-2' }).parcel.pickupCode, 'C022');
+  assert.strictEqual(s.updateParcel(a.id, { slot: 'C-03-3' }).parcel.pickupCode, 'VIP1', '手写码不应被换货位覆盖');
+  assert.strictEqual(s.lookup('VIP1')[0].id, a.id);
+});
+
+check('每日流水号规则、关闭规则与旧备份回填', () => {
+  const st = api.memoryStorage();
+  const s = api.createStore(st);
+  s.updateSettings({ codeMode: 'daily' });
+  const a = s.addParcel({ trackingNo: 'DAILY01' }).parcel;
+  const b = s.addParcel({ trackingNo: 'DAILY02' }).parcel;
+  const d = new Date();
+  const pre = ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2);
+  assert.ok(a.pickupCode.indexOf(pre + '-') === 0, '每日码应带日期前缀：' + a.pickupCode);
+  assert.notStrictEqual(a.pickupCode, b.pickupCode);
+  s.updateSettings({ codeMode: 'off' });
+  assert.strictEqual(s.addParcel({ trackingNo: 'DAILY03' }).parcel.pickupCode, '');
+  assert.strictEqual(api.createStore(st).getDB().parcels.find(x => x.trackingNo === 'DAILY03').pickupCode, '');
+  const legacy = api.createStore(api.memoryStorage());
+  legacy.importJSON(JSON.stringify({
+    parcels: [{ id: 'old1', trackingNo: 'OLD1', slot: 'C-03-4', status: 'in', inAt: new Date().toISOString() }]
+  }), 'replace');
+  assert.strictEqual(legacy.getDB().parcels[0].pickupCode, 'C034', '旧备份应按货架位回填');
+  assert.strictEqual(legacy.getDB().parcels[0].batchId, '');
+});
+
+console.log('合并出库');
+check('多件自动合并批次，凭证共享到每件，流水带批次号', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'BATCH01', zone: 'A' }).parcel;
+  const b = s.addParcel({ trackingNo: 'BATCH02', zone: 'A' }).parcel;
+  const c = s.addParcel({ trackingNo: 'BATCH03', zone: 'B' }).parcel;
+  const r = s.checkout([a.id, b.id], '本人', [{ ref: 'webdav:出库凭证/2026-11/x.jpg', name: 'x.jpg' }]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.merged, true);
+  assert.ok(/^B-\d{8}-\d{3}$/.test(r.batchId), '批次号格式：' + r.batchId);
+  assert.strictEqual(a.batchId, r.batchId);
+  assert.strictEqual(b.batchId, r.batchId);
+  assert.strictEqual(c.batchId, '');
+  assert.strictEqual(s.listBatch(r.batchId).length, 2);
+  assert.strictEqual(a.photos.length, 1);
+  assert.strictEqual(b.photos.length, 1, '同批第二件也应能翻到凭证');
+  assert.strictEqual(a.photos[0].ref, b.photos[0].ref, '共享同一云盘文件引用，不重复上传');
+  assert.notStrictEqual(a.photos[0].id, b.photos[0].id, '各件引用 id 应独立');
+  assert.strictEqual(a.photos[0].kind, 'pickup');
+  const lg = s.listLogs({ type: 'out' })[0];
+  assert.strictEqual(lg.batchId, r.batchId);
+  assert.ok(lg.summary.includes('合并出库'));
+});
+
+check('整批撤销一次恢复全部；货位被占用时整批拒绝', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'RB001', zone: 'A' }).parcel;
+  const b = s.addParcel({ trackingNo: 'RB002', zone: 'A' }).parcel;
+  const r = s.checkout([a.id, b.id], '代取', [{ ref: 'idb:x.jpg', name: 'x.jpg' }]);
+  const blocker = s.addParcel({ trackingNo: 'RB003', slot: 'A-01-1' }).parcel;
+  const refused = s.restoreBatch(r.batchId);
+  assert.strictEqual(refused.ok, false);
+  assert.ok(refused.error.includes('A-01-1'));
+  assert.strictEqual(s.getDB().parcels.find(x => x.id === a.id).status, 'out', '拒绝时不能只撤一半');
+  s.removeParcel(blocker.id);
+  const back = s.restoreBatch(r.batchId);
+  assert.strictEqual(back.ok, true);
+  assert.strictEqual(back.count, 2);
+  assert.strictEqual(s.listParcels({ status: 'in' }).length, 2);
+  assert.strictEqual(s.getDB().parcels.find(x => x.id === a.id).batchId, '');
+  assert.strictEqual(s.getDB().parcels.find(x => x.id === a.id).photos.length, 1, '撤销保留历史凭证');
+  assert.strictEqual(s.restoreBatch(r.batchId).ok, false, '已撤销的批次不能重复撤销');
+});
+
+check('单件撤销会清掉批次标记且不误撤同批其它件', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'ONE001' }).parcel;
+  const b = s.addParcel({ trackingNo: 'ONE002' }).parcel;
+  const r = s.checkout([a.id, b.id], '本人');
+  assert.strictEqual(s.restoreParcel(a.id).ok, true);
+  assert.strictEqual(s.getDB().parcels.find(x => x.id === a.id).batchId, '');
+  assert.strictEqual(s.getDB().parcels.find(x => x.id === b.id).status, 'out');
+  assert.strictEqual(s.listBatch(r.batchId).length, 1);
+});
+
+check('查件可按取件码与批次号命中，备份/CSV 保留新字段', () => {
+  const s = api.createStore(api.memoryStorage());
+  const a = s.addParcel({ trackingNo: 'FIND01', zone: 'A' }).parcel;
+  const b = s.addParcel({ trackingNo: 'FIND02', zone: 'A' }).parcel;
+  const r = s.checkout([a.id, b.id], '本人');
+  assert.strictEqual(s.lookup(a.pickupCode)[0].id, a.id);
+  assert.strictEqual(s.lookup(r.batchId).length, 2, '批次号应能查到同批所有件');
+  assert.ok(s.lookup(r.batchId)[0].batchId === r.batchId);
+  const fresh = api.createStore(api.memoryStorage());
+  fresh.importJSON(s.exportJSON(), 'replace');
+  assert.strictEqual(fresh.getDB().parcels.find(x => x.id === a.id).pickupCode, a.pickupCode);
+  assert.strictEqual(fresh.getDB().parcels.find(x => x.id === a.id).batchId, r.batchId);
+  const csv = s.exportCSV('all');
+  assert.ok(csv.includes('取件码'));
+  assert.ok(csv.includes('出库批次'));
+  assert.ok(csv.includes(a.pickupCode));
+  assert.ok(s.exportCSV('logs').includes('出库批次'));
+});
+
 console.log('页面引用');
 check('页面含查件视图、拍照按钮与摄像头容器', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -172,6 +292,19 @@ check('页面含查件视图、拍照按钮与摄像头容器', () => {
   assert.ok(/capture['"], ['"]environment['"]/.test(app), '缺少系统相机 capture 回退');
   assert.ok(/ensureProof/.test(app), '缺少出库强制拍照逻辑');
   assert.ok(/store\.lookup\(/.test(app), '查件页未接数据层');
+});
+
+check('页面含取件码、打印标签与合并出库入口', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+  ['inPickupCode', 'btnRecode', 'setCodeMode', 'mergeHint', 'i-ticket', 'i-print', 'i-merge']
+    .forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  ['printLabelDialog', 'printing-label', 'data-print-label', 'data-restore-batch',
+    'store.restoreBatch(', 'store.previewPickupCode(', 'pickupCode: $(']
+    .forEach(k => assert.ok(app.includes(k), '交互逻辑缺少 ' + k));
+  assert.ok(css.includes('@media print'), '缺少打印样式');
+  assert.ok(css.includes('.label-sheet'), '缺少标签样式');
 });
 
 check('camera.js 可加载且导出完整接口', () => {

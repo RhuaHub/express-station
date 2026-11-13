@@ -33,6 +33,9 @@
   <symbol id="i-shutter" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2"/></symbol>
   <symbol id="i-switch-cam" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><path d="M9 12.5a3.5 3.5 0 0 0 6 2.2"/><path d="M15 11.5a3.5 3.5 0 0 0-6-2.2"/><path d="m14 9.5 1 1.8 1.8-1M10 14.5l-1-1.8-1.8 1"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M12 6v2M12 11v2M12 16v2"/></symbol>
+  <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 15h12v6H6z"/></symbol>
+  <symbol id="i-merge" viewBox="0 0 24 24"><path d="M4 5h5a4 4 0 0 1 4 4v6a4 4 0 0 0 4 4h3"/><path d="M4 19h5a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4h3"/><path d="m17 16 3 3-3 3"/></symbol>
 </svg>
 
 <div class="app">
@@ -91,7 +94,7 @@
         <div class="card quick-lookup">
           <div class="ql-label"><svg class="ic"><use href="#i-find"/></svg><span>快速查件</span></div>
           <div class="ql-row">
-            <input id="quickLookup" class="input" placeholder="手机号后四位 / 运单号 / 收件人，扫码枪可直接扫" autocomplete="off">
+            <input id="quickLookup" class="input" placeholder="取件码 / 手机后四位 / 运单号 / 收件人，扫码枪可直接扫" autocomplete="off">
             <button class="btn btn-primary btn-sm" id="btnQuickLookup">查件</button>
           </div>
         </div>
@@ -124,7 +127,7 @@
           </div>
           <div class="search-wrap">
             <svg class="ic search-ic"><use href="#i-search"/></svg>
-            <input id="lookupKey" class="input input-xl" placeholder="手机号后四位 / 运单号 / 收件人 / 货架位" autocomplete="off">
+            <input id="lookupKey" class="input input-xl" placeholder="取件码 / 手机后四位 / 运单号 / 收件人 / 货架位" autocomplete="off">
             <button class="btn btn-primary btn-sm" id="btnLookup">查件</button>
             <button class="btn btn-ghost btn-sm" id="lookupClear">清空</button>
           </div>
@@ -188,6 +191,14 @@
                 </div>
               </div>
               <div class="field">
+                <label for="inPickupCode">取件码（可手改，会写在面单上给顾客）</label>
+                <div class="input-with-btn">
+                  <input id="inPickupCode" name="pickupCode" class="input code-input" placeholder="按规则自动生成" autocomplete="off">
+                  <button type="button" class="btn btn-ghost btn-sm" id="btnRecode" title="按当前货架位重新生成"><svg class="ic"><use href="#i-refresh"/></svg></button>
+                </div>
+                <span class="field-hint" id="inCodeHint">顾客报码即可查件；货架位变化会自动重算</span>
+              </div>
+              <div class="field">
                 <label for="inNote">备注</label>
                 <input id="inNote" name="note" class="input" placeholder="易碎、大件、代收等，选填" autocomplete="off">
               </div>
@@ -215,6 +226,7 @@
                 <li>货架位默认取该区第一个空位，占用会自动跳过。</li>
                 <li>只存手机号后四位，不收集完整号码。</li>
                 <li>同一运单号在库时不能重复登记，避免重件。</li>
+                <li>取件码默认由货架位压缩而来（A-01-2 → A012），可手改，入库后能打印标签贴在面单上。</li>
               </ul>
             </div>
             <div class="card">
@@ -230,7 +242,7 @@
         <div class="card search-card">
           <div class="search-wrap">
             <svg class="ic search-ic"><use href="#i-search"/></svg>
-            <input id="outSearch" class="input input-xl" placeholder="输入手机号后四位 / 运单号 / 收件人 / 货架位" autocomplete="off">
+            <input id="outSearch" class="input input-xl" placeholder="输入取件码 / 手机后四位 / 运单号 / 收件人" autocomplete="off">
             <button class="btn btn-ghost btn-sm" id="outClear">清空</button>
           </div>
           <div class="search-meta">
@@ -243,7 +255,9 @@
         </div>
         <div id="outResults" class="pick-grid"></div>
         <div class="checkout-bar" id="checkoutBar">
-          <div class="checkout-info"><strong id="pickCount">0</strong><span>件已选</span></div>
+          <div class="checkout-info"><strong id="pickCount">0</strong><span>件已选</span>
+            <span class="merge-hint" id="mergeHint" hidden><svg class="ic"><use href="#i-merge"/></svg>合并出库 · 共用一张凭证，可整批撤销</span>
+          </div>
           <input type="file" id="outProof" accept="image/*" multiple hidden>
           <button class="btn btn-outline btn-sm" id="btnProof" title="调用摄像头拍取件凭证；多件出库时记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>拍取件凭证</button>
           <button class="btn btn-ghost btn-sm" id="btnProofPick" title="从相册里选已有照片">选图</button>
@@ -259,7 +273,7 @@
           <div class="filter-bar">
             <div class="input-with-icon">
               <svg class="ic"><use href="#i-search"/></svg>
-              <input id="invKeyword" class="input" placeholder="搜索单号 / 收件人 / 后四位 / 货架位" autocomplete="off">
+              <input id="invKeyword" class="input" placeholder="搜索取件码 / 单号 / 收件人 / 后四位 / 批次" autocomplete="off">
             </div>
             <select id="invCarrier" class="input"><option value="">全部公司</option></select>
             <select id="invZone" class="input"><option value="">全部货架区</option></select>
@@ -284,7 +298,7 @@
           <div class="table-meta"><span id="invCount" class="muted"></span><span class="muted">点击右侧按钮可改资料或删除记录</span></div>
           <div class="table-wrap">
             <table class="table" id="invTable">
-              <thead><tr><th>运单号</th><th>公司</th><th>收件人 / 后四位</th><th>货架位</th><th>入库时间</th><th>停留</th><th>状态</th><th>操作</th></tr></thead>
+              <thead><tr><th>取件码</th><th>运单号</th><th>公司</th><th>收件人 / 后四位</th><th>货架位</th><th>入库时间</th><th>停留</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="invBody"></tbody>
             </table>
           </div>
@@ -401,6 +415,13 @@
                 <div class="field"><label for="setWarn">滞留提醒（天）</label><input id="setWarn" class="input" type="number" min="0" max="365"></div>
                 <div class="field"><label for="setDanger">严重超期（天）</label><input id="setDanger" class="input" type="number" min="1" max="365"></div>
               </div>
+              <div class="field"><label for="setCodeMode">取件码规则</label>
+                <select id="setCodeMode" class="input">
+                  <option value="slot">货架位式（A-01-2 → A012，报码即知货位）</option>
+                  <option value="daily">每日流水号（1113-007，每天从 001 开始）</option>
+                  <option value="off">不生成（只用尾号 / 单号查件）</option>
+                </select>
+              </div>
               <div class="field"><label for="setCarriers">快递公司（逗号分隔）</label><input id="setCarriers" class="input"></div>
               <div class="field"><label for="setZones">货架区（逗号分隔）</label><input id="setZones" class="input"></div>
               <div class="field-row">
@@ -460,8 +481,10 @@
         <div class="card help-card">
           <div class="card-head"><h3>使用说明与部署</h3></div>
           <div class="help-grid">
-            <div><h4>查件（最常用）</h4><p>顾客报手机号后四位或扫面单，在「查件」页输入即可看到货架位、在库天数，若已取走则显示取件人与出库时间；在库件可一键跳到「取件出库」并自动勾选。工作台顶部也有快速查件框。</p></div>
-            <div><h4>日常流程</h4><p>入库登记（可拍面单照）→ 包裹按货架位上架 → 取件时按后四位检索 → 拍照留证后确认出库。所有动作写入操作流水，误操作可撤销出库。</p></div>
+            <div><h4>查件（最常用）</h4><p>顾客报取件码、手机号后四位或扫面单，在「查件」页输入即可看到货架位、在库天数，若已取走则显示取件人与出库时间；在库件可一键跳到「取件出库」并自动勾选。工作台顶部也有快速查件框。</p></div>
+            <div><h4>取件码 = 货号</h4><p>入库自动生成取件码，默认由货架位压缩而成（A-01-2 → A012），顾客报码就能定位货位；也可在入库框里手改，或在台账「修改」里改。入库成功后点「打印标签」用普通打印机打小票贴面单，不需要专用打印控件。规则可在「驿站设置」里改成每日流水号或关闭；改规则只影响新入库的件，旧记录保持原码。</p></div>
+            <div><h4>合并出库</h4><p>同一顾客的多件包裹一起勾选出库即自动合并为一个批次：共用同一张取件凭证（每件记录里都能翻到）、流水只记一条。误操作可在「操作流水」点「整批撤销」一次性把整批恢复在库；若某个货位已被新件占用，会整批拒绝并提示，避免只撤一半。批次号也能直接粘进查件框查同批所有件。</p></div>
+            <div><h4>日常流程</h4><p>入库登记（生成取件码、可拍面单照）→ 包裹按货架位上架 → 顾客报码或尾号检索 → 拍照留证后确认出库（多件自动合并出库）。所有动作写入操作流水，误操作可撤销出库。</p></div>
             <div><h4>摄像头与拍照</h4><p>「打开摄像头 / 拍取件凭证」会直接调用设备摄像头，可连拍、切换前后镜头；拍照后自动压缩并写入云盘。摄像头需要 https 页面（GitHub Pages 满足）并授权相机权限，用本地 file:// 打开或浏览器不支持时会自动回退到系统相机 / 相册。出库默认要求先拍照，可在「图片存储」里关闭。</p></div>
             <div><h4>数据在哪</h4><p>默认保存在浏览器 localStorage，无需服务器、无需登录。开启 GitHub 同步后，台账会写入指定仓库的 JSON 文件；仓库建议设为私有，Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>

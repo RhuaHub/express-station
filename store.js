@@ -33,13 +33,21 @@
       zones: ['A', 'B', 'C', 'D'],
       shelvesPerZone: 8,
       levelsPerShelf: 4,
-      operator: '值班员'
+      operator: '值班员',
+      codeMode: 'slot'
     };
   }
 
   function defaultDB() {
-    return { version: 1, settings: defaultSettings(), parcels: [], logs: [], createdAt: isoNow() };
+    return { version: 2, settings: defaultSettings(), parcels: [], logs: [], createdAt: isoNow() };
   }
+
+  /* 货架位 A-01-2 → A012，作为「报码即知货位」的默认取件码 */
+  function compactSlot(slot) {
+    var s = str(slot).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return s || '';
+  }
+  function three(n) { return ('00' + n).slice(-3); }
 
   function normalizePhotos(list) {
     return (Array.isArray(list) ? list : []).map(function (ph) {
@@ -67,11 +75,15 @@
       zones: Array.isArray(s.zones) && s.zones.length ? s.zones.map(str).filter(Boolean) : base.settings.zones,
       shelvesPerZone: Math.max(1, Math.min(99, Number(s.shelvesPerZone) || base.settings.shelvesPerZone)),
       levelsPerShelf: Math.max(1, Math.min(99, Number(s.levelsPerShelf) || base.settings.levelsPerShelf)),
-      operator: str(s.operator) || base.settings.operator
+      operator: str(s.operator) || base.settings.operator,
+      codeMode: ['slot', 'daily', 'off'].indexOf(s.codeMode) >= 0 ? s.codeMode : base.settings.codeMode
     };
     base.parcels = (Array.isArray(raw.parcels) ? raw.parcels : []).map(function (p) {
       return {
         id: str(p.id) || uid('p'),
+        pickupCode: str(p.pickupCode).toUpperCase() ||
+          (base.settings.codeMode === 'off' ? '' : compactSlot(p.slot)),
+        batchId: str(p.batchId),
         trackingNo: str(p.trackingNo),
         carrier: str(p.carrier) || '其他',
         recipient: str(p.recipient),
@@ -95,7 +107,8 @@
         type: str(l.type) || 'edit',
         summary: str(l.summary),
         parcelId: str(l.parcelId),
-        trackingNo: str(l.trackingNo)
+        trackingNo: str(l.trackingNo),
+        batchId: str(l.batchId)
       };
     });
     base.createdAt = raw.createdAt || base.createdAt;
@@ -127,10 +140,11 @@
       st.setItem(KEY, JSON.stringify(db));
       return true;
     }
-    function log(type, summary, parcel) {
+    function log(type, summary, parcel, batchId) {
       db.logs.unshift({
         id: uid('l'), at: isoNow(), type: type, summary: summary,
-        parcelId: parcel ? parcel.id : '', trackingNo: parcel ? parcel.trackingNo : ''
+        parcelId: parcel ? parcel.id : '', trackingNo: parcel ? parcel.trackingNo : '',
+        batchId: batchId || ''
       });
       if (db.logs.length > 3000) db.logs.length = 3000;
     }
@@ -173,6 +187,60 @@
       });
     }
 
+    /* ---------- 取件码（货号）与出库批次 ---------- */
+    function codeTaken(code, excludeId) {
+      if (!code) return false;
+      var key = str(code).toUpperCase();
+      return db.parcels.some(function (p) {
+        return p.status === 'in' && p.id !== excludeId && p.pickupCode && p.pickupCode.toUpperCase() === key;
+      });
+    }
+    /* slot 模式：由货架位压缩成短码，顾客报码即知货位；daily 模式：日期+当日流水号 */
+    function pickupCodeFor(slot, at, excludeId) {
+      var mode = db.settings.codeMode;
+      if (mode === 'off') return '';
+      if (mode === 'daily') {
+        var d = at ? new Date(at) : new Date();
+        if (isNaN(d.getTime())) d = new Date();
+        var prefix = pad(d.getMonth() + 1) + pad(d.getDate());
+        var max = 0;
+        db.parcels.forEach(function (p) {
+          var m = /^(\d{4})-(\d+)$/.exec(p.pickupCode || '');
+          if (m && m[1] === prefix) max = Math.max(max, Number(m[2]) || 0);
+        });
+        var seq = max + 1;
+        var code = prefix + '-' + three(seq);
+        while (codeTaken(code, excludeId)) { seq++; code = prefix + '-' + three(seq); }
+        return code;
+      }
+      var base = compactSlot(slot) || 'PK';
+      var c = base, n = 2;
+      while (codeTaken(c, excludeId)) { c = base + '-' + n; n++; }
+      return c;
+    }
+    function previewPickupCode(slot) { return pickupCodeFor(slot, Date.now(), ''); }
+
+    function nextBatchId() {
+      var d = new Date();
+      var prefix = 'B-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-';
+      var max = 0;
+      db.parcels.forEach(function (p) {
+        if (p.batchId && p.batchId.indexOf(prefix) === 0) {
+          max = Math.max(max, Number(p.batchId.slice(prefix.length)) || 0);
+        }
+      });
+      var seq = max + 1;
+      var id = prefix + three(seq);
+      while (db.parcels.some(function (p) { return p.batchId === id; })) { seq++; id = prefix + three(seq); }
+      return id;
+    }
+    function listBatch(batchId) {
+      if (!batchId) return [];
+      var now = Date.now();
+      return db.parcels.filter(function (p) { return p.batchId === batchId; })
+        .map(function (p) { return decorate(p, now); });
+    }
+
     function addParcel(input) {
       input = input || {};
       var trackingNo = str(input.trackingNo);
@@ -183,8 +251,13 @@
       if (dup) return { ok: false, error: '该运单号已在库：' + dup.slot, parcel: dup };
       var slot = str(input.slot).toUpperCase() || suggestSlot(input.zone || db.settings.zones[0]);
       if (!slotAvailable(slot)) return { ok: false, error: '货架位 ' + slot + ' 已被占用' };
+      var wanted = str(input.pickupCode).toUpperCase();
+      var code = (wanted && !codeTaken(wanted)) ? wanted : pickupCodeFor(slot, Date.now(), '');
+      if (db.settings.codeMode === 'off') code = '';
       var p = {
         id: uid('p'),
+        pickupCode: code,
+        batchId: '',
         trackingNo: trackingNo,
         carrier: str(input.carrier) || '其他',
         recipient: str(input.recipient),
@@ -201,7 +274,8 @@
         photos: normalizePhotos(input.photos)
       };
       db.parcels.unshift(p);
-      log('in', '入库 ' + p.trackingNo + ' → ' + p.slot + (p.recipient ? ' / ' + p.recipient : '') +
+      log('in', '入库 ' + p.trackingNo + (p.pickupCode ? ' · 取件码 ' + p.pickupCode : '') +
+        ' → ' + p.slot + (p.recipient ? ' / ' + p.recipient : '') +
         (p.photos.length ? ' · 含 ' + p.photos.length + ' 张照片' : ''), p);
       save();
       return { ok: true, parcel: p };
@@ -220,9 +294,21 @@
         p.trackingNo = tn;
       }
       if (patch.slot !== undefined) {
+        var oldSlot = p.slot;
         var slot = str(patch.slot).toUpperCase();
         if (!slotAvailable(slot, id)) return { ok: false, error: '货架位已被占用' };
         p.slot = slot;
+        /* 自动生成的货架位码随货位一起更新；手写码与每日流水码保持不动 */
+        var oldBase = compactSlot(oldSlot);
+        if (db.settings.codeMode === 'slot' && oldBase && p.pickupCode &&
+          (p.pickupCode === oldBase || p.pickupCode.indexOf(oldBase + '-') === 0)) {
+          p.pickupCode = pickupCodeFor(slot, Date.now(), id);
+        }
+      }
+      if (patch.pickupCode !== undefined) {
+        var code = str(patch.pickupCode).toUpperCase();
+        if (code && codeTaken(code, id)) return { ok: false, error: '取件码 ' + code + ' 已被在库件占用' };
+        p.pickupCode = code || (db.settings.codeMode === 'off' ? '' : pickupCodeFor(p.slot, Date.now(), id));
       }
       ['carrier', 'recipient', 'note', 'pickupBy'].forEach(function (k) {
         if (patch[k] !== undefined) p[k] = str(patch[k]);
@@ -244,7 +330,8 @@
       return { ok: true, parcel: p };
     }
 
-    function checkout(ids, pickupBy, photos) {
+    /* 一次取件 = 一个批次。多件即「合并出库」：共用一张凭证、可整批撤销 */
+    function checkout(ids, pickupBy, photos, opts) {
       var list = Array.isArray(ids) ? ids : [ids];
       if (!list.length) return { ok: false, error: '请先选择要出库的包裹' };
       var picked = [];
@@ -258,17 +345,26 @@
       var who = str(pickupBy) || '本人';
       var operator = db.settings.operator;
       var proof = normalizePhotos(photos).map(function (ph) { ph.kind = 'pickup'; return ph; });
+      var batchId = nextBatchId();
+      var merged = opts && opts.merge !== undefined ? !!opts.merge : picked.length > 1;
       picked.forEach(function (p) {
         p.status = 'out';
         p.outAt = at;
         p.pickupBy = who;
         p.operatorOut = operator;
+        p.batchId = batchId;
       });
-      if (proof.length) picked[0].photos = picked[0].photos.concat(proof);
-      log('out', '出库 ' + picked.length + ' 件：' + picked.map(function (p) { return p.trackingNo; }).join('、') +
-        (proof.length ? ' · 含 ' + proof.length + ' 张取件凭证' : ''), picked[0]);
+      /* 同一批凭证挂到每一件（只共享引用，不重复上传文件），任一件都能翻到留证 */
+      if (proof.length) picked.forEach(function (p) {
+        p.photos = p.photos.concat(proof.map(function (ph) {
+          return Object.assign({}, ph, { id: uid('ph') });
+        }));
+      });
+      log('out', (merged ? '合并出库 ' : '出库 ') + picked.length + ' 件 · 批次 ' + batchId +
+        '：' + picked.map(function (p) { return p.trackingNo; }).join('、') +
+        (proof.length ? ' · 共用 ' + proof.length + ' 张取件凭证' : ''), picked[0], batchId);
       save();
-      return { ok: true, count: picked.length, parcels: picked };
+      return { ok: true, count: picked.length, parcels: picked, batchId: batchId, merged: merged };
     }
 
     function attachPhoto(parcelId, photos) {
@@ -302,9 +398,30 @@
       p.outAt = null;
       p.pickupBy = '';
       p.operatorOut = '';
-      log('restore', '撤销出库，恢复在库 ' + p.trackingNo, p);
+      var wasBatch = p.batchId;
+      p.batchId = '';
+      log('restore', '撤销出库，恢复在库 ' + p.trackingNo + (wasBatch ? '（单件，原批次 ' + wasBatch + '）' : ''), p);
       save();
       return { ok: true, parcel: p };
+    }
+
+    /* 合并出库的整批撤销：货位有占用就整批拒绝，避免只撤一半 */
+    function restoreBatch(batchId) {
+      var rows = db.parcels.filter(function (p) { return p.status === 'out' && p.batchId === batchId; });
+      if (!rows.length) return { ok: false, error: '该批次没有可撤销的已出库包裹' };
+      var blocked = rows.filter(function (p) { return !slotAvailable(p.slot, p.id); })
+        .map(function (p) { return p.slot; });
+      if (blocked.length) return { ok: false, error: '货位 ' + blocked.join('、') + ' 已被占用，请先修改这些货位再整批撤销' };
+      rows.forEach(function (p) {
+        p.status = 'in';
+        p.outAt = null;
+        p.pickupBy = '';
+        p.operatorOut = '';
+        p.batchId = '';
+      });
+      log('restore', '整批撤销出库 ' + rows.length + ' 件 · 批次 ' + batchId, rows[0]);
+      save();
+      return { ok: true, count: rows.length, parcels: rows };
     }
 
     function decorate(p, now) {
@@ -327,7 +444,8 @@
         if (filter.overdueMin !== undefined && filter.overdueMin !== '' && p.stayDays < Number(filter.overdueMin)) return false;
         if (filter.overdueLevel && p.overdueLevel !== filter.overdueLevel) return false;
         if (kw) {
-          var hay = [p.trackingNo, p.recipient, p.phoneTail, p.slot, p.carrier, p.note].join(' ').toLowerCase();
+          var hay = [p.trackingNo, p.recipient, p.phoneTail, p.slot, p.carrier, p.note,
+            p.pickupCode, p.batchId].join(' ').toLowerCase();
           if (hay.indexOf(kw) === -1) return false;
         }
         return true;
@@ -355,6 +473,8 @@
         var tail = str(p.phoneTail).toLowerCase();
         var slot = str(p.slot).toLowerCase();
         var s = 0;
+        if (str(p.pickupCode).toLowerCase() === kw) s += 130;
+        if (p.batchId && p.batchId.toLowerCase() === kw) s += 110;
         if (digits.length >= 4 && tail === digits) s += 100;
         if (no === kw) s += 90;
         if (slot && slot === kw) s += 80;
@@ -465,16 +585,16 @@
     function exportCSV(kind) {
       var rows = [];
       if (kind === 'logs') {
-        rows.push(['时间', '类型', '摘要', '关联运单号']);
+        rows.push(['时间', '类型', '摘要', '关联运单号', '出库批次']);
         db.logs.forEach(function (l) {
-          rows.push([fmtTime(l.at), logTypeName(l.type), l.summary, l.trackingNo]);
+          rows.push([fmtTime(l.at), logTypeName(l.type), l.summary, l.trackingNo, l.batchId]);
         });
       } else {
-        rows.push(['运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '照片数', '备注']);
+        rows.push(['取件码', '运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '照片数', '出库批次', '备注']);
         listParcels({ status: kind === 'instock' ? 'in' : undefined, sortBy: 'inAt' }).forEach(function (p) {
-          rows.push([p.trackingNo, p.carrier, p.recipient, p.phoneTail, p.slot, p.count,
+          rows.push([p.pickupCode, p.trackingNo, p.carrier, p.recipient, p.phoneTail, p.slot, p.count,
             p.status === 'in' ? '在库' : '已出库', fmtTime(p.inAt), p.outAt ? fmtTime(p.outAt) : '', p.pickupBy,
-            (p.photos || []).length, p.note]);
+            (p.photos || []).length, p.batchId, p.note]);
         });
       }
       return '\ufeff' + rows.map(function (r) { return r.map(csvCell).join(','); }).join('\r\n');
@@ -521,13 +641,16 @@
           outAt = new Date(Math.min(candidate, now - 60000)).toISOString();
         }
         var zone = zones[i % zones.length];
+        var slot = suggestSlot(zone);
         db.parcels.push({
           id: uid('p'),
+          pickupCode: pickupCodeFor(slot, inAt, ''),
+          batchId: '',
           trackingNo: 'SF' + String(100000000000 + i * 7919),
           carrier: carriers[i % carriers.length],
           recipient: names[i % names.length],
           phoneTail: String(1000 + (i * 1379) % 9000),
-          slot: suggestSlot(zone),
+          slot: slot,
           note: i % 5 === 0 ? '大件' : '',
           count: 1,
           status: isOut ? 'out' : 'in',
@@ -557,11 +680,16 @@
       updateSettings: updateSettings,
       suggestSlot: suggestSlot,
       slotAvailable: slotAvailable,
+      compactSlot: compactSlot,
+      previewPickupCode: previewPickupCode,
+      codeTaken: codeTaken,
       addParcel: addParcel,
       updateParcel: updateParcel,
       removeParcel: removeParcel,
       checkout: checkout,
       restoreParcel: restoreParcel,
+      restoreBatch: restoreBatch,
+      listBatch: listBatch,
       listParcels: listParcels,
       lookup: lookup,
       listLogs: listLogs,

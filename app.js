@@ -22,7 +22,8 @@
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
-  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '', inFiles: [], proofFiles: [] };
+  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '',
+    inFiles: [], proofFiles: [], lastParcel: null };
   var syncTimer = null;
   var inPreviewUrls = [];
   var proofPreviewUrls = [];
@@ -63,8 +64,9 @@
         '<div class="field"><label>件数</label><input class="input" type="number" min="1" id="edCount" value="' + p.count + '"></div></div>' +
         '<div class="field-row"><div class="field"><label>收件人</label><input class="input" id="edRecipient" value="' + esc(p.recipient) + '"></div>' +
         '<div class="field"><label>手机后四位</label><input class="input" id="edPhone" value="' + esc(p.phoneTail) + '"></div></div>' +
-        '<div class="field-row"><div class="field"><label>货架位</label><input class="input" id="edSlot" value="' + esc(p.slot) + '"></div>' +
-        '<div class="field"><label>备注</label><input class="input" id="edNote" value="' + esc(p.note) + '"></div></div>' +
+        '<div class="field-row"><div class="field"><label>取件码</label><input class="input" id="edCode" value="' + esc(p.pickupCode || '') + '"></div>' +
+        '<div class="field"><label>货架位</label><input class="input" id="edSlot" value="' + esc(p.slot) + '"></div></div>' +
+        '<div class="field"><label>备注</label><input class="input" id="edNote" value="' + esc(p.note) + '"></div>' +
         '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
         '<button class="btn btn-primary" data-act="ok">保存修改</button></div></div></div>';
       var root = $('modalRoot');
@@ -75,11 +77,61 @@
           recipient: $('edRecipient').value, phoneTail: $('edPhone').value,
           slot: $('edSlot').value, note: $('edNote').value
         };
+        /* 只有真正改了取件码才传，避免覆盖「换货位时自动重算」 */
+        if ($('edCode').value.trim() !== (p.pickupCode || '')) patch.pickupCode = $('edCode').value;
         closeModal(); resolve(patch);
       };
       root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
     });
   }
+  /* 取件标签：普通打印机即可，不依赖本机打印控件 */
+  function printLabelDialog(p) {
+    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal label-modal">' +
+      '<h3>取件标签</h3><p>用普通打印机打在标签纸或 A4 上，贴到面单；也可以直接抄下取件码。</p>' +
+      '<div class="label-sheet" id="labelSheet">' +
+      '<div class="ls-station">' + esc(store.settings().stationName) + '</div>' +
+      '<div class="ls-caption">取件码 / 货号</div>' +
+      '<div class="ls-code">' + esc(p.pickupCode || '—') + '</div>' +
+      '<div class="ls-slot">货架位 <b>' + esc(p.slot || '—') + '</b></div>' +
+      '<div class="ls-row"><span>收件人 ' + esc(p.recipient || '—') + '</span><span>尾号 ' + esc(p.phoneTail || '—') + '</span></div>' +
+      '<div class="ls-row"><span>' + esc(p.carrier) + '</span><span>' + esc(store.fmtTime(p.inAt)) + '</span></div>' +
+      '<div class="ls-no">' + esc(p.trackingNo) + '</div>' +
+      '</div>' +
+      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button>' +
+      '<button class="btn btn-outline" data-act="copy">复制取件码</button>' +
+      '<button class="btn btn-primary" data-act="print"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' +
+      '</div></div>';
+    var root = $('modalRoot');
+    root.querySelector('[data-act="close"]').onclick = closeModal;
+    root.querySelector('[data-act="copy"]').onclick = function () { copyText(p.pickupCode || ''); };
+    root.querySelector('[data-act="print"]').onclick = function () {
+      document.body.classList.add('printing-label');
+      window.addEventListener('afterprint', function handler() {
+        document.body.classList.remove('printing-label');
+        window.removeEventListener('afterprint', handler);
+      });
+      window.print();
+    };
+    root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) closeModal(); };
+  }
+
+  /* 入库框里的取件码预览：手改过就保留，换货架位只重算自动生成的值 */
+  function refreshCodePreview(force) {
+    var el = $('inPickupCode');
+    var slot = $('inSlot').value.trim() || store.suggestSlot($('inZone').value || store.settings().zones[0]);
+    var auto = store.previewPickupCode(slot);
+    if (force || !el.dataset.manual || el.value === el.dataset.auto) {
+      el.value = auto;
+      el.dataset.auto = auto;
+      el.dataset.manual = '';
+    }
+    var mode = store.settings().codeMode;
+    $('inCodeHint').textContent = mode === 'off'
+      ? '当前规则为「不生成取件码」，旧记录仍可用原码查件'
+      : mode === 'daily' ? '每日流水号：每天从 001 开始，不与当天已有件重复'
+        : '顾客报码即可查件；货架位变化会自动重算';
+  }
+
   function downloadFile(name, text, mime) {
     var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
     var url = URL.createObjectURL(blob);
@@ -346,7 +398,8 @@
   }
   function listItemHTML(p, side) {
     return '<div class="list-item"><div class="li-main"><div class="li-title">' + esc(p.trackingNo) +
-      '</div><div class="li-sub">' + esc(p.carrier) + (p.recipient ? ' · ' + esc(p.recipient) : '') +
+      '</div><div class="li-sub">' + esc(p.carrier) + (p.pickupCode ? ' · 码 ' + esc(p.pickupCode) : '') +
+      (p.recipient ? ' · ' + esc(p.recipient) : '') +
       (p.phoneTail ? ' · 尾号 ' + esc(p.phoneTail) : '') + '</div></div>' +
       '<span class="slot-chip">' + esc(p.slot || '未分配') + '</span>' +
       '<div class="li-side">' + side + '</div></div>';
@@ -384,6 +437,7 @@
     if (!$('inSlot').value.trim() || !store.slotAvailable($('inSlot').value.trim())) {
       $('inSlot').value = store.suggestSlot($('inZone').value || s.zones[0]);
     }
+    refreshCodePreview();
     var recent = store.listParcels({ sortBy: 'inAt' }).slice(0, 7);
     $('inRecent').innerHTML = recent.length ? recent.map(function (p) {
       return listItemHTML(p, store.fmtTime(p.inAt).slice(5));
@@ -398,6 +452,8 @@
     $('inCount').value = '1';
     if (!keepMeta) { $('inCarrier').selectedIndex = 0; $('inZone').selectedIndex = 0; }
     $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
+    $('inPickupCode').dataset.manual = '';
+    refreshCodePreview(true);
     $('inTracking').focus();
   }
 
@@ -413,6 +469,10 @@
       '<div class="lc-top"><span class="tag ' + tagCls + '">' + tagText + '</span>' +
       '<span class="lc-carrier">' + esc(p.carrier) + '</span>' +
       '<button type="button" class="lc-copy" data-copy="' + esc(p.trackingNo) + '" title="复制运单号"><svg class="ic"><use href="#i-copy"/></svg></button></div>' +
+      '<div class="lc-code"><svg class="ic"><use href="#i-ticket"/></svg><span>取件码</span>' +
+      '<strong>' + esc(p.pickupCode || '—') + '</strong>' +
+      (p.pickupCode ? '<button type="button" class="lc-code-copy" data-copy-code="' + esc(p.pickupCode) + '" title="复制取件码"><svg class="ic"><use href="#i-copy"/></svg></button>' : '') +
+      '</div>' +
       '<div class="lc-no">' + esc(p.trackingNo) + '</div>' +
       '<div class="lc-slot"><div><span>货架位</span><strong>' + esc(p.slot || '未分配') + '</strong></div>' +
       '<span class="lc-stay">' + (inStock ? '已存放 ' + p.stayDays + ' 天' : '原货位') + '</span></div>' +
@@ -422,6 +482,7 @@
       '<div><span>件数</span><b>' + p.count + '</b></div>' +
       '<div><span>' + (inStock ? '入库时间' : '出库时间') + '</span><b>' + esc(store.fmtTime(inStock ? p.inAt : (p.outAt || p.inAt))) + '</b></div>' +
       (inStock ? '' : '<div class="lc-wide"><span>取件人</span><b>' + esc(p.pickupBy || '本人') + '</b></div>') +
+      (p.batchId ? '<div class="lc-wide"><span>出库批次</span><b><button type="button" class="link" data-batch="' + esc(p.batchId) + '">' + esc(p.batchId) + ' · 查同批</button></b></div>' : '') +
       '</div>' +
       (p.note ? '<div class="lc-note">备注：' + esc(p.note) + '</div>' : '') +
       '<div class="lc-foot"><span class="muted">' + (inStock ? '登记 ' + esc(p.operatorIn || '—') : '办理 ' + esc(p.operatorOut || '—')) + '</span>' +
@@ -444,7 +505,7 @@
       var chips = recent.filter(function (p) { return p.phoneTail; }).map(function (p) {
         return '<button type="button" class="chip" data-quick="' + esc(p.phoneTail) + '">尾号 ' + esc(p.phoneTail) + '</button>';
       }).join('');
-      box.innerHTML = '<div class="card lookup-empty">' + emptyHTML('输入手机号后四位、运单号或收件人开始查件；扫码枪扫面单会直接出结果。') +
+      box.innerHTML = '<div class="card lookup-empty">' + emptyHTML('输入取件码、手机号后四位、运单号或收件人开始查件；扫码枪扫面单会直接出结果。') +
         (chips ? '<div class="lookup-quick"><span class="muted">最近入库的尾号</span><div class="chip-row">' + chips + '</div></div>' : '') + '</div>';
       return;
     }
@@ -461,8 +522,8 @@
     if (!p || p.status !== 'in') { toast('该包裹已出库，请刷新查件结果', 'err'); renderLookup(); return; }
     state.selected = {};
     state.selected[id] = true;
-    $('outSearch').value = p.trackingNo;
-    state.outKeyword = p.trackingNo;
+    $('outSearch').value = p.pickupCode || p.trackingNo;
+    state.outKeyword = p.pickupCode || p.trackingNo;
     switchView('outbound');
     renderAll();
     toast('已勾选 ' + p.trackingNo + '，拍照后确认出库');
@@ -494,15 +555,21 @@
         return '<div class="pick-card' + (sel ? ' selected' : '') + '" data-id="' + esc(p.id) + '">' +
           '<div class="pc-top"><div class="pc-no">' + esc(p.trackingNo) + '</div>' +
           '<div class="pc-check"><svg class="ic"><use href="#i-check"/></svg></div></div>' +
-          '<div class="pc-meta"><span class="slot-chip">' + esc(p.slot || '未分配') + '</span>' +
+          '<div class="pc-meta"><span class="code-chip"><svg class="ic"><use href="#i-ticket"/></svg>' + esc(p.pickupCode || '无码') + '</span>' +
+          '<span class="slot-chip">' + esc(p.slot || '未分配') + '</span>' +
           '<span>' + esc(p.carrier) + '</span>' +
           (p.recipient ? '<span>' + esc(p.recipient) + '</span>' : '') +
           (p.phoneTail ? '<span>尾号 ' + esc(p.phoneTail) + '</span>' : '') + '</div>' +
           '<div class="pc-foot"><span>' + esc(store.fmtTime(p.inAt)) + '</span>' +
           '<span class="tag ' + tagCls + '">在库 ' + p.stayDays + ' 天</span></div></div>';
       }).join('') : '<div class="card" style="grid-column:1/-1">' + emptyHTML('换个关键词试试，或确认包裹是否已出库') + '</div>');
-    $('pickCount').textContent = Object.keys(state.selected).length;
-    $('btnCheckout').disabled = Object.keys(state.selected).length === 0;
+    var n = Object.keys(state.selected).length;
+    $('pickCount').textContent = n;
+    $('mergeHint').hidden = n < 2;
+    $('btnCheckout').disabled = n === 0;
+    $('btnCheckout').innerHTML = n > 1
+      ? '<svg class="ic"><use href="#i-merge"/></svg>合并出库 ' + n + ' 件'
+      : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
   }
 
   /* ---------- 渲染：在库台账 ---------- */
@@ -525,6 +592,8 @@
         : '<span class="tag ' + (p.overdueLevel === 'danger' ? 'tag-danger' : p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal') + '">' +
           (p.overdueLevel === 'normal' ? '正常' : '滞留') + '</span>';
       return '<tr>' +
+        '<td data-label="取件码"><span class="code-chip">' + esc(p.pickupCode || '—') + '</span>' +
+          (p.batchId ? '<div class="td-sub">' + esc(p.batchId) + '</div>' : '') + '</td>' +
         '<td data-label="运单号" class="td-no">' + esc(p.trackingNo) +
           '<div class="td-sub">×' + p.count + (p.note ? ' · ' + esc(p.note) : '') + '</div>' +
           ((p.photos && p.photos.length) ? '<button class="photo-badge" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>' + p.photos.length + ' 张照片</button>' : '') +
@@ -539,7 +608,7 @@
         '<button class="icon-btn" data-edit="' + esc(p.id) + '" title="修改"><svg class="ic"><use href="#i-edit"/></svg></button>' +
         '<button class="icon-btn danger" data-del="' + esc(p.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
         '</div></td></tr>';
-    }).join('') : '<tr><td colspan="8">' + emptyHTML('没有符合条件的记录') + '</td></tr>';
+    }).join('') : '<tr><td colspan="9">' + emptyHTML('没有符合条件的记录') + '</td></tr>';
   }
 
   /* ---------- 渲染：统计 ---------- */
@@ -569,15 +638,20 @@
   function renderLogs() {
     var rows = store.listLogs({ type: $('logType').value, keyword: $('logKeyword').value });
     $('logCount').textContent = '共 ' + rows.length + ' 条流水（最多保留 3000 条）';
+    var db = store.getDB();
     $('logList').innerHTML = rows.length ? rows.slice(0, 300).map(function (l) {
-      var canRestore = l.type === 'out' && l.parcelId && (function () {
-        var p = store.getDB().parcels.find(function (x) { return x.id === l.parcelId; });
-        return p && p.status === 'out';
-      })();
+      var p = l.parcelId ? db.parcels.find(function (x) { return x.id === l.parcelId; }) : null;
+      var canRestore = l.type === 'out' && p && p.status === 'out';
+      var batchCount = l.batchId ? db.parcels.filter(function (x) {
+        return x.status === 'out' && x.batchId === l.batchId;
+      }).length : 0;
+      var btn = (l.batchId && batchCount > 0)
+        ? '<button class="btn btn-outline btn-sm" data-restore-batch="' + esc(l.batchId) + '"><svg class="ic"><use href="#i-merge"/></svg>' +
+          (batchCount > 1 ? '整批撤销 ' + batchCount + ' 件' : '撤销剩余 1 件') + '</button>'
+        : (canRestore ? '<button class="btn btn-ghost btn-sm" data-restore="' + esc(l.parcelId) + '">撤销出库</button>' : '');
       return '<div class="log-item"><div class="log-time">' + esc(store.fmtTime(l.at)) + '</div>' +
         '<span class="log-badge t-' + esc(l.type) + '">' + esc(store.logTypeName(l.type)) + '</span>' +
-        '<div class="log-text">' + esc(l.summary) + '</div>' +
-        (canRestore ? '<button class="btn btn-ghost btn-sm" data-restore="' + esc(l.parcelId) + '">撤销出库</button>' : '') + '</div>';
+        '<div class="log-text">' + esc(l.summary) + '</div>' + btn + '</div>';
     }).join('') : emptyHTML('暂无操作流水');
   }
 
@@ -592,6 +666,7 @@
     $('setZones').value = s.zones.join(', ');
     $('setShelves').value = s.shelvesPerZone;
     $('setLevels').value = s.levelsPerShelf;
+    $('setCodeMode').value = s.codeMode;
     var c = sync.config();
     $('syncToken').value = c.token;
     $('syncRepo').value = c.repo;
@@ -663,6 +738,17 @@
       if (pv) { openPhotoViewer(pv.dataset.photos); return; }
       var go = e.target.closest('[data-lookup-out]');
       if (go) { goCheckout(go.dataset.lookupOut); return; }
+      var cc = e.target.closest('[data-copy-code]');
+      if (cc) { copyText(cc.dataset.copyCode); return; }
+      var bt = e.target.closest('[data-batch]');
+      if (bt) {
+        $('lookupKey').value = bt.dataset.batch;
+        state.lookupKey = bt.dataset.batch;
+        $('lookupScope').value = '';
+        renderLookup();
+        $('lookupKey').focus();
+        return;
+      }
       var cp = e.target.closest('[data-copy]');
       if (cp) { copyText(cp.dataset.copy); return; }
     });
@@ -686,13 +772,18 @@
         slot: $('inSlot').value,
         count: $('inCount').value,
         note: $('inNote').value,
+        pickupCode: $('inPickupCode').value,
         photos: pr.items
       });
       btn.disabled = false;
       if (!res.ok) { toast(res.error, 'err'); $('inTracking').select(); return; }
+      state.lastParcel = res.parcel;
       $('lastIn').hidden = false;
-      $('lastIn').innerHTML = '已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>' +
-        (pr.items.length ? '，照片 ' + pr.items.length + ' 张' : '') + '，继续扫下一件';
+      $('lastIn').innerHTML = '<div class="li-ok">已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>' +
+        (pr.items.length ? '，照片 ' + pr.items.length + ' 张' : '') + '，继续扫下一件</div>' +
+        (res.parcel.pickupCode ? '<div class="code-hero"><span>取件码</span><strong>' + esc(res.parcel.pickupCode) + '</strong>' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-copy-code="' + esc(res.parcel.pickupCode) + '"><svg class="ic"><use href="#i-copy"/></svg>复制</button>' +
+          '<button type="button" class="btn btn-outline btn-sm" data-print-label="1"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' : '');
       clearInForm(true);
       clearFiles('in');
       afterWrite('入库成功 · ' + res.parcel.slot);
@@ -709,12 +800,22 @@
       renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
       renderPhotoStatus();
     });
+    $('lastIn').addEventListener('click', function (e) {
+      var cp = e.target.closest('[data-copy-code]');
+      if (cp) { copyText(cp.dataset.copyCode); return; }
+      if (e.target.closest('[data-print-label]') && state.lastParcel) printLabelDialog(state.lastParcel);
+    });
+    $('inPickupCode').addEventListener('input', function () { this.dataset.manual = '1'; });
+    $('inSlot').addEventListener('input', function () { refreshCodePreview(); });
+    $('btnRecode').onclick = function () { refreshCodePreview(true); toast('取件码已按当前货架位重算'); };
     $('btnReslot').onclick = function () {
       $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
+      refreshCodePreview();
       $('inTracking').focus();
     };
     $('inZone').onchange = function () {
       $('inSlot').value = store.suggestSlot(this.value);
+      refreshCodePreview();
     };
 
     /* 出库 */
@@ -798,6 +899,13 @@
       store.clearLogs(); renderLogs(); toast('流水已清空');
     };
     $('logList').addEventListener('click', function (e) {
+      var bb = e.target.closest('[data-restore-batch]');
+      if (bb) {
+        var rb = store.restoreBatch(bb.dataset.restoreBatch);
+        if (!rb.ok) toast(rb.error, 'err');
+        else afterWrite('整批撤销 ' + rb.count + ' 件，已恢复在库');
+        return;
+      }
       var b = e.target.closest('[data-restore]');
       if (!b) return;
       var r = store.restoreParcel(b.dataset.restore);
@@ -834,7 +942,8 @@
       store.updateSettings({
         stationName: $('setName').value.trim(), operator: $('setOperator').value.trim(),
         warnDays: warn, dangerDays: danger, carriers: carriers, zones: zones,
-        shelvesPerZone: Number($('setShelves').value), levelsPerShelf: Number($('setLevels').value)
+        shelvesPerZone: Number($('setShelves').value), levelsPerShelf: Number($('setLevels').value),
+        codeMode: $('setCodeMode').value
       });
       afterWrite('设置已保存');
     });
@@ -951,7 +1060,8 @@
     $('pickupBy').value = '';
     $('outSearch').value = ''; state.outKeyword = '';
     clearFiles('proof');
-    afterWrite('已出库 ' + r.count + ' 件' + (pr.items.length ? ' · 凭证 ' + pr.items.length + ' 张' : ''));
+    afterWrite((r.merged ? '合并出库 ' : '已出库 ') + r.count + ' 件 · 批次 ' + r.batchId +
+      (pr.items.length ? ' · 共用凭证 ' + pr.items.length + ' 张' : ''));
     reportPhotoResult(pr);
     $('outSearch').focus();
   }

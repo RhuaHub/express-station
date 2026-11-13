@@ -374,6 +374,50 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 .cam-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 9px; padding: 12px 14px 16px; }
 .cam-actions .btn-primary { min-width: 120px; }
 
+/* ---------- 取件码 / 取件标签 / 合并出库 ---------- */
+.field-hint { display: block; margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+.code-input { font-weight: 700; letter-spacing: 1.2px; color: var(--gold-deep); }
+.last-ok .li-ok { margin-bottom: 9px; }
+.code-hero { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 9px 11px; background: #fff; border: 1px dashed var(--gold-line); border-radius: 9px; }
+.code-hero > span { font-size: 11.5px; color: var(--sub); }
+.code-hero strong { font-size: 25px; line-height: 1.1; letter-spacing: 2px; color: var(--gold-deep); word-break: break-all; }
+.code-hero .btn:first-of-type { margin-left: auto; }
+.code-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 7px; background: #FFF8E4; border: 1px solid var(--gold-line); color: var(--gold-deep); font-size: 11.5px; font-weight: 700; letter-spacing: .6px; }
+.code-chip .ic { width: 12px; height: 12px; }
+.lc-code { display: flex; align-items: center; gap: 8px; margin: 9px 0 2px; padding: 7px 11px; border-radius: 9px; background: var(--gold-soft); border: 1px solid var(--gold-line); }
+.lc-code .ic { width: 15px; height: 15px; color: var(--gold-deep); }
+.lc-code > span { font-size: 11px; color: var(--sub); flex: none; }
+.lc-code strong { font-size: 19px; letter-spacing: 1.4px; color: var(--gold-deep); word-break: break-all; }
+.is-out .lc-code { background: var(--line-soft); border-color: var(--line); }
+.is-out .lc-code strong, .is-out .lc-code .ic { color: var(--sub); }
+.lc-code-copy { margin-left: auto; border: 0; background: none; color: var(--muted); padding: 3px; display: grid; place-items: center; }
+.lc-code-copy:hover { color: var(--gold); }
+.lc-code-copy .ic { width: 15px; height: 15px; }
+.merge-hint { display: inline-flex; align-items: center; gap: 4px; color: var(--gold-deep) !important; font-size: 11.5px !important; font-weight: 600; }
+.merge-hint[hidden] { display: none; }
+.merge-hint .ic { width: 14px; height: 14px; }
+.checkout-info { flex-wrap: wrap; align-items: center; }
+.label-sheet { width: min(320px, 100%); margin: 0 auto 6px; padding: 16px 18px; border: 1px dashed var(--gold); border-radius: 12px; background: #fff; text-align: center; }
+.ls-station { font-size: 14px; font-weight: 700; }
+.ls-caption { font-size: 11px; color: var(--muted); margin-top: 9px; letter-spacing: 2px; }
+.ls-code { font-size: 42px; line-height: 1.15; font-weight: 800; letter-spacing: 3px; word-break: break-all; }
+.ls-slot { font-size: 13px; margin: 5px 0 10px; }
+.ls-slot b { font-size: 17px; color: var(--gold-deep); }
+.ls-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--sub); padding: 2px 0; }
+.ls-no { margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 11px; color: var(--muted); word-break: break-all; }
+@media print {
+  @page { margin: 10mm; }
+  body.printing-label { background: #fff; }
+  body.printing-label .app, body.printing-label .toast, body.printing-label #cameraRoot,
+  body.printing-label #importFile { display: none !important; }
+  body.printing-label #modalRoot { display: block !important; }
+  body.printing-label .modal-mask { position: static; inset: auto; display: block; padding: 0; background: #fff; }
+  body.printing-label .modal.label-modal { width: 100%; max-width: none; box-shadow: none; border-radius: 0; padding: 0; animation: none; }
+  body.printing-label .label-modal > h3, body.printing-label .label-modal > p,
+  body.printing-label .modal-actions { display: none !important; }
+  body.printing-label .label-sheet { width: 80mm; border: 1px dashed #333; }
+}
+
 /* ---------- responsive ---------- */
 @media (max-width: 1100px) {
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
@@ -422,6 +466,9 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   .search-wrap { flex-wrap: wrap; }
   .search-wrap .input-xl { flex: 1 1 100%; }
   .lookup-summary { gap: 4px 12px; }
+  .code-hero strong { font-size: 22px; }
+  .code-hero .btn:first-of-type { margin-left: 0; }
+  .merge-hint { flex-basis: 100%; }
   .cam-stage { aspect-ratio: 4 / 3; }
   .cam-actions .btn { flex: 1 1 auto; }
 }
@@ -431,4 +478,6 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
   .btn { padding: 8px 11px; }
   .checkout-bar .btn { flex: 1 1 auto; }
   .lc-slot strong { font-size: 20px; }
+  .lc-code strong { font-size: 17px; }
+  .ls-code { font-size: 36px; }
 }
