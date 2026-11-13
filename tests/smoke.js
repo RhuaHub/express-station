@@ -533,4 +533,50 @@ check('待提交文件里没有硬编码的云盘凭据', () => {
   });
 });
 
+check('PWA：manifest 合法且图标文件齐备', () => {
+  const mf = JSON.parse(fs.readFileSync(path.join(root, 'manifest.webmanifest'), 'utf8'));
+  assert.strictEqual(mf.start_url, './index.html');
+  assert.strictEqual(mf.scope, './');
+  assert.strictEqual(mf.display, 'standalone');
+  assert.ok(/^#[0-9A-Fa-f]{6}$/.test(mf.theme_color), 'theme_color 应为 #RRGGBB');
+  assert.ok(mf.name && mf.short_name, '缺少 name / short_name');
+  const sizes = mf.icons.map(i => i.sizes);
+  assert.ok(sizes.includes('192x192') && sizes.includes('512x512'), '缺少 192/512 图标');
+  assert.ok(mf.icons.some(i => i.purpose === 'maskable'), '缺少 maskable 图标');
+  mf.icons.forEach(function (ic) {
+    const p = path.join(root, ic.src);
+    assert.ok(fs.existsSync(p), '图标文件不存在：' + ic.src);
+    const buf = fs.readFileSync(p);
+    assert.ok(buf.slice(1, 4).toString() === 'PNG', '图标不是 PNG：' + ic.src);
+    const w = buf.readUInt32BE(16), h = buf.readUInt32BE(20);
+    assert.strictEqual(w + 'x' + h, ic.sizes, '图标实际尺寸与声明不符：' + ic.src);
+  });
+});
+
+check('PWA：Service Worker 只接管同源 GET，且缓存清单与真实文件一致', () => {
+  const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  assert.ok(/req\.method !== 'GET'/.test(sw), '未排除非 GET 请求');
+  assert.ok(/url\.origin !== self\.location\.origin/.test(sw), '未排除跨域请求，会破坏云盘上传');
+  assert.ok(/caches\.open\(VERSION\)/.test(sw) && /caches\.delete/.test(sw), '缺少版本化缓存与旧缓存清理');
+  const listed = (sw.match(/'\.\/[^']+'/g) || []).map(s => s.replace(/'|\.\//g, '')).filter(Boolean);
+  assert.ok(listed.length >= 10, '缓存清单过短：' + listed.length);
+  listed.forEach(function (f) {
+    if (f === '' || f === '') return;
+    assert.ok(fs.existsSync(path.join(root, f)), 'SW 缓存了不存在的文件：' + f);
+  });
+});
+
+check('深链：视图 hash 可直达且不越权', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/function hashView/.test(app), '缺少 hash 解析');
+  assert.ok(/history\.replaceState/.test(app), '未同步 hash 到地址栏');
+  assert.ok(/addEventListener\('hashchange'/.test(app), '未监听 hashchange');
+  assert.ok(/if \(!auth\.current\(\)\) return;[\s\S]{0,120}hashchange/.test(app) || /hashchange[\s\S]{0,120}auth\.current\(\)/.test(app),
+    'hashchange 未做登录判断');
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.ok(/rel="manifest" href="manifest\.webmanifest"/.test(html), '页面未引用 manifest');
+  assert.ok(/serviceWorker\.register\('sw\.js'\)/.test(html), '未注册 Service Worker');
+  assert.ok(/\^https\?:\$\/\.test\(location\.protocol\)/.test(html), 'file:// 下应跳过 SW 注册');
+});
+
 console.log('\n全部通过：' + passed + ' 项');

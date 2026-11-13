@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#B8860B">
 <title>快递驿站 · 入库出库管理</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="description" content="本地优先的快递驿站入库、出库、查件与台账系统，支持取件码、合并出库与拍照留证。">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="快递驿站">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body class="auth-locked">
@@ -609,5 +617,15 @@
 <script src="camera.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
+<script>
+/* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+  if (!/^https?:$/.test(location.protocol)) return;
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function () { /* 离线缓存失败不影响业务 */ });
+  });
+})();
+</script>
 </body>
 </html>

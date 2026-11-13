@@ -378,8 +378,10 @@
     applyPermissions();
     fillSettings();
     renderAll();
-    switchView('dash');
-    toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
+    var target = hashView();
+    switchView(target || 'dash', target ? { noHash: true } : undefined);
+    if (target) toast('已打开「' + viewTitles[target][0] + '」');
+    else toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
   }
   function leaveApp() {
     var c = auth.current();
@@ -388,6 +390,7 @@
     store.setActor('');
     state.selected = {}; state.outKeyword = ''; state.lookupKey = '';
     ['outSearch', 'lookupKey', 'quickLookup'].forEach(function (id) { $(id).value = ''; });
+    syncHash('dash');
     showGate('login');
   }
   function bindAuth() {
@@ -585,9 +588,11 @@
   }
 
   /* ---------- 视图切换 ---------- */
-  function switchView(name) {
+  function switchView(name, opts) {
     if (!viewTitles[name]) name = 'dash';
     state.view = name;
+    /* 地址栏 hash 跟随视图，便于桌面快捷方式、分享链接直达具体页面 */
+    if (!(opts && opts.noHash)) syncHash(name);
     document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.view === name); });
     document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + name); });
     $('pageTitle').textContent = viewTitles[name][0];
@@ -600,6 +605,15 @@
   }
 
   /* ---------- 渲染：公共 ---------- */
+  function syncHash(name) {
+    var h = '#' + name;
+    if (location.hash === h) return;
+    try { history.replaceState(null, '', h); } catch (e) { /* file:// 下可能不支持，忽略 */ }
+  }
+  function hashView() {
+    var raw = String(location.hash || '').replace(/^#\/?/, '').trim();
+    return viewTitles[raw] ? raw : '';
+  }
   function renderHeader() {
     var s = store.settings();
     $('brandName').textContent = s.stationName;
@@ -989,6 +1003,12 @@
       if (g) switchView(g.dataset.goto);
     });
     $('btnQuickIn').onclick = function () { switchView('inbound'); };
+    /* 浏览器前进/后退或外部改 hash 时同步视图（未登录时忽略，登录后再按 hash 落位） */
+    window.addEventListener('hashchange', function () {
+      if (!auth.current()) return;
+      var v = hashView();
+      if (v && v !== state.view) switchView(v, { noHash: true });
+    });
 
     /* 查件（工作台快捷入口 + 独立查件页） */
     function quickLookup() {
