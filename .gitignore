@@ -23,3 +23,11 @@ node_modules/
 dist/
 build/
 npm-debug.log*
+
+# 安卓：保留已打包好的 APK，忽略中间产物与本地签名密钥
+!android/dist/
+!android/dist/**
+android/dist/*.idsig
+android/build/
+android/debug.keystore
+*.keystore

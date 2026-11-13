@@ -135,6 +135,13 @@
   }
 
   function downloadFile(name, text, mime) {
+    /* 安卓 App 内运行时：WebView 不支持 blob 下载，交给原生写入「下载/快递驿站」 */
+    if (window.StationNative && typeof window.StationNative.saveText === 'function') {
+      try {
+        window.StationNative.saveText(name, text, mime || 'text/plain;charset=utf-8');
+        return;
+      } catch (e) { /* 桥接异常时回落到浏览器下载 */ }
+    }
     var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');

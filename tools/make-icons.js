@@ -126,3 +126,13 @@ fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, spec[0]), buf);
   console.log('生成 ' + spec[0] + ' (' + buf.length + ' bytes)');
 });
+
+/* 安卓启动图标：系统会自己裁形状，因此用带安全边距的 maskable 版本 */
+var resDir = path.join(__dirname, '..', 'android', 'app', 'src', 'main', 'res');
+[['mdpi', 48], ['hdpi', 72], ['xhdpi', 96], ['xxhdpi', 144], ['xxxhdpi', 192]].forEach(function (spec) {
+  var dir = path.join(resDir, 'mipmap-' + spec[0]);
+  fs.mkdirSync(dir, { recursive: true });
+  var buf = makeIcon(spec[1], true);
+  fs.writeFileSync(path.join(dir, 'ic_launcher.png'), buf);
+  console.log('生成 mipmap-' + spec[0] + '/ic_launcher.png (' + spec[1] + 'px)');
+});

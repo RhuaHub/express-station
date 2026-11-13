@@ -579,4 +579,41 @@ check('深链：视图 hash 可直达且不越权', () => {
   assert.ok(/\^https\?:\$\/\.test\(location\.protocol\)/.test(html), 'file:// 下应跳过 SW 注册');
 });
 
+check('安卓壳：WebView 关键实现齐全（https 资源域、JS 对话框、文件选择）', () => {
+  const java = fs.readFileSync(path.join(root, 'android/app/src/main/java/com/rhua/expressstation/MainActivity.java'), 'utf8');
+  assert.ok(/appassets\.androidplatform\.net/.test(java), '未使用 https 资源域，摄像头与本地存储会被限制');
+  assert.ok(/shouldInterceptRequest/.test(java), '缺少 assets 拦截');
+  assert.ok(/onPermissionRequest[\s\S]{0,600}RESOURCE_VIDEO_CAPTURE/.test(java), '未处理摄像头权限');
+  assert.ok(/onJsConfirm/.test(java) && /onJsAlert/.test(java), '未接管 JS 对话框，confirm 会静默失败');
+  assert.ok(/getAcceptTypes/.test(java), '文件选择未按 accept 传类型，JSON 备份无法导入');
+  assert.ok(/setDomStorageEnabled\(true\)/.test(java), '未开启 localStorage');
+  const manifest = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+  assert.ok(/android:exported="true"/.test(manifest), '缺少 exported 声明，Android 12+ 无法安装启动');
+  assert.ok(/android\.permission\.CAMERA/.test(manifest), '缺少相机权限');
+  assert.ok(/android:configChanges="[^"]*orientation/.test(manifest), '旋转会重建 Activity，可能丢表单');
+});
+
+check('安卓壳：APK 已构建且资源路径正确', () => {
+  const apkPath = path.join(root, 'android/dist/express-station-1.0.0.apk');
+  assert.ok(fs.existsSync(apkPath), 'APK 不存在，先运行 android/build-apk.sh');
+  const buf = fs.readFileSync(apkPath);
+  assert.ok(buf.length > 50000, 'APK 体积异常：' + buf.length);
+  const text = buf.toString('latin1');
+  ['AndroidManifest.xml', 'classes.dex', 'resources.arsc', 'META-INF/', 'assets/index.html',
+    'assets/app.js', 'assets/store.js', 'assets/auth.js', 'assets/photos.js', 'assets/camera.js',
+    'assets/styles.css', 'assets/icons/icon-192.png'].forEach(function (needle) {
+    assert.ok(text.indexOf(needle) >= 0, 'APK 内缺少 ' + needle);
+  });
+  assert.ok(text.indexOf('assets\\icons') < 0, 'assets 出现反斜杠路径，AssetManager 将读不到图标');
+  const script = fs.readFileSync(path.join(root, 'android/build-apk.sh'), 'utf8');
+  const listed = (script.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
+  assert.ok(listed, '打包脚本缺少网页资源同步列表');
+  listed.trim().split(/\s+/).forEach(function (f) {
+    assert.ok(fs.existsSync(path.join(root, f)), '打包脚本同步了不存在的文件：' + f);
+  });
+  ['index.html', 'styles.css', 'app.js', 'store.js', 'auth.js', 'photos.js', 'camera.js', 'sync.js'].forEach(function (f) {
+    assert.ok(listed.indexOf(f) >= 0, '打包脚本漏掉网页文件：' + f);
+  });
+});
+
 console.log('\n全部通过：' + passed + ' 项');
