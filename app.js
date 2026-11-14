@@ -279,7 +279,8 @@
         ? ' ③ 把仓库里的 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker（只补 CORS 头，不需要服务器），' +
           '把 <b>Worker 根地址</b>填到「CORS 代理地址」，下面的上游地址保持默认即可。' +
           (p.key === 'pan123'
-            ? '123 云盘免费 2TB、单文件 100GB，照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。'
+            ? '照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。注意：123 云盘自 2026-11-04 起新账号/新会员已不含 WebDAV，' +
+              '后台看不到「WebDAV 授权管理」就说明这个账号没有该权益，别在这儿耗时间，改用坚果云或本机文件夹。'
             : '坚果云免费版每月上传 1GB，照片多就把「图片最长边」调到 1200。')
         : '');
     var ep = photos.endpoint({
@@ -297,7 +298,7 @@
     var c = photos.config();
     $('phMode').value = c.mode;
     $('phDir').value = c.dirName;
-    $('phProvider').value = c.webdav.provider || 'nutstore';
+    $('phProvider').value = c.webdav.provider || 'pan123';
     $('phBase').value = c.webdav.baseUrl;
     $('phProxyBase').value = c.webdav.proxyBase;
     $('phUser').value = c.webdav.user;
@@ -1277,6 +1278,27 @@
       var r = await photos.pickDirectory();
       renderPhotoStatus();
       toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
+    };
+    /* 123 云盘砍掉 WebDAV 后的三条退路，点一下就把表单切过去 */
+    $('btnUseNutstore').onclick = function () {
+      $('phMode').value = 'webdav';
+      $('phProvider').value = 'nutstore';
+      togglePhotoBoxes();
+      refreshProviderUI(true);
+      $('phProviderRoute').scrollIntoView({ block: 'center', behavior: 'smooth' });
+      toast('已切到坚果云：填注册邮箱 + 应用密码，再填 Worker 地址后点「测试连接」');
+    };
+    $('btnUseLocal').onclick = function () {
+      $('phMode').value = 'local';
+      togglePhotoBoxes();
+      renderPhotoStatus();
+      toast('已切到本机文件夹：点「选择本机文件夹」，选 123 云盘客户端挂载的盘符目录（选择器里看不到就改用坚果云）');
+    };
+    $('btnUseBrowser').onclick = function () {
+      $('phMode').value = 'browser';
+      togglePhotoBoxes();
+      renderPhotoStatus();
+      toast('已切到浏览器暂存：照片只在当前设备，换设备不跟随');
     };
     $('btnPhSave').onclick = function () {
       savePhotoForm();

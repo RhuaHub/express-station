@@ -490,8 +490,8 @@
               <div class="field">
                 <label for="phProvider">云盘服务</label>
                 <select id="phProvider" class="input">
-                  <option value="pan123">123 云盘（免费 2TB，推荐）</option>
-                  <option value="nutstore">坚果云</option>
+                  <option value="pan123">123 云盘（需账号仍保留 WebDAV 权益）</option>
+                  <option value="nutstore">坚果云（免费版就有 WebDAV）</option>
                   <option value="custom">自定义 / AList</option>
                 </select>
               </div>
@@ -511,9 +511,20 @@
             <p id="phProviderHint"></p>
             <p class="muted" id="phProviderRoute"></p>
           </div>
+          <div class="ph-box">
+            <b>看不到「WebDAV 授权管理」？</b>
+            <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
+              123 云盘自 <b>2026-11-04</b> 起调整权益：<b>新注册账号、新开通的会员不再包含 WebDAV</b>（同步 / 备份 / 云桌面 / 离线下载 同样被移除），老会员只要资格连续有效才保留。所以后台可能只剩「会员中心 → 工具中心」，没有「第三方挂载 → WebDAV 授权管理」这一项。这不是配置问题，换三条路都行：
+            </p>
+            <div class="fallback-row">
+              <button class="btn btn-outline btn-sm" id="btnUseNutstore" type="button">改用坚果云 WebDAV（免费 1G/月）</button>
+              <button class="btn btn-outline btn-sm" id="btnUseLocal" type="button">改用本机文件夹（123 云盘客户端挂载盘 / 同步目录）</button>
+              <button class="btn btn-outline btn-sm" id="btnUseBrowser" type="button">只存浏览器（不配置）</button>
+            </div>
+          </div>
           <div id="phLocalBox" class="ph-box" hidden>
-            <button class="btn btn-outline btn-sm" id="btnPhPick">选择阿里云盘同步文件夹</button>
-            <span class="muted">仅桌面版 Chrome / Edge 支持，需 https 页面</span>
+            <button class="btn btn-outline btn-sm" id="btnPhPick">选择本机文件夹</button>
+            <span class="muted">适合 123 云盘客户端挂载出来的磁盘 / 同步目录。仅桌面版 Chrome / Edge 且需 https 页面；若选择器里看不到挂载盘（浏览器不列网络驱动器），请改用坚果云 WebDAV。安卓 App 不支持文件夹授权，只能用浏览器暂存。</span>
           </div>
           <div class="field-row">
             <div class="field"><label for="phMax">图片最长边（px）</label><input id="phMax" class="input" type="number" min="600" max="4000"></div>

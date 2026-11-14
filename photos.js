@@ -13,19 +13,22 @@
   /* 云盘服务预设：upstream 是官方 WebDAV 根地址，proxyPath 是 Worker 里的路由前缀。
      两者都缺 CORS 头，必须经自建 Worker 中转；AList 自带 CORS，可直连。 */
   var PROVIDERS = {
-    nutstore: {
-      name: '坚果云',
-      upstream: 'https://dav.jianguoyun.com/dav',
-      proxyPath: '/nutstore',
-      account: '注册邮箱',
-      hint: '坚果云网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加「应用密码」。账号填注册邮箱，密码填应用密码。'
-    },
     pan123: {
       name: '123 云盘',
       upstream: 'https://webdav.123pan.cn/webdav',
       proxyPath: '/pan123',
       account: '手机号 / 邮箱',
-      hint: '123 云盘网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制应用密码。账号填 123 云盘登录手机号或邮箱，密码填应用密码；服务器地址以后台显示的那串为准。'
+      hint: '123 云盘网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制应用密码。' +
+        '若这里没有 WebDAV 授权管理：123 云盘自 2026-11-04 起，新注册账号与新开通会员已不含 WebDAV 权益，' +
+        '这种账号走不通 WebDAV 路线，改用坚果云或「本机文件夹」模式。'
+    },
+    nutstore: {
+      name: '坚果云',
+      upstream: 'https://dav.jianguoyun.com/dav',
+      proxyPath: '/nutstore',
+      account: '注册邮箱',
+      hint: '坚果云网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加「应用密码」。账号填注册邮箱，密码填应用密码。' +
+        '坚果云对所有用户（含免费版）开放 WebDAV，免费版每月上传 1GB / 下载 3GB。'
     },
     custom: {
       name: '自定义 / AList',
@@ -395,7 +398,15 @@
         method: 'PROPFIND',
         headers: wdHeaders(c.webdav, { 'Depth': '0' })
       });
-      if (res.status === 401) return { ok: false, error: p.name + ' 账号或应用密码错误（401）· 请用「应用密码」而不是登录密码' };
+      if (res.status === 401) {
+        return {
+          ok: false,
+          error: p.name + ' 账号或应用密码错误（401）· 请用「应用密码」而不是登录密码' +
+            (p.key === 'pan123'
+              ? '；若后台根本没有「WebDAV 授权管理」，说明该账号不含 WebDAV 权益（2026-11-04 起新账号/新会员不再包含），请改用坚果云或「本机文件夹」'
+              : '')
+        };
+      }
       if (!res.ok && res.status !== 207) return { ok: false, error: p.name + ' WebDAV 返回 HTTP ' + res.status };
       return { ok: true, message: p.name + ' 可访问（' + base + '）' };
     } catch (e) {

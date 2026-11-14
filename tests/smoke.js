@@ -650,4 +650,17 @@ check('安卓壳：APK 已构建且资源路径正确', () => {
   });
 });
 
+check('123 云盘 WebDAV 权益变化有兜底出口', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['id="btnUseNutstore"', 'id="btnUseLocal"', 'id="btnUseBrowser"', '2026-11-04', 'WebDAV 授权管理']
+    .forEach(k => assert.ok(html.includes(k), '设置页缺少 ' + k));
+  const photos = fs.readFileSync(path.join(root, 'photos.js'), 'utf8');
+  assert.ok(/2026-11-04/.test(photos), '云盘提示未说明 123 权益调整时间点');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  ['btnUseNutstore', 'btnUseLocal', 'btnUseBrowser'].forEach(id => {
+    assert.ok(new RegExp("\\$\\('" + id + "'\\)\\.onclick").test(app), '未绑定 ' + id);
+  });
+  assert.ok(/\|\| 'pan123'/.test(app), '设置页回填默认云盘服务应为 123');
+});
+
 console.log('\n全部通过：' + passed + ' 项');
