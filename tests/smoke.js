@@ -35,17 +35,17 @@ check('重建版文件齐全', () => {
     assert.ok(!exists(f), '旧版文件未作废：' + f);
   });
 });
-check('index.html 脚本版本号统一 2.0.1', () => {
+check('index.html 脚本版本号统一 2.0.2', () => {
   const h = read('index.html');
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css', 'manifest.webmanifest'].forEach(f => {
-    assert.ok(h.includes(f + '?v=2.0.1'), '没有带版本号引用 ' + f);
+    assert.ok(h.includes(f + '?v=2.0.2'), '没有带版本号引用 ' + f);
   });
   assert.ok(!/\?v=1\./.test(h), '还残留旧版版本号');
 });
 check('SW 缓存清单与 BUILD 同步', () => {
   const sw = read('sw.js');
-  assert.ok(/BUILD\s*=\s*'2\.0\.1'/.test(sw));
-  assert.ok(/station-rebuild-v2/.test(sw));
+  assert.ok(/BUILD\s*=\s*'2\.0\.2'/.test(sw));
+  assert.ok(/station-rebuild-v3/.test(sw));
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css'].forEach(f => {
     assert.ok(sw.includes("'./" + f + "?v=' + BUILD"), 'SW 漏缓存 ' + f);
   });
@@ -56,15 +56,15 @@ check('安卓资源清单 / 版本号 / APK 名', () => {
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js'].forEach(f => {
     assert.ok(listed.includes(f), '打包漏了 ' + f);
   });
-  assert.ok(/--version-name 2\.0\.1/.test(sh) && /--version-code 12/.test(sh));
-  assert.ok(/station-assistant-2\.0\.1\.apk/.test(sh));
+  assert.ok(/--version-name 2\.0\.2/.test(sh) && /--version-code 13/.test(sh));
+  assert.ok(/station-assistant-2\.0\.2\.apk/.test(sh));
   const mf = read('android/app/src/main/AndroidManifest.xml');
-  assert.ok(/versionCode="12"/.test(mf) && /versionName="2\.0\.1"/.test(mf));
+  assert.ok(/versionCode="13"/.test(mf) && /versionName="2\.0\.2"/.test(mf));
   assert.ok(!/SEND_SMS|CALL_PHONE|READ_CONTACTS/.test(mf), '安卓清单出现通知类权限');
 });
 check('安卓 APK 已构建且含全部新脚本', () => {
-  const apk = path.join(root, 'android/dist/station-assistant-2.0.1.apk');
-  assert.ok(fs.existsSync(apk), '2.0.1 APK 未构建');
+  const apk = path.join(root, 'android/dist/station-assistant-2.0.2.apk');
+  assert.ok(fs.existsSync(apk), '2.0.2 APK 未构建');
   const bin = fs.readFileSync(apk).toString('latin1');
   ['assets/app.js', 'assets/rules.js', 'assets/db.js', 'assets/auth.js', 'assets/media.js'].forEach(f => {
     assert.ok(bin.includes(f), 'APK 缺少 ' + f);
@@ -72,7 +72,7 @@ check('安卓 APK 已构建且含全部新脚本', () => {
   assert.ok(!bin.includes('assets/store.js'), 'APK 里还带着旧版文件');
 });
 
-/* ============ 1.1 安卓 WebView 稳定性（2.0.1） ============ */
+/* ============ 1.1 安卓 WebView 稳定性（2.0.2） ============ */
 check('安卓 WebView 启动与登录崩溃加固', () => {
   const h = read('index.html');
   assert.ok(h.includes('window.StationBoot ='), '缺少启动错误兜底');
@@ -93,12 +93,30 @@ check('安卓 WebView 启动与登录崩溃加固', () => {
   });
 
   const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
-  assert.ok(java.includes('installCrashHandler()'), '缺少原生崩溃日志');
+  assert.ok(java.includes('Thread.setDefaultUncaughtExceptionHandler'), '缺少静态崩溃处理器');
+  assert.ok(java.includes('attachBaseContext(Context base)'), '崩溃处理器拿不到 Context');
   assert.ok(java.includes('station-errors.txt'), '缺少错误日志文件');
   assert.ok(java.includes('web.loadUrl(START_URL)'), '没有始终重新加载页面');
   assert.ok(!java.includes('restoreState('), '仍在用 restoreState 导致重建白屏');
   assert.ok(java.includes('public String crashLog()'), '原生桥没暴露 crashLog');
   assert.ok(read('README.md').includes('安卓 WebView 稳定性修复'), '文档没写修复说明');
+});
+
+/* ============ 1.2 崩溃自显 / 公共日志 / 老 WebView（2.0.2） ============ */
+check('安卓启动异常不再闪退且诊断可见', () => {
+  const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
+  assert.ok(java.includes('catch (Throwable t)'), '启动链路没有兜住 Error 类异常');
+  assert.ok(java.includes('private void showFatal('), '缺少原生诊断屏');
+  assert.ok(java.includes('writePublicCrash('), '崩溃日志没写到用户可读目录');
+  assert.ok(java.includes('private String recentFatal('), '上次崩溃不会自动进入诊断模式');
+  assert.ok(java.includes('clearCrashLog()'), '确认后无法清除崩溃记录');
+  assert.ok(java.includes('FATAL WebView 创建失败'), 'WebView 构造失败没有降级');
+  assert.ok(java.includes('shouldInterceptRequest(WebView view, String url)'),
+    'Android 5.x 只会回调旧重载，缺了会整页 404 白屏');
+  assert.ok(java.includes('public String lastFatal()'), '原生桥没暴露最近崩溃');
+  const mf = read('android/app/src/main/AndroidManifest.xml');
+  assert.ok(mf.includes('@android:style/Theme.Material.Light.NoActionBar'),
+    '应用主题仍依赖自定义 style，启动前有资源解析风险');
 });
 
 /* ================= 2. 排除项：源码里没有通知能力 ================= */
@@ -517,7 +535,7 @@ check('自检面板信息可用', () => {
   a.setup({ name: 'boss', password: 'abc123456' });
   const d = a.diag();
   assert.strictEqual(d.accounts, 1);
-  assert.strictEqual(d.build, '2.0.1');
+  assert.strictEqual(d.build, '2.0.2');
   assert.ok('storageOk' in d && 'role' in d);
 });
 
@@ -562,7 +580,7 @@ check('媒体模块：识别降级、反馈与照片库接口齐全', () => {
 });
 check('README 写明功能对照、排除项与数据边界', () => {
   const md = read('README.md');
-  ['2.0.1', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39'].forEach(k => {
+  ['2.0.2', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39'].forEach(k => {
     assert.ok(md.includes(k), 'README 漏了 ' + k);
   });
 });
@@ -573,7 +591,7 @@ check('仓库无敏感凭据', () => {
 });
 
 /* ================= 结果 ================= */
-console.log('\n驿站助手 2.0.1 · 回归测试');
+console.log('\n驿站助手 2.0.2 · 回归测试');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
 if (failures.length) {
   console.log('\n失败明细：');

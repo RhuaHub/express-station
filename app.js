@@ -1529,7 +1529,7 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.1',
+    rules: R, media: Media, version: '2.0.2',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

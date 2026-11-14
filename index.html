@@ -60,9 +60,9 @@ window.StationBoot = (function () {
   return { report: report, errors: function () { return errs.slice(); } };
 })();
 </script>
-<link rel="manifest" href="manifest.webmanifest?v=2.0.1">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.1">
-<link rel="stylesheet" href="styles.css?v=2.0.1">
+<link rel="manifest" href="manifest.webmanifest?v=2.0.2">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.2">
+<link rel="stylesheet" href="styles.css?v=2.0.2">
 </head>
 <body>
 
@@ -96,7 +96,7 @@ window.StationBoot = (function () {
     <div class="auth-msg" id="authMsg" role="status"></div>
     <pre class="diag" id="authDiag" hidden></pre>
     <input type="file" id="authImportFile" accept="application/json,.json" hidden>
-    <div class="auth-foot">2.0.1 · 重建版 · 无短信 / 电话 / 群呼能力</div>
+    <div class="auth-foot">2.0.2 · 重建版 · 无短信 / 电话 / 群呼能力</div>
   </div>
 </div>
 
@@ -533,7 +533,7 @@ window.StationBoot = (function () {
 
     <!-- 帮助 -->
     <section class="view" id="view-help" hidden>
-      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.1 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
+      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.2 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
       <div class="card"><div class="card-head"><h3>已实现的功能</h3></div><div id="helpFeatures" class="help-grid"></div></div>
       <div class="card"><div class="card-head"><h3>明确不做的功能</h3></div><div id="helpExcluded" class="help-grid"></div>
         <div class="muted">短信 / 电话 / 群呼属于通知类，按需求整块排除；其余需要服务端合作、实名资质或厂商 SDK 的能力，在纯静态本地版里无法真实实现，已在 README 中逐条写明替代方式。</div></div>
@@ -560,11 +560,11 @@ window.StationBoot = (function () {
   </div>
 </div>
 
-<script src="rules.js?v=2.0.1"></script>
-<script src="db.js?v=2.0.1"></script>
-<script src="auth.js?v=2.0.1"></script>
-<script src="media.js?v=2.0.1"></script>
-<script src="app.js?v=2.0.1"></script>
+<script src="rules.js?v=2.0.2"></script>
+<script src="db.js?v=2.0.2"></script>
+<script src="auth.js?v=2.0.2"></script>
+<script src="media.js?v=2.0.2"></script>
+<script src="app.js?v=2.0.2"></script>
 <script>
 /* Android WebView 不支持 Service Worker；有些环境属性存在但 register 不可用，必须逐项判空 */
 (function () {
@@ -574,7 +574,7 @@ window.StationBoot = (function () {
   var sw = navigator.serviceWorker;
   if (!sw || typeof sw.register !== 'function') return;
   try {
-    var p = sw.register('sw.js?v=2.0.1');
+    var p = sw.register('sw.js?v=2.0.2');
     if (p && typeof p.catch === 'function') p.catch(function () { });
   } catch (e) {
     if (window.StationBoot) window.StationBoot.report('Service Worker 注册失败：' + e.message);

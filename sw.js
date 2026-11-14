@@ -1,7 +1,7 @@
 /* 驿站助手（重建版）· PWA 壳缓存
    缓存优先只用于带版本号的本地静态资源；版本号一变，旧缓存整体失效。 */
-var VERSION = 'station-rebuild-v2';
-var BUILD = '2.0.1';
+var VERSION = 'station-rebuild-v3';
+var BUILD = '2.0.2';
 var SHELL = [
   './',
   './index.html',

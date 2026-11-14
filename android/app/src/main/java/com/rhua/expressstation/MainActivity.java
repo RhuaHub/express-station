@@ -3,7 +3,10 @@ package com.rhua.expressstation;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -11,6 +14,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.util.Log;
+import android.view.Gravity;
 import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
@@ -22,7 +27,11 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
@@ -36,86 +45,111 @@ import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * 快递驿站 App 外壳。
  *
- * 关键点：不直接用 file:// 加载页面（那样会得到不透明来源，摄像头、localStorage、
+ * 不直接用 file:// 加载页面（那样会得到不透明来源，摄像头、localStorage、
  * IndexedDB 都会被限制），而是用 shouldInterceptRequest 把
- * https://appassets.androidplatform.net/ 映射到 assets，得到一个真正的安全上下文。
+ * https://appassets.androidplatform.net/ 映射到 assets，得到真正的安全上下文。
+ *
+ * 2.0.2 起：任何启动期异常都不再闪退，而是显示原生诊断屏；崩溃堆栈同时落到
+ * 公共「下载/快递驿站」目录（Android 11+ 用户无法直接访问 Android/data）。
  */
 public class MainActivity extends Activity {
 
     private static final String HOST = "appassets.androidplatform.net";
     private static final String START_URL = "https://" + HOST + "/index.html";
+    private static final String TAG = "StationFatal";
     private static final int REQ_FILE = 2001;
     private static final int REQ_CAMERA_PERM = 2002;
+
+    /** attachBaseContext 比 onCreate 更早，供静态崩溃处理器写日志用 */
+    private static volatile Context APP_CONTEXT = null;
+    private static volatile String LAST_FATAL = null;
+
+    static {
+        /* 尽可能早地安装：类加载发生在 Activity 实例化时，早于主题解析与 onCreate */
+        final Thread.UncaughtExceptionHandler old = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override public void uncaughtException(Thread t, Throwable e) {
+                try {
+                    String s = "FATAL thread=" + t.getName() + "\n" + stackOf(e);
+                    LAST_FATAL = s;
+                    Log.e(TAG, s);
+                    staticAppendCrash(s);
+                } catch (Throwable ignored) { }
+                if (old != null) old.uncaughtException(t, e);
+            }
+        });
+    }
 
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingPermission;
     private long lastBackAt = 0L;
+    private boolean fatalShown = false;
+
+    @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(base);
+        APP_CONTEXT = base;
+    }
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        installCrashHandler();
-
-        FrameLayout root = new FrameLayout(this);
-        root.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.setBackgroundColor(0xFFFFFDF7);
-
-        web = new WebView(this);
-        web.setLayoutParams(new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(web);
-        setContentView(root);
-
-        WebSettings s = web.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setDatabaseEnabled(true);
-        s.setAllowFileAccess(true);
-        s.setLoadsImagesAutomatically(true);
-        s.setMediaPlaybackRequiresUserGesture(false);
-        s.setSupportMultipleWindows(false);
-        s.setJavaScriptCanOpenWindowsAutomatically(true);
-        s.setUseWideViewPort(true);
-        s.setLoadWithOverviewMode(false);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        try {
+            boot();
+        } catch (Throwable t) {
+            String s = stackOf(t);
+            Log.e(TAG, "onCreate: " + s);
+            appendCrash("FATAL onCreate\n" + s);
+            showFatal(s, "启动阶段发生异常");
         }
-        s.setUserAgentString(s.getUserAgentString() + " ExpressStationApp/1.0");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            WebView.setWebContentsDebuggingEnabled(true);
-        }
-
-        web.addJavascriptInterface(new Bridge(), "StationNative");
-        web.setWebViewClient(new Client());
-        web.setWebChromeClient(new Chrome());
-        web.setDownloadListener(new android.webkit.DownloadListener() {
-            @Override
-            public void onDownloadStart(String url, String ua, String disposition, String mime, long len) {
-                // 只处理外部链接下载；CSV/JSON 导出走 StationNative.saveText
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-                } catch (Exception e) {
-                    toast("无法用外部应用打开该链接");
-                }
-            }
-        });
-
-        /* 始终重新加载。restoreState 在深色模式、字体变化等 Activity 重建场景下
-           会恢复出空白页，且重新注入的 StationNative 可能失效，看起来像「登录崩溃」。 */
-        web.loadUrl(START_URL);
     }
 
-    /* ---------- 崩溃日志：白屏 / 闪退时至少留得下证据 ---------- */
+    private void boot() {
+        /* 上次崩溃若发生在 10 分钟内，本次启动先显示诊断屏，避免反复闪退看不到原因 */
+        String recent = recentFatal();
+        if (recent != null && recent.length() > 0) {
+            showFatal(recent, "检测到上次崩溃记录");
+            return;
+        }
+        startWebView();
+    }
 
-    private static final Object LOG_LOCK = new Object();
+    /* ---------- 崩溃日志：私有 + 公共下载目录双写 ---------- */
+
+    private static String stamp() {
+        try {
+            return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
+                    .format(new java.util.Date());
+        } catch (Throwable e) { return "unknown-time"; }
+    }
+
+    private static String stackOf(Throwable t) {
+        try {
+            StringWriter sw = new StringWriter();
+            t.printStackTrace(new PrintWriter(sw));
+            return sw.toString();
+        } catch (Throwable e) { return String.valueOf(t); }
+    }
+
+    private static void staticAppendCrash(String line) {
+        Context c = APP_CONTEXT;
+        if (c == null) return;
+        try {
+            File d = new File(c.getExternalFilesDir(null), "crash");
+            if (!d.exists()) d.mkdirs();
+            FileOutputStream os = new FileOutputStream(new File(d, "station-errors.txt"), true);
+            os.write((stamp() + " " + line + "\n").getBytes("UTF-8"));
+            os.close();
+        } catch (Throwable ignored) { }
+    }
 
     private File crashDir() {
         File d = new File(getExternalFilesDir(null), "crash");
@@ -123,36 +157,86 @@ public class MainActivity extends Activity {
         return d;
     }
 
-    private void appendCrash(String line) {
-        try {
-            synchronized (LOG_LOCK) {
-                File f = new File(crashDir(), "station-errors.txt");
-                FileOutputStream os = new FileOutputStream(f, true);
-                String when = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA)
-                        .format(new java.util.Date());
-                os.write((when + " " + line + "\n").getBytes("UTF-8"));
-                os.close();
-            }
-        } catch (Exception ignored) { }
+    private File crashFile() {
+        return new File(crashDir(), "station-errors.txt");
     }
 
-    private void installCrashHandler() {
-        final Thread.UncaughtExceptionHandler old = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
-            @Override public void uncaughtException(Thread t, Throwable e) {
-                try {
-                    StringWriter sw = new StringWriter();
-                    e.printStackTrace(new PrintWriter(sw));
-                    appendCrash("FATAL thread=" + t.getName() + "\n" + sw.toString());
-                } catch (Exception ignored) { }
-                if (old != null) old.uncaughtException(t, e);
+    private void appendCrash(String line) {
+        try {
+            synchronized (MainActivity.class) {
+                FileOutputStream os = new FileOutputStream(crashFile(), true);
+                os.write((stamp() + " " + line + "\n").getBytes("UTF-8"));
+                os.close();
             }
-        });
+        } catch (Throwable ignored) { }
+    }
+
+    /** 崩溃时额外写一份到「下载/快递驿站」，用户用任意文件管理器都能拿到 */
+    private void writePublicCrash(String detail) {
+        final String name = "驿站助手-崩溃日志-" + stamp().replace(' ', '-').replace(':', '-') + ".txt";
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS + "/快递驿站");
+                Uri uri = getContentResolver()
+                        .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) return;
+                OutputStream os = getContentResolver().openOutputStream(uri);
+                if (os == null) return;
+                os.write(detail.getBytes("UTF-8"));
+                os.close();
+            } else {
+                File dir = new File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        "快递驿站");
+                if (!dir.exists() && !dir.mkdirs()) return;
+                FileOutputStream os = new FileOutputStream(new File(dir, name));
+                os.write(detail.getBytes("UTF-8"));
+                os.close();
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** 只认最近 10 分钟内的 FATAL；用户点过「仍要进入」会清空日志，不再反复弹 */
+    private String recentFatal() {
+        try {
+            File f = crashFile();
+            if (!f.exists() || f.length() < 1) return "";
+            byte[] b = new byte[(int) Math.min(65536, f.length())];
+            FileInputStream in = new FileInputStream(f);
+            int n = in.read(b);
+            in.close();
+            if (n <= 0) return "";
+            String s = new String(b, 0, n, "UTF-8");
+            int at = s.lastIndexOf("FATAL");
+            if (at < 0) return "";
+            int lineStart = s.lastIndexOf('\n', Math.max(0, at - 1)) + 1;
+            String head = s.substring(lineStart, Math.min(s.length(), lineStart + 19));
+            long when;
+            try {
+                when = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA)
+                        .parse(head).getTime();
+            } catch (Throwable e) { return ""; }
+            if (System.currentTimeMillis() - when > 10 * 60 * 1000L) return "";
+            String tail = s.substring(lineStart);
+            return tail.length() > 6000 ? tail.substring(tail.length() - 6000) : tail;
+        } catch (Throwable e) { return ""; }
+    }
+
+    private void clearCrashLog() {
+        try {
+            FileOutputStream os = new FileOutputStream(crashFile(), false);
+            os.write("".getBytes("UTF-8"));
+            os.close();
+        } catch (Throwable ignored) { }
     }
 
     private String readCrashLog() {
         try {
-            File f = new File(crashDir(), "station-errors.txt");
+            File f = crashFile();
             if (!f.exists()) return "";
             byte[] b = new byte[(int) Math.min(8000, f.length())];
             FileInputStream in = new FileInputStream(f);
@@ -161,7 +245,158 @@ public class MainActivity extends Activity {
             if (n <= 0) return "";
             String s = new String(b, 0, n, "UTF-8");
             return s.length() > 4000 ? s.substring(s.length() - 4000) : s;
-        } catch (Exception e) { return ""; }
+        } catch (Throwable e) { return ""; }
+    }
+
+    /* ---------- 原生诊断屏：不依赖 WebView，任何崩溃都看得见 ---------- */
+
+    private void showFatal(final String detail, String title) {
+        if (fatalShown) return;
+        fatalShown = true;
+        final String info = "版本 2.0.2 · " + Build.MANUFACTURER + " " + Build.MODEL
+                + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
+        writePublicCrash(info + "\n" + title + "\n\n" + detail);
+        try {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setBackgroundColor(0xFFFFFDF7);
+            box.setPadding(28, 40, 28, 28);
+
+            TextView h = new TextView(this);
+            h.setText("驿站助手 · 启动诊断\n" + title);
+            h.setTextSize(20);
+            h.setTextColor(0xFFB8860B);
+            h.setPadding(0, 0, 0, 16);
+            box.addView(h);
+
+            TextView tip = new TextView(this);
+            tip.setText("没有闪退，程序已停在诊断界面。请截图发给开发者，或点「复制诊断」粘贴发送。\n"
+                    + "日志副本在「下载/快递驿站」目录。\n\n" + info);
+            tip.setTextSize(14);
+            tip.setTextColor(0xFF555555);
+            tip.setPadding(0, 0, 0, 16);
+            box.addView(tip);
+
+            TextView body = new TextView(this);
+            body.setText(detail == null ? "(无堆栈)" : detail);
+            body.setTextSize(11);
+            body.setTextColor(0xFF222222);
+            body.setTextIsSelectable(true);
+            body.setBackgroundColor(0xFFF3EFE3);
+            body.setPadding(14, 14, 14, 14);
+            box.addView(body);
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, 20, 0, 0);
+
+            Button copy = new Button(this);
+            copy.setText("复制诊断");
+            copy.setLayoutParams(new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            copy.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    try {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cm != null) cm.setPrimaryClip(
+                                ClipData.newPlainText("station-crash", info + "\n" + detail));
+                        toast("诊断信息已复制，可粘贴发送");
+                    } catch (Throwable e) { toast("复制失败，请直接截图"); }
+                }
+            });
+            row.addView(copy);
+
+            Button enter = new Button(this);
+            enter.setText("仍要进入");
+            enter.setLayoutParams(new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            enter.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    clearCrashLog();
+                    fatalShown = false;
+                    try { startWebView(); }
+                    catch (Throwable e) {
+                        appendCrash("FATAL startWebView\n" + stackOf(e));
+                        fatalShown = false;
+                        showFatal(stackOf(e), "进入主界面时再次出错");
+                    }
+                }
+            });
+            row.addView(enter);
+            box.addView(row);
+
+            ScrollView sv = new ScrollView(this);
+            sv.addView(box, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            setContentView(sv);
+        } catch (Throwable t) {
+            Log.e(TAG, "showFatal failed: " + stackOf(t));
+            try { toast("启动异常，日志已写入 下载/快递驿站"); } catch (Throwable ignored) { }
+        }
+    }
+
+    /* ---------- WebView ---------- */
+
+    @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
+    private void startWebView() {
+        FrameLayout root = new FrameLayout(this);
+        root.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.setBackgroundColor(0xFFFFFDF7);
+        setContentView(root);
+
+        /* 部分国产 ROM 在 WebView 正在更新 / 被禁用时，构造 WebView 会直接抛异常 */
+        WebView created;
+        try {
+            created = new WebView(this);
+        } catch (Throwable t) {
+            String s = stackOf(t);
+            appendCrash("FATAL WebView 创建失败\n" + s);
+            fatalShown = false;
+            showFatal(s, "系统 WebView 不可用（可尝试更新 Android System WebView）");
+            return;
+        }
+        web = created;
+        web.setLayoutParams(new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(web);
+
+        try {
+            WebSettings s = web.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setDatabaseEnabled(true);
+            s.setAllowFileAccess(true);
+            s.setLoadsImagesAutomatically(true);
+            s.setMediaPlaybackRequiresUserGesture(false);
+            s.setSupportMultipleWindows(false);
+            s.setJavaScriptCanOpenWindowsAutomatically(true);
+            s.setUseWideViewPort(true);
+            s.setLoadWithOverviewMode(false);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+            }
+            s.setUserAgentString(s.getUserAgentString() + " ExpressStationApp/1.0");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                WebView.setWebContentsDebuggingEnabled(true);
+            }
+        } catch (Throwable t) {
+            appendCrash("WebSettings 配置失败 " + t);
+        }
+
+        web.addJavascriptInterface(new Bridge(), "StationNative");
+        web.setWebViewClient(new Client());
+        web.setWebChromeClient(new Chrome());
+        web.setDownloadListener(new android.webkit.DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String ua, String disposition, String mime, long len) {
+                try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); }
+                catch (Throwable t) { toast("无法用外部应用打开该链接"); }
+            }
+        });
+
+        /* 始终重新加载：restoreState 在 Activity 重建时会恢复出空白页，且原生桥可能失效 */
+        web.loadUrl(START_URL);
     }
 
     /* ---------- 资源映射：https 域 -> assets ---------- */
@@ -186,53 +421,72 @@ public class MainActivity extends Activity {
 
     private static String mimeOf(String path) {
         int i = path.lastIndexOf('.');
-        String ext = i >= 0 ? path.substring(i + 1).toLowerCase() : "";
+        String ext = i >= 0 ? path.substring(i + 1).toLowerCase(Locale.US) : "";
         String m = MIME.get(ext);
         return m == null ? "application/octet-stream" : m;
     }
 
+    private WebResourceResponse serve(Uri u) {
+        String path = "";
+        try {
+            if (u == null || !HOST.equals(u.getHost())) return null;
+            path = u.getPath();
+            if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
+            if (path.startsWith("/")) path = path.substring(1);
+            if (path.contains("..")) return deny(403);
+            InputStream in = getAssets().open(path);
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Cache-Control", "no-cache");
+            return new WebResourceResponse(mimeOf(path), "UTF-8", 200, "OK", headers, in);
+        } catch (Throwable t) {
+            appendCrash("资源拦截失败 " + path + " : " + t);
+            return deny(404);
+        }
+    }
+
+    private WebResourceResponse deny(int code) {
+        return new WebResourceResponse("text/plain", "UTF-8", code,
+                code == 403 ? "Forbidden" : "Not Found", null,
+                new ByteArrayInputStream(new byte[0]));
+    }
+
     private class Client extends WebViewClient {
+        /* API 21+ 走这个重载 */
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
-            String path = "";
-            try {
-                Uri u = req == null ? null : req.getUrl();
-                if (u == null || !HOST.equals(u.getHost())) return null;
-                path = u.getPath();
-                if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
-                if (path.startsWith("/")) path = path.substring(1);
-                if (path.contains("..")) return deny(403);
-
-                InputStream in = getAssets().open(path);
-                Map<String, String> headers = new HashMap<>();
-                headers.put("Cache-Control", "no-cache");
-                return new WebResourceResponse(mimeOf(path), "UTF-8", 200, "OK", headers, in);
-            } catch (Exception e) {
-                appendCrash("资源拦截失败 " + path + " : " + e);
-                return deny(404);
-            }
+            try { return serve(req == null ? null : req.getUrl()); }
+            catch (Throwable t) { appendCrash("新资源拦截 " + t); return deny(404); }
         }
 
-        private WebResourceResponse deny(int code) {
-            return new WebResourceResponse("text/plain", "UTF-8", code,
-                    code == 403 ? "Forbidden" : "Not Found", null,
-                    new ByteArrayInputStream(new byte[0]));
+        /* Android 5.x 自带 WebView 只回调这个旧重载；不补会所有资源 404、页面全白 */
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+            try { return serve(Uri.parse(url)); }
+            catch (Throwable t) { appendCrash("旧资源拦截 " + url + " : " + t); return deny(404); }
         }
 
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
             Uri u = req.getUrl();
             if (u != null && HOST.equals(u.getHost())) return false;
-            // 站外链接交给系统浏览器，避免在 App 内被当成本地页面
-            try {
-                startActivity(new Intent(Intent.ACTION_VIEW, u));
-            } catch (Exception ignored) { }
+            try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
+            catch (Throwable ignored) { }
             return true;
         }
 
         @Override
-        public void onPageFinished(WebView view, String url) {
-            super.onPageFinished(view, url);
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            try {
+                Uri u = Uri.parse(url);
+                if (u != null && HOST.equals(u.getHost())) return false;
+                startActivity(new Intent(Intent.ACTION_VIEW, u));
+            } catch (Throwable ignored) { }
+            return true;
+        }
+
+        @Override
+        public void onReceivedError(WebView view, int code, String desc, String failingUrl) {
+            appendCrash("页面资源错误 " + code + " " + desc + " @ " + failingUrl);
         }
     }
 
@@ -242,23 +496,21 @@ public class MainActivity extends Activity {
         @Override
         public void onPermissionRequest(final PermissionRequest request) {
             runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
+                @Override public void run() {
                     boolean wantsVideo = false;
                     for (String res : request.getResources()) {
                         if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) wantsVideo = true;
                     }
                     if (!wantsVideo) { request.deny(); return; }
-                    /* API 21/22 没有运行时权限，也没有 checkSelfPermission 方法 */
                     boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                             || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
                     if (granted) {
                         try { request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE}); }
-                        catch (Exception e) { appendCrash("grant camera " + e); }
+                        catch (Throwable t) { appendCrash("grant camera " + t); }
                     } else {
                         pendingPermission = request;
                         try { requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM); }
-                        catch (Exception e) { pendingPermission = null; appendCrash("request camera " + e); }
+                        catch (Throwable t) { pendingPermission = null; appendCrash("request camera " + t); }
                     }
                 }
             });
@@ -272,7 +524,6 @@ public class MainActivity extends Activity {
             try {
                 Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
                 pick.addCategory(Intent.CATEGORY_OPENABLE);
-                /* 按页面声明的 accept 决定类型：照片是 image/*，导入备份是 application/json */
                 List<String> types = new ArrayList<>();
                 String[] accept = params != null ? params.getAcceptTypes() : null;
                 if (accept != null) {
@@ -296,18 +547,15 @@ public class MainActivity extends Activity {
                 }
                 startActivityForResult(Intent.createChooser(pick, "选择文件"), REQ_FILE);
                 return true;
-            } catch (Exception e) {
+            } catch (Throwable t) {
                 fileCallback = null;
                 toast("没有可用的文件选择器");
                 return false;
             }
         }
 
-        /* WebView 默认不弹 JS 对话框：不实现的话 window.confirm 会静默返回 false，
-           删除包裹、移除照片等二次确认将永远无法通过 */
         @Override
         public boolean onJsAlert(WebView view, String url, String message, final android.webkit.JsResult result) {
-            /* Activity 正在结束 / 窗口 token 失效时，直接弹对话框会让整个 App 闪退 */
             try {
                 new android.app.AlertDialog.Builder(MainActivity.this)
                         .setMessage(message)
@@ -318,9 +566,9 @@ public class MainActivity extends Activity {
                             @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
                         })
                         .show();
-            } catch (Exception e) {
-                appendCrash("onJsAlert " + e);
-                try { result.confirm(); } catch (Exception ignored) { }
+            } catch (Throwable t) {
+                appendCrash("onJsAlert " + t);
+                try { result.confirm(); } catch (Throwable ignored) { }
             }
             return true;
         }
@@ -340,9 +588,9 @@ public class MainActivity extends Activity {
                             @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
                         })
                         .show();
-            } catch (Exception e) {
-                appendCrash("onJsConfirm " + e);
-                try { result.cancel(); } catch (Exception ignored) { }
+            } catch (Throwable t) {
+                appendCrash("onJsConfirm " + t);
+                try { result.cancel(); } catch (Throwable ignored) { }
             }
             return true;
         }
@@ -351,7 +599,7 @@ public class MainActivity extends Activity {
         public boolean onConsoleMessage(ConsoleMessage m) {
             if (m != null && m.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
                 String line = "JS console " + m.message() + " @ " + m.sourceId() + ":" + m.lineNumber();
-                android.util.Log.e("StationJS", line);
+                Log.e("StationJS", line);
                 appendCrash(line);
             }
             return true;
@@ -370,7 +618,7 @@ public class MainActivity extends Activity {
                         pendingPermission.deny();
                         toast("没有相机权限，可用「从相册选择」替代");
                     }
-                } catch (Exception e) { appendCrash("camera result " + e); }
+                } catch (Throwable t) { appendCrash("camera result " + t); }
                 pendingPermission = null;
             }
         }
@@ -405,17 +653,16 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "1.0.0";
+            return "2.0.2";
         }
 
-        /** 导出 CSV / JSON：写入系统「下载/快递驿站」，避免 WebView 无法保存 blob 的问题 */
+        /** 导出 CSV / JSON：写入系统「下载/快递驿站」 */
         @JavascriptInterface
         public void saveText(final String name, final String content, final String mime) {
             final String safeName = (name == null || name.trim().isEmpty()) ? "export.txt" : name.trim();
             final String type = (mime == null || mime.isEmpty()) ? "text/plain" : mime.split(";")[0];
             new Thread(new Runnable() {
-                @Override
-                public void run() {
+                @Override public void run() {
                     String where;
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -446,8 +693,9 @@ public class MainActivity extends Activity {
                         runOnUiThread(new Runnable() {
                             @Override public void run() { toast(msg); }
                         });
-                    } catch (Exception e) {
-                        final String msg = "保存失败：" + e.getMessage();
+                    } catch (Throwable t) {
+                        final String msg = "保存失败：" + t.getMessage();
+                        appendCrash("saveText " + stackOf(t));
                         runOnUiThread(new Runnable() {
                             @Override public void run() { toast(msg); }
                         });
@@ -467,10 +715,16 @@ public class MainActivity extends Activity {
             return readCrashLog();
         }
 
-        /** 页面把启动异常同步写到原生日志，避免只闪一下就消失 */
+        /** 页面把启动异常同步写到原生日志 */
         @JavascriptInterface
         public void logError(final String msg) {
             appendCrash("JS " + String.valueOf(msg));
+        }
+
+        /** 页面自检可确认原生侧最后一次进程内致命异常 */
+        @JavascriptInterface
+        public String lastFatal() {
+            return LAST_FATAL == null ? "" : LAST_FATAL;
         }
     }
 
@@ -480,10 +734,10 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override public void run() {
                     try { Toast.makeText(MainActivity.this, text, Toast.LENGTH_SHORT).show(); }
-                    catch (Exception e) { appendCrash("toast " + e); }
+                    catch (Throwable t) { appendCrash("toast " + t); }
                 }
             });
-        } catch (Exception e) { appendCrash("toast post " + e); }
+        } catch (Throwable t) { appendCrash("toast post " + t); }
     }
 
     /* ---------- 生命周期 ---------- */
@@ -515,7 +769,7 @@ public class MainActivity extends Activity {
             try {
                 web.loadUrl("about:blank");
                 web.destroy();
-            } catch (Exception e) { appendCrash("destroy webview " + e); }
+            } catch (Throwable t) { appendCrash("destroy webview " + t); }
             web = null;
         }
         super.onDestroy();
