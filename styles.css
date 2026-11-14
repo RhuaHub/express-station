@@ -474,6 +474,14 @@ body.auth-locked .app { display: none; }
   border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); line-height: 1.6;
 }
 .auth-note .ic { width: 14px; height: 14px; margin-top: 2px; flex: none; }
+/* 登录自检面板：手机上排查用，等宽字体、可长按复制 */
+.auth-diag {
+  margin: 10px 0 0; padding: 10px 12px; max-height: 200px; overflow: auto;
+  background: var(--gold-soft); border: 1px solid var(--gold-line); border-radius: 10px;
+  font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--sub); white-space: pre-wrap; word-break: break-all;
+  text-align: left; -webkit-user-select: text; user-select: text;
+}
 body.printing-label .auth-gate { display: none !important; }
 
 /* ---------- 账号、角色与操作人 ---------- */

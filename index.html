@@ -13,7 +13,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=1.0.5">
 </head>
 <body class="auth-locked">
 
@@ -80,7 +80,7 @@
       </div>
       <div id="authStorageHint" class="auth-tip" hidden>
         <b>这个浏览器不允许保存数据</b>
-        <span>可能是无痕/隐私模式，或者存储空间已满。现在可以登录并正常使用，但<b>刷新或关掉页面就会掉线</b>，账号也存不下来。请换普通窗口打开，或清理手机存储后重试。</span>
+        <span id="authStorageWhy">账号库读不到，也存不下来。常见原因：<b>Safari 开了「阻止所有 Cookie」</b>、<b>微信/QQ/微博的内置浏览器</b>、无痕模式、存储已满。请点上面的地址栏复制网址，用<b>系统浏览器</b>（Safari / Chrome）重新打开；Safari 需到「设置 → Safari → 阻止所有 Cookie」关掉。</span>
       </div>
       <form id="formLogin" autocomplete="off">
         <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next"></div>
@@ -95,6 +95,10 @@
     </div>
 
     <div id="authMsg" class="auth-msg" hidden></div>
+    <div class="auth-links" style="margin-top:10px">
+      <button class="link" id="btnAuthDiag" type="button">登录不了？点这里自检</button>
+    </div>
+    <pre id="authDiag" class="auth-diag" hidden></pre>
     <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。连续输错密码会临时锁定本设备。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库；账号库丢失又无备份时，只能重新初始化站点。</span></div>
   </div>
 </div>
@@ -676,12 +680,12 @@
 <div id="cameraRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
-<script src="store.js"></script>
-<script src="auth.js"></script>
-<script src="photos.js"></script>
-<script src="camera.js"></script>
-<script src="sync.js"></script>
-<script src="app.js"></script>
+<script src="store.js?v=1.0.5"></script>
+<script src="auth.js?v=1.0.5"></script>
+<script src="photos.js?v=1.0.5"></script>
+<script src="camera.js?v=1.0.5"></script>
+<script src="sync.js?v=1.0.5"></script>
+<script src="app.js?v=1.0.5"></script>
 <script>
 /* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
 (function () {

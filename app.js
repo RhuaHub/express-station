@@ -2,7 +2,11 @@
 (function () {
   'use strict';
 
-  var store = StationStore.createStore(localStorage);
+  /* 不能直接写 createStore(localStorage)：Safari 开了「阻止所有 Cookie」、微信/QQ 内置浏览器
+     或 WebView 未开 DOM storage 时，读 localStorage 这个属性本身就会抛 SecurityError，
+     整个 app.js 会在加载阶段崩掉，所有按钮绑定都执行不到 —— 表现就是「点登录毫无反应」。
+     pickStorage 会兜住异常并退回内存实现。 */
+  var store = StationStore.createStore(StationStore.pickStorage('local'));
   var auth = window.StationAuth;
   var sync = window.StationSync;
   var photos = window.StationPhotos;
@@ -476,7 +480,17 @@
     }
     /* 存储不可写（无痕模式/配额满）时提前说清楚，别等用户输完密码以为账号错了 */
     var sh = $('authStorageHint');
-    if (sh) sh.hidden = st.storageOk !== false;
+    if (sh) {
+      sh.hidden = st.storageOk !== false;
+      var why = $('authStorageWhy');
+      if (why && st.storageOk === false) {
+        /* file:// 是最常见的一种：手机上直接点开下载的 index.html，
+           Chrome / Safari 一律拒绝这类页面使用 localStorage，提示必须写准。 */
+        why.innerHTML = location.protocol === 'file:'
+          ? '你现在是用<b>文件方式</b>打开的（<code>file://</code>）。Chrome 与 Safari 都禁止这种页面保存数据，所以账号库读不到，也没法登录。请把站点放到网址上打开（GitHub Pages 等），或直接用安卓 App。'
+          : '账号库读不到，也存不下来。常见原因：<b>Safari 开了「阻止所有 Cookie」</b>、<b>微信/QQ/微博的内置浏览器</b>、无痕模式、存储已满。请复制地址栏网址，用<b>系统浏览器</b>（Safari / Chrome）重新打开；Safari 需到「设置 → Safari → 阻止所有 Cookie」关掉。';
+      }
+    }
     var focusId = mode === 'setup' ? 'regName' : 'loginUser';
     /* 触屏设备不自动聚焦：一进页面就弹键盘，iOS 还会因输入框字号不足 16px 自动放大，
        把登录按钮顶出可视区——这正是「手机上点不到登录」的典型成因。 */
@@ -564,6 +578,7 @@
         if (!r.ok) { authMsg(r.error, true); return; }
         toast('初始化完成，注册入口已关闭，之后请在「账号管理」里添加店员');
         enterApp();
+        if (r.warning) toast(r.warning, 'err');
       } catch (err) {
         /* 兜住任何意外异常：不能让按钮点下去毫无反应 */
         authMsg('初始化失败：' + (err && err.message ? err.message : '浏览器拒绝写入本地存储'), true);
@@ -580,6 +595,9 @@
           remember: $('loginRemember').checked
         });
         if (!r.ok) { authMsg(r.error, true); return; }
+        /* 上一次输错留下的红字必须清掉，否则登录成功后回到登录页还会看到旧报错 */
+        authMsg('', false);
+        $('authMsg').hidden = true;
         enterApp();
         if (r.warning) toast(r.warning, 'err');
       } catch (err) {
@@ -618,6 +636,41 @@
         taps = taps.filter(function (t) { return now - t < 2500; });
         if (taps.length >= 5) { taps = []; trySetup(); }
       });
+    }
+    /* 登录页自检：手机上出问题时，不用猜也不用连电脑。
+       把「地址 / 存储 / 账号数 / 缓存版本 / 浏览器」一次列清楚。 */
+    if ($('btnAuthDiag')) {
+      $('btnAuthDiag').onclick = async function () {
+        var box = $('authDiag');
+        if (!box.hidden && box.textContent) { box.hidden = true; return; }
+        box.textContent = '正在自检…';
+        box.hidden = false;
+        var st = auth.status();
+        var lines = [];
+        lines.push('地址：' + location.origin + location.pathname + (location.hash || ''));
+        lines.push('协议：' + location.protocol + (window.isSecureContext ? '（安全上下文）' : '（非安全上下文）'));
+        lines.push('本地存储：' + (st.storageOk ? '可用' : '被禁止（读或写 localStorage 抛出异常）'));
+        lines.push('账号数：' + st.count + (st.needSetup ? '（本站未初始化）' : ''));
+        lines.push('登录状态：' + (st.loggedIn ? '已登录' : '未登录') + (st.lockLeft ? ' · 剩余锁定 ' + st.lockLeft + ' 秒' : ''));
+        var reg = null;
+        try {
+          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+            var regs = await navigator.serviceWorker.getRegistrations();
+            reg = regs && regs[0];
+          }
+        } catch (e) { /* 忽略 */ }
+        var ver = '未知';
+        try {
+          var res = await fetch('sw.js?probe=' + Date.now(), { cache: 'no-store' });
+          var m = /VERSION\s*=\s*'([^']+)'/.exec(await res.text());
+          if (m) ver = m[1];
+        } catch (e) { /* 离线时取不到 */ }
+        lines.push('离线缓存：' + (reg ? '已注册 · 缓存版本 ' + ver : '未注册') +
+          (navigator.serviceWorker && navigator.serviceWorker.controller ? ' · 本页已受控' : ''));
+        lines.push('页面代码：' + (document.querySelector('script[src*="app.js"]') || {}).getAttribute('src'));
+        lines.push('浏览器：' + navigator.userAgent);
+        box.textContent = lines.join('\n');
+      };
     }
     $('btnAuthImport').onclick = function () { $('authImportFile').click(); };
     $('authImportFile').addEventListener('change', async function () {

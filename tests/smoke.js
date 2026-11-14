@@ -508,7 +508,8 @@ check('app.js 引用的 DOM id 都存在于页面或动态模板', () => {
 
 check('页面引用的本地脚本与样式都存在', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  const refs = Array.from(html.matchAll(/(?:src|href)="([\w./-]+\.(?:js|css))"/g), m => m[1]);
+  // 允许 ?v=1.0.5 这类版本号：用来绕开旧 Service Worker 的缓存
+  const refs = Array.from(html.matchAll(/(?:src|href)="([\w./-]+\.(?:js|css))(?:\?[^"]*)?"/g), m => m[1]);
   assert.ok(refs.length >= 4);
   refs.forEach(ref => assert.ok(fs.existsSync(path.join(root, ref)), '缺少文件 ' + ref));
 });
@@ -648,7 +649,11 @@ check('PWA：Service Worker 只接管同源 GET，且缓存清单与真实文件
   assert.ok(/req\.method !== 'GET'/.test(sw), '未排除非 GET 请求');
   assert.ok(/url\.origin !== self\.location\.origin/.test(sw), '未排除跨域请求，会破坏云盘上传');
   assert.ok(/caches\.open\(VERSION\)/.test(sw) && /caches\.delete/.test(sw), '缺少版本化缓存与旧缓存清理');
-  const listed = (sw.match(/'\.\/[^']+'/g) || []).map(s => s.replace(/'|\.\//g, '')).filter(Boolean);
+  // 清单里可能带 ?v=1.0.5 版本号（用来绕开旧缓存），比对文件时去掉查询串
+  const listed = (sw.match(/'\.\/[^']+'/g) || [])
+    .map(s => s.replace(/'|\.\//g, ''))
+    .map(f => f.split('?')[0])
+    .filter(Boolean);
   assert.ok(listed.length >= 10, '缓存清单过短：' + listed.length);
   listed.forEach(function (f) {
     if (f === '' || f === '') return;
@@ -925,6 +930,65 @@ check('移动端登录：输入框 16px 防缩放、触屏延迟、键盘余量�
   assert.ok(/visualViewport/.test(app), '要用 visualViewport 算键盘高度');
   assert.ok(/authStorageHint/.test(app), '存储不可用要在登录页直接说明');
   assert.ok(/pointer:\s*coarse/.test(app), '触屏设备不应自动聚焦弹键盘');
+});
+
+/* 关键回归：有些环境「读 localStorage 属性」本身就抛 SecurityError
+   （Safari 阻止所有 Cookie、微信/QQ 内置浏览器、WebView 未开 DOM storage、Chrome 打开 file://）。
+   裸访问会让 app.js 在加载阶段崩掉，表现是「点登录毫无反应、连报错都没有」。 */
+check('存储不可访问（属性直接抛异常）时模块不崩，登录仍给出准确提示', () => {
+  const keys = ['localStorage', 'sessionStorage'];
+  const saved = {};
+  keys.forEach(k => { saved[k] = Object.getOwnPropertyDescriptor(globalThis, k); });
+  keys.forEach(k => {
+    Object.defineProperty(globalThis, k, {
+      configurable: true,
+      get() { throw new Error('SecurityError: The operation is insecure.'); }
+    });
+  });
+  try {
+    delete require.cache[require.resolve('../store.js')];
+    delete require.cache[require.resolve('../auth.js')];
+
+    const S = require('../store.js');
+    assert.strictEqual(S.pickStorage('local').__memory, true, '取不到 localStorage 时应退回内存实现');
+    assert.strictEqual(S.storageBlocked(), true);
+    assert.doesNotThrow(() => S.createStore(), 'createStore 不能在加载阶段抛异常');
+
+    const A = require('../auth.js');
+    const auth = A.createAuth();
+    const st = auth.status();
+    assert.strictEqual(st.storageOk, false, '应识别出存储不可用');
+    assert.strictEqual(st.needSetup, true);
+
+    /* 没有账号时不能报「密码不正确」——那会让用户以为密码错了 */
+    const r = auth.login({ username: 'admin', password: 'demo-pass-1' });
+    assert.strictEqual(r.ok, false);
+    assert.ok(/不允许保存数据|文件方式|还没有账号/.test(r.error), '提示应说明根因：' + r.error);
+
+    /* 初始化仍应能在内存里跑通，但要明确告诉用户刷新会丢 */
+    const reg = auth.register({ name: '站长', username: 'admin', password: 'demo-pass-1', confirm: 'demo-pass-1' });
+    assert.strictEqual(reg.ok, true, '内存态应允许初始化：' + (reg.error || ''));
+    assert.ok(/刷新/.test(reg.warning || ''), '必须提示刷新会丢：' + reg.warning);
+    assert.strictEqual(auth.status().loggedIn, true, '内存会话应让当前页面可用');
+  } finally {
+    keys.forEach(k => {
+      if (saved[k]) Object.defineProperty(globalThis, k, saved[k]);
+      else delete globalThis[k];
+    });
+    delete require.cache[require.resolve('../store.js')];
+    delete require.cache[require.resolve('../auth.js')];
+  }
+});
+
+check('脚本带版本号，登录页自带自检入口', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  // 旧 Service Worker 用的是「缓存优先」，不换 URL 就永远拿不到新代码
+  assert.ok(/<script src="app\.js\?v=[\d.]+"><\/script>/.test(html), 'app.js 必须带版本号绕开旧缓存');
+  assert.ok(/href="styles\.css\?v=[\d.]+"/.test(html), 'styles.css 同样要带版本号');
+  assert.ok(/id="btnAuthDiag"/.test(html) && /id="authDiag"/.test(html), '登录页要有自检入口');
+  assert.ok(/id="authStorageWhy"/.test(html), '存储提示要能按场景换文案');
+  const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  assert.ok(/BUILD\s*=\s*'[\d.]+'/.test(sw), 'SW 预缓存清单要用同一个版本号');
 });
 
 (async () => {

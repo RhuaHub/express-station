@@ -27,10 +27,23 @@
   function memoryStorage() {
     var map = {};
     return {
+      __memory: true,
       getItem: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
       setItem: function (k, v) { map[k] = String(v); },
       removeItem: function (k) { delete map[k]; }
     };
+  }
+  /* 读 localStorage 属性本身就可能抛 SecurityError（Safari 阻止所有 Cookie、
+     微信/QQ 内置浏览器、WebView 未开 DOM storage）。裸访问会让脚本加载即崩，
+     于是「点登录毫无反应」。统一走这里取，取不到退回内存。 */
+  function pickStorage(kind) {
+    var name = kind === 'session' ? 'sessionStorage' : 'localStorage';
+    try {
+      var s = global[name];
+      if (!s) return memoryStorage();
+      s.getItem('__station_probe__');
+      return s;
+    } catch (e) { return memoryStorage(); }
   }
   function str(v) { return v == null ? '' : String(v).trim(); }
   function uid(p) {
@@ -156,14 +169,14 @@
   }
 
   function createAuth(storage, sessionStorageLike) {
-    var st = storage || (typeof localStorage !== 'undefined' ? localStorage : memoryStorage());
-    var ses = sessionStorageLike || (typeof sessionStorage !== 'undefined' ? sessionStorage : memoryStorage());
+    var st = storage || pickStorage('local');
+    var ses = sessionStorageLike || pickStorage('session');
     var db = read();
 
     /* 手机上最常见的两个坑：无痕/隐私模式、以及存储配额满 —— setItem 会直接抛异常。
        以前 save() 是裸调用，异常冒到 submit 处理器外面，表现就是「点了登录完全没反应」，
        连错误提示都不出现。这里统一兜住：写不进去就降级成内存态，并让调用方拿到失败信号。 */
-    var degraded = false;
+    var degraded = !!st.__memory;
     /* 存储写不进去时的「当前登录用户」，只在这一次页面生命周期内有效 */
     var memSession = '';
     /* 启动时先探一次存储能不能写：无痕模式/配额满时在这里就能知道，
@@ -291,7 +304,11 @@
         return { ok: false, error: '浏览器禁止写本地存储（无痕/隐私模式或存储已满），账号存不下来。请关掉无痕模式、清理空间后重试。' };
       }
       writeSession(a.id, !!input.remember);
-      return { ok: true, account: publicAccount(a) };
+      return {
+        ok: true,
+        account: publicAccount(a),
+        warning: degraded ? '这个浏览器不允许保存数据：本次初始化只在当前页面有效，刷新就会回到未初始化状态。请先解决存储问题（Safari 关闭「阻止所有 Cookie」、退出无痕模式）再重新初始化。' : ''
+      };
     }
 
     function login(input) {
@@ -299,6 +316,20 @@
       var wait = lockRemain();
       if (wait > 0) {
         return { ok: false, error: '密码错误次数过多，请 ' + wait + ' 秒后再试', lockSeconds: wait };
+      }
+      /* 一个账号都没有时，报「密码不正确」是误导：手机换了浏览器、无痕模式、
+         或存储被禁都会读不到账号库，用户会以为是密码错了。 */
+      if (!db.accounts.length) {
+        var isFile = false;
+        try { isFile = global.location && global.location.protocol === 'file:'; } catch (e) { /* 忽略 */ }
+        return {
+          ok: false,
+          error: degraded
+            ? (isFile
+              ? '你现在是用文件方式打开的（file://），浏览器禁止这类页面保存数据，所以账号库读不到。请把站点放到网址上打开（GitHub Pages 等），或用安卓 App。'
+              : '这个浏览器不允许保存数据，账号库读不到。Safari 请到「设置 → Safari → 阻止所有 Cookie」关掉，或用系统浏览器（Safari / Chrome）重新打开本页。')
+            : '这台设备的浏览器里还没有账号。请在站长设备上「设置与数据 → 导出备份」，再到这里点「已有备份？导入恢复」；或在手机上长按标题 1.2 秒（连点 5 下）初始化本站。'
+        };
       }
       var a = findByUsername(input.username);
       /* 账号不存在与密码错误给同一个提示，避免被用来探测账号是否存在 */

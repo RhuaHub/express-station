@@ -65,9 +65,15 @@
   }
   var fallbackStore = {};
   function storage() {
-    if (typeof localStorage !== 'undefined') return localStorage;
+    /* 读 localStorage 属性本身也可能抛 SecurityError（Safari 阻止 Cookie、
+       内置浏览器、WebView 未开 DOM storage），裸访问会让整个脚本加载即崩。 */
+    try {
+      var s = global.localStorage;
+      if (s) { s.getItem('__station_probe__'); return s; }
+    } catch (e) { /* 落到内存实现 */ }
     return {
-      getItem: function (k) { return fallbackStore[k] || null; },
+      __memory: true,
+      getItem: function (k) { return fallbackStore[k] == null ? null : fallbackStore[k]; },
       setItem: function (k, v) { fallbackStore[k] = v; },
       removeItem: function (k) { delete fallbackStore[k]; }
     };

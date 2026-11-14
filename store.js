@@ -119,18 +119,38 @@
   function memoryStorage() {
     var map = {};
     return {
+      /* 标记：拿到的是内存兜底而不是真存储，调用方可据此提示「刷新会丢」 */
+      __memory: true,
       getItem: function (k) { return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
       setItem: function (k, v) { map[k] = String(v); },
       removeItem: function (k) { delete map[k]; }
     };
   }
 
+  /* 有些环境连「读 localStorage 这个属性」都会抛 SecurityError：
+     Safari 开了「阻止所有 Cookie」、微信/QQ/微博内置浏览器禁止 DOM 存储、
+     WebView 没开 domStorageEnabled、部分企业策略。裸访问会让脚本在加载阶段就崩，
+     表现是「点登录毫无反应、连报错都没有」。所以统一从这里取，取不到退回内存。
+     注意用 getItem 探活而不是 setItem：配额满时读还能用，不该把已有数据判死。 */
+  function pickStorage(kind) {
+    var name = kind === 'session' ? 'sessionStorage' : 'localStorage';
+    try {
+      var s = global[name];
+      if (!s) return memoryStorage();
+      s.getItem('__station_probe__');
+      return s;
+    } catch (e) { return memoryStorage(); }
+  }
+  function storageBlocked() {
+    return !!pickStorage('local').__memory;
+  }
+
   function createStore(storage) {
-    var st = storage || (typeof localStorage !== 'undefined' ? localStorage : memoryStorage());
+    var st = storage || pickStorage('local');
     var db = read();
     var actorName = '';                 /* 当前登录账号，登录后由 app.js 注入 */
     var accountsProvider = null;        /* auth.js 的 snapshot / restore，让账号库随备份迁移 */
-    var degraded = false;               /* 本地存储写不进去（无痕模式 / 配额满） */
+    var degraded = !!st.__memory;       /* 本地存储不可用（无痕 / 配额满 / 浏览器禁存储） */
 
     function read() {
       try {
@@ -746,6 +766,8 @@
   var api = {
     createStore: createStore,
     memoryStorage: memoryStorage,
+    pickStorage: pickStorage,
+    storageBlocked: storageBlocked,
     defaultSettings: defaultSettings,
     dayKey: dayKey,
     daysSince: daysSince,

@@ -9,9 +9,13 @@
     return { token: '', repo: '', branch: 'main', path: 'data/station-db.json', auto: false, lastAt: '', lastError: '' };
   }
   function storage() {
-    if (typeof localStorage !== 'undefined') return localStorage;
+    /* 同上：localStorage 属性访问本身可能抛 SecurityError，不能裸读 */
+    try {
+      var s = global.localStorage;
+      if (s) { s.getItem('__station_probe__'); return s; }
+    } catch (e) { /* 落到内存实现 */ }
     var m = {};
-    return { getItem: function (k) { return m[k] || null; }, setItem: function (k, v) { m[k] = v; }, removeItem: function (k) { delete m[k]; } };
+    return { __memory: true, getItem: function (k) { return m[k] == null ? null : m[k]; }, setItem: function (k, v) { m[k] = v; }, removeItem: function (k) { delete m[k]; } };
   }
   function config() {
     var c = defaults();
