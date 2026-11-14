@@ -103,6 +103,19 @@ bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/pla
 - 云盘凭据、GitHub token 只存在本机浏览器设置里，不进代码库（`.gitignore` 已排除 `.env`、`*.token`）。
 - 照片文件名按 `类型/年-月/前缀-时间-随机.jpg` 归档，出库凭证与入库照片分目录。
 
+## 没接 123 云盘 OAuth 登录的原因（决策记录）
+
+官方授权地址形如 `https://yun.123pan.com/auth?client_id=&redirect_uri=&scope=user:base,file:all:read,file:all:write&state=`，授权后回跳 `redirect_uri?code=`，再用 `POST https://open-api.123pan.com/api/v1/oauth2/access_token`（`client_id` + **`client_secret`** + `grant_type=authorization_code` + `code` + `redirect_uri`）换 token。核实后不采用，原因是四点叠加：
+
+1. **`client_secret` 必填**，纯静态站无法安全保存，必须由 Worker 中转换 token；
+2. **开放平台已改为付费权益**：2026-03 起 OpenAPI 划入「开发者权益包」，¥25/月连续包月且要求账号为会员，此前免费申请已于 3 月 1 日到期；企业合作通道需营业执照与 ICP 备案；
+3. **回调地址是硬前提**：OAuth 需要公网 https 地址，Pages 未开启时（`rhuahub.github.io/express-station/` 返回 404）整条链跑不起来；安卓壳的页面来源是 `https://appassets.androidplatform.net`，无法在 123 后台登记，App 内也走不通；
+4. **与「不开放注册」冲突**：OAuth 登录天然允许任何 123 账号进入。若要接，必须做成白名单（站长生成一次性邀请码，登录后凭码绑定）。
+
+现状：登录走本机账号（站长初始化 + 后台加子账号），照片走 WebDAV 应用密码 —— 两项都免费且不依赖 Pages。
+
+> 注：`open-api.123pan.com` 实测返回 `Access-Control-Allow-Origin: *`，`GET /api/v1/user/info`（Bearer token）可直接前端调用。哪天开通了权益包又想接，只需在 `deploy/webdav-proxy.js` 加一个 `/oauth/pan123` 端点存 secret，前端负责跳授权页与带 `state` 校验。
+
 ## 测试
 
 ```bash
