@@ -13,7 +13,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=1.0.5">
+<link rel="stylesheet" href="styles.css?v=1.0.6">
 </head>
 <body class="auth-locked">
 
@@ -75,8 +75,13 @@
     <div id="authLogin" class="auth-pane">
       <div class="auth-head"><h2>登录驿站</h2><p>请用站长或店员账号登录，所有操作都会记下操作人。</p></div>
       <div id="authBootHint" class="auth-tip" hidden>
-        <b>本站尚未初始化</b>
-        <span>站长请打开 <code>index.html?setup=1</code>；在手机上可长按上方标题 1.2 秒（或连续点 5 下）进入初始化。初始化只能做一次。</span>
+        <b>这个网址下还没有账号</b>
+        <span>账号库只存在当前浏览器的 localStorage 里，并且<b>按网址隔离</b>：换个域名、换个浏览器、换了无痕模式，都会看到「0 个账号」。两种情况二选一 —— 老站已有数据就<b>导入备份</b>；第一次在这台设备上部署就直接<b>初始化</b>。</span>
+        <div class="auth-tip-actions">
+          <button class="btn btn-primary btn-sm" id="btnGoSetup" type="button">初始化本站（创建站长账号）</button>
+          <button class="btn btn-outline btn-sm" id="btnBootImport" type="button">从备份导入</button>
+        </div>
+        <span class="auth-tip-fine">初始化只能做一次；建好站长账号后，这个按钮和注册入口都会永久消失，之后新账号只能在「账号管理」里添加。</span>
       </div>
       <div id="authStorageHint" class="auth-tip" hidden>
         <b>这个浏览器不允许保存数据</b>
@@ -680,12 +685,12 @@
 <div id="cameraRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
-<script src="store.js?v=1.0.5"></script>
-<script src="auth.js?v=1.0.5"></script>
-<script src="photos.js?v=1.0.5"></script>
-<script src="camera.js?v=1.0.5"></script>
-<script src="sync.js?v=1.0.5"></script>
-<script src="app.js?v=1.0.5"></script>
+<script src="store.js?v=1.0.6"></script>
+<script src="auth.js?v=1.0.6"></script>
+<script src="photos.js?v=1.0.6"></script>
+<script src="camera.js?v=1.0.6"></script>
+<script src="sync.js?v=1.0.6"></script>
+<script src="app.js?v=1.0.6"></script>
 <script>
 /* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
 (function () {

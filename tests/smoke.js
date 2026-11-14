@@ -356,7 +356,8 @@ check('登录页默认不暴露注册入口，初始化改为显式触发', () =
   const loginTag = (html.match(/<div id="authLogin"[^>]*>/) || [''])[0];
   assert.ok(/\bhidden\b/.test(setupTag), '初始化表单默认必须隐藏');
   assert.ok(!/\bhidden\b/.test(loginTag), '登录表单应默认可见');
-  ['不开放自助注册', 'id="authBootHint"', 'setup=1', '长按上方标题']
+  // 初始化入口从「隐藏手势」改成零账号时的可见按钮（?setup=1 仍可用）
+  ['不开放自助注册', 'id="authBootHint"', 'id="btnGoSetup"', '按网址隔离']
     .forEach(k => assert.ok(html.includes(k), '登录页缺少 ' + k));
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
   assert.ok(/function wantSetup\(/.test(app), '缺少初始化入口判定');
@@ -989,6 +990,17 @@ check('脚本带版本号，登录页自带自检入口', () => {
   assert.ok(/id="authStorageWhy"/.test(html), '存储提示要能按场景换文案');
   const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
   assert.ok(/BUILD\s*=\s*'[\d.]+'/.test(sw), 'SW 预缓存清单要用同一个版本号');
+});
+
+check('零账号时登录页有可见的初始化入口，且初始化仍受「仅零账号」限制', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.ok(/id="btnGoSetup"/.test(html), '零账号时必须给可见的初始化按钮，不能只靠长按手势');
+  assert.ok(/id="btnBootImport"/.test(html), '零账号时也要能直接导入备份');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/btnGoSetup'\)\.onclick[\s\S]{0,200}needSetup/.test(app), '初始化按钮必须自己再校验一次「零账号」');
+  const auth = fs.readFileSync(path.join(root, 'auth.js'), 'utf8');
+  assert.ok(/if \(db\.accounts\.length\) return \{ ok: false, error: '本站已初始化/.test(auth),
+    'auth.register 仍要拒绝有账号后的自助注册');
 });
 
 (async () => {

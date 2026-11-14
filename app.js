@@ -672,6 +672,18 @@
         box.textContent = lines.join('\n');
       };
     }
+    /* 零账号时给可见入口：手机上「长按标题 1.2 秒」这种手势没人会去猜，
+       站长换域名/换浏览器后只会看到「登录不了」。初始化仍然只允许在零账号时进行。 */
+    if ($('btnGoSetup')) {
+      $('btnGoSetup').onclick = function () {
+        if (!auth.status().needSetup) { authMsg('本站已初始化，注册入口已关闭', true); return; }
+        showGate('setup');
+        authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
+      };
+    }
+    if ($('btnBootImport')) {
+      $('btnBootImport').onclick = function () { $('authImportFile').click(); };
+    }
     $('btnAuthImport').onclick = function () { $('authImportFile').click(); };
     $('authImportFile').addEventListener('change', async function () {
       var file = this.files && this.files[0];

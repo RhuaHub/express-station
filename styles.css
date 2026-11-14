@@ -467,6 +467,10 @@ body.auth-locked .app { display: none; }
   padding: 1px 5px; border-radius: 4px; background: var(--gold-soft);
   color: var(--gold-deep); font-family: ui-monospace, Menlo, Consolas, monospace;
 }
+/* 零账号时的可见入口：两个按钮竖排在窄屏也不会挤 */
+.auth-tip-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 8px; }
+.auth-tip-actions .btn { flex: 1 1 150px; }
+.auth-tip-fine { display: block; font-size: 10px; color: var(--muted); line-height: 1.6; }
 .auth-msg { margin-top: 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; background: var(--ok-bg); color: var(--ok); }
 .auth-msg.err { background: var(--danger-bg); color: var(--danger); }
 .auth-note {

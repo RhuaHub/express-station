@@ -2,8 +2,8 @@
    只缓存本站 GET 静态资源，绝不拦截云盘上传、GitHub 同步等跨域请求。 */
 'use strict';
 
-var VERSION = 'station-shell-v6';
-var BUILD = '1.0.5';
+var VERSION = 'station-shell-v7';
+var BUILD = '1.0.6';
 var SHELL = [
   './',
   './index.html',

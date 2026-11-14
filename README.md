@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 网页 | `index.html` | 双击即用，也可部署到 Cloudflare Pages / GitHub Pages |
 | PWA | 浏览器「安装到桌面」 | 支持离线打开，桌面图标、启动画面齐全 |
-| 安卓 App | `android/dist/express-station-1.0.5.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
+| 安卓 App | `android/dist/express-station-1.0.6.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
 
 ## 功能
 
@@ -38,7 +38,7 @@ sw.js                 离线缓存（仅同源 GET）
 icons/                PWA 与桌面图标
 android/              安卓 App 壳（WebView）与打包脚本
 deploy/               WebDAV CORS 代理 Worker、AList 容器配置
-tests/smoke.js        回归测试（70 项）
+tests/smoke.js        回归测试（71 项）
 tools/                图标生成、无头浏览器探针等辅助脚本
 ```
 
@@ -155,6 +155,7 @@ Worker 路由：`/pan123` → 123 云盘，`/nutstore` → 坚果云，`/webdav`
 - **手机上怎么进初始化**：长按标题 1.2 秒（已屏蔽系统长按菜单与文字选中，否则 iOS 会先弹「拷贝/查询」把计时器打断），或 **2.5 秒内连点标题 5 下**。
 - **触屏点击延迟**：按钮统一 `touch-action: manipulation`，去掉双击缩放的 300ms 等待，不会再出现「点一下没反应、要再点一下」。
 - **登录页自带自检**：点「登录不了？点这里自检」，会列出地址、协议与安全上下文、存储是否可用、账号数、离线缓存版本、页面脚本版本与 UA。手机上报问题时把这七行发过来就能定位，不用远程调试。
+- **「账号数 0」是最常见的「登录不了」**：账号库只存在当前浏览器的 localStorage，且**按网址隔离** —— 换域名、换浏览器、无痕模式都会是 0 个账号。1.0.6 起零账号时登录页直接给出两个按钮：「初始化本站（创建站长账号）」和「从备份导入」，不再需要长按手势（`?setup=1` 仍可用）。初始化依旧只在零账号时允许，建好账号后按钮与注册入口一起失效。
 
 自测方式（不用真手机）：`node tools/serve.js 8765` 起本地服务，再 `MOBILE=1 node tools/cdp-probe.js http://127.0.0.1:8765/index.html <表达式文件>`，用 CDP 模拟 390×844 竖屏与 844×390 横屏；`PRE_SCRIPT` 参数可以在页面脚本之前封掉 `localStorage`，复现无痕模式。
 
@@ -164,7 +165,7 @@ Worker 路由：`/pan123` → 123 云盘，`/nutstore` → 坚果云，`/webdav`
 bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/platform
 ```
 
-产物在 `android/dist/express-station-1.0.5.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
+产物在 `android/dist/express-station-1.0.6.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
 详细说明见 [android/README.md](android/README.md)。
 
 ## 数据与隐私
