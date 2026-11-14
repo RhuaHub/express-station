@@ -602,7 +602,8 @@ check('出库凭证独立目录、按年月分层、文件名带类型前缀', (
 check('上传时传入照片类型，且 WebDAV / 本地目录均逐层创建', () => {
   const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
   const ph = fs.readFileSync(path.join(root, 'photos.js'), 'utf8');
-  assert.ok(/photos\.put\(files\[i\], kind\)/.test(app), '上传时未传入照片类型');
+  assert.ok(/photos\.put\(files\[i\], kind/.test(app), '上传时未传入照片类型');
+  assert.ok(/customName/.test(app) && /name: customName/.test(app), '拍照取件的自定义文件名没传给 photos.put');
   assert.ok(/parts\.slice\(0, i \+ 1\)/.test(ph), 'WebDAV 未逐层 MKCOL');
   assert.ok(/ensureDirs\(/.test(ph), '本地同步目录未逐级创建');
   assert.ok(/rel\.split\('\/\'\)\.pop\(\)/.test(ph), '文件名未取最后一段');
@@ -1001,6 +1002,121 @@ check('零账号时登录页有可见的初始化入口，且初始化仍受「�
   const auth = fs.readFileSync(path.join(root, 'auth.js'), 'utf8');
   assert.ok(/if \(db\.accounts\.length\) return \{ ok: false, error: '本站已初始化/.test(auth),
     'auth.register 仍要拒绝有账号后的自助注册');
+});
+
+/* ---------- 拍照取件（1.0.7） ---------- */
+check('拍照取件：识别模块可加载，纯函数接口齐全', () => {
+  const r = require('../recognize.js');
+  ['engines', 'tokens', 'scoreParcel', 'match', 'safeName', 'fileName', 'detect', 'detectAndMatch']
+    .forEach(k => assert.strictEqual(typeof r[k], 'function', '识别模块缺少接口 ' + k));
+});
+
+check('拍照取件：候选串能拆出取件码 / 单号 / 尾号，并排除年份干扰', () => {
+  const r = require('../recognize.js');
+  const t = r.tokens(['取件码 A011', '运单号 YT100001', '手机 13800123456', '2026 0000']);
+  assert.ok(t.includes('A011'), '没提到取件码');
+  assert.ok(t.includes('YT100001'), '没提到运单号');
+  assert.ok(t.includes('13800123456'), '没提到完整手机号');
+  assert.ok(t.includes('3456'), '没从长数字串里取出手机尾号');
+  assert.ok(!t.includes('2026') && !t.includes('0000'), '年份 / 全零不该当取件码');
+  assert.ok(t.indexOf('YT100001') < t.indexOf('3456'), '长串应优先于 4 位尾号');
+});
+
+check('拍照取件：精确命中自动选中，并列候选不自动出库，无命中留手输', () => {
+  const r = require('../recognize.js');
+  const parcels = [
+    { id: 'p1', status: 'in', pickupCode: 'A011', trackingNo: 'YT100001', phoneTail: '3456', slot: 'A-01-1' },
+    { id: 'p2', status: 'in', pickupCode: 'B012', trackingNo: 'YT100002', phoneTail: '7890', slot: 'B-01-1' }
+  ];
+  const one = r.match(['取件码 A011'], parcels);
+  assert.ok(one.best && one.best.parcel.id === 'p1', '精确取件码应自动选中');
+  const amb = r.match(['3456 7890'], parcels);
+  assert.strictEqual(amb.best, null, '两件都精确命中时不能猜一件自动出库');
+  assert.strictEqual(amb.ambiguous, true);
+  assert.strictEqual(amb.candidates.length, 2);
+  const none = r.match(['ZZZZ9999'], parcels);
+  assert.strictEqual(none.best, null);
+  assert.strictEqual(none.candidates.length, 0);
+  const out = r.match(['A011'], [{ id: 'x', status: 'out', pickupCode: 'A011', trackingNo: 'YT9' }]);
+  assert.strictEqual(out.best, null, '已出库包裹不该被识别选中');
+});
+
+check('拍照取件：凭证名带取件码 / 单号，路径穿越被清洗', () => {
+  const r = require('../recognize.js');
+  const parcel = { pickupCode: 'A011', trackingNo: 'YT100001', phoneTail: '3456' };
+  const name = r.fileName({ best: { parcel: parcel } }, new Date(2026, 10, 14, 19, 32, 10));
+  assert.ok(/^CK_20261114-193210_A011_YT100001_[a-z0-9]{1,3}\.jpg$/.test(name), '命名格式不对：' + name);
+  assert.ok(r.fileName({ tokens: ['YT999'] }, new Date(2026, 10, 14)).includes('未匹配'));
+  assert.ok(r.fileName({ tokens: [] }, new Date(2026, 10, 14)).includes('未识别'));
+  assert.ok(!r.safeName('../../etc/passwd').includes('/'), '文件名不能带路径分隔符');
+  assert.ok(/\.jpg$/.test(r.safeName('凭证.PNG')), '压缩成 JPEG 后文件名必须以 .jpg 结尾');
+});
+
+checkAsync('拍照取件：没有浏览器识别接口时如实降级，不假识别', async () => {
+  const r = require('../recognize.js');
+  const d = await r.detect({});
+  if (!r.engines().any) {
+    assert.strictEqual(d.supported, false);
+    assert.deepStrictEqual(d.texts, []);
+  } else {
+    assert.ok(Array.isArray(d.texts));
+  }
+  const m = await r.detectAndMatch({}, []);
+  assert.ok(m && Array.isArray(m.candidates) && Array.isArray(m.tokens));
+});
+
+check('拍照取件：photos.put 支持自定义文件名，且不允许路径穿越', () => {
+  const p = require('../photos.js');
+  assert.strictEqual(typeof p.safeCustomName, 'function');
+  const clean = p.safeCustomName('../../CK_20261114_A011.jpg');
+  assert.ok(!clean.includes('/'), '自定义文件名被清洗后仍含路径分隔符');
+  assert.ok(/\.jpg$/.test(clean));
+  const rel = p.buildRel('pickup', 'CK_20261114-193000_A011_YT100001_abc.jpg');
+  assert.ok(rel.indexOf('出库凭证/') === 0, '目录仍要按出库凭证 / 年-月 归档');
+  assert.ok(rel.endsWith('/CK_20261114-193000_A011_YT100001_abc.jpg'));
+  assert.ok(p.buildRel('pickup').endsWith('.jpg'), '不传自定义名时仍用随机时间名');
+});
+
+check('拍照取件：自动开镜头开关默认开、可关闭并回读', () => {
+  const p = require('../photos.js');
+  assert.strictEqual(p.config().autoCapture, true);
+  assert.strictEqual(p.saveConfig({ autoCapture: false }).autoCapture, false);
+  p.saveConfig({ autoCapture: true });
+});
+
+check('拍照取件：首屏结构、自动开镜头与连续取件流程齐全', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['id="scanCard"', 'id="btnScanPickup"', 'id="scanState"', 'id="scanCandidates"',
+    'id="scanFileName"', 'id="scanEngine"', 'id="phAutoCapture"', 'recognize.js?v=']
+    .forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  ['maybeAutoCapture', 'capturePickup', 'handlePickupPhoto', 'applyScanChoice',
+    'recognize.detectAndMatch', 'recognize.fileName', 'name: customName', 'usedScan',
+    'phAutoCapture', 'state.scan.autoTried = false',
+    'state.outKeyword = res.best.token']
+    .forEach(k => assert.ok(app.includes(k), 'app.js 缺少 ' + k));
+  const cam = fs.readFileSync(path.join(root, 'camera.js'), 'utf8');
+  assert.ok(/subtitle/.test(cam) && /startWatch/.test(cam), '相机缺少拍照取件副标题 / 黑屏兜底');
+});
+
+check('1.0.7 版本清单：脚本、SW、安卓资源与 APK 同步', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.ok(!/\?v=1\.0\.6/.test(html), '页面还有旧版本号，手机会一直跑旧 JS');
+  assert.ok((html.match(/\?v=1\.0\.7/g) || []).length >= 8, '资源版本号数量不足');
+  const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
+  assert.ok(/BUILD\s*=\s*'1\.0\.7'/.test(sw) && /station-shell-v8/.test(sw));
+  assert.ok(/\.\/recognize\.js\?v=' \+ BUILD/.test(sw), 'SW 预缓存清单漏了识别模块');
+  const sh = fs.readFileSync(path.join(root, 'android/build-apk.sh'), 'utf8');
+  const listed = (sh.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
+  assert.ok(listed.includes('recognize.js'), '打包脚本漏掉 recognize.js');
+  assert.ok(/--version-name 1\.0\.7/.test(sh) && /express-station-1\.0\.7\.apk/.test(sh));
+  const mf = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+  assert.ok(/versionCode="8"/.test(mf) && /versionName="1\.0\.7"/.test(mf));
+  const dist = path.join(root, 'android/dist');
+  const apks = fs.readdirSync(dist).filter(f => /^express-station-1\.0\.7\.apk$/.test(f));
+  assert.ok(apks.length, '1.0.7 APK 未构建');
+  const bin = fs.readFileSync(path.join(dist, apks[0])).toString('latin1');
+  assert.ok(bin.includes('assets/recognize.js'), 'APK 里没有打包识别模块');
 });
 
 (async () => {

@@ -13,7 +13,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=1.0.6">
+<link rel="stylesheet" href="styles.css?v=1.0.7">
 </head>
 <body class="auth-locked">
 
@@ -314,6 +314,20 @@
 
       <!-- 出库 -->
       <section class="view" id="view-outbound">
+        <!-- 拍照取件：进页面自动开镜头；拍完自动识别面单 / 取件码，自动选中并命名凭证 -->
+        <div class="card scan-card" id="scanCard">
+          <div class="scan-head">
+            <div class="scan-title">
+              <h3><svg class="ic"><use href="#i-camera"/></svg>拍照取件</h3>
+              <p>对准面单条码或取件码标签拍照，自动找件、自动命名凭证；识别不到可以直接手输。</p>
+            </div>
+            <button class="btn btn-primary btn-scan" data-perm="write" id="btnScanPickup"><svg class="ic"><use href="#i-camera"/></svg>拍照取件</button>
+          </div>
+          <div class="scan-state" id="scanState">准备就绪 · 点击下方按钮或等待自动开镜头</div>
+          <div class="scan-candidates" id="scanCandidates"></div>
+          <div class="scan-file" id="scanFileName" hidden></div>
+          <div class="scan-engine" id="scanEngine"></div>
+        </div>
         <div class="card search-card">
           <div class="search-wrap">
             <svg class="ic search-ic"><use href="#i-search"/></svg>
@@ -578,6 +592,7 @@
             <div class="field"><label for="phQuality">JPEG 质量（0.4–1）</label><input id="phQuality" class="input" type="number" step="0.05" min="0.4" max="1"></div>
           </div>
           <label class="switch"><input type="checkbox" id="phRequireProof" checked><span>出库必须拍取件凭证：勾选后，点「确认出库」会自动调起摄像头，未拍照不出库（可关闭）</span></label>
+          <label class="switch"><input type="checkbox" id="phAutoCapture" checked><span>进入「取件出库」自动打开摄像头拍照；关掉后仍可点首屏按钮拍照，或直接手输取件码</span></label>
           <div class="btn-row">
             <button class="btn btn-primary btn-sm" data-perm="manage" id="btnPhSave">保存图片设置</button>
             <button class="btn btn-outline btn-sm" data-perm="manage" id="btnPhTest">测试连接</button>
@@ -685,12 +700,13 @@
 <div id="cameraRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
-<script src="store.js?v=1.0.6"></script>
-<script src="auth.js?v=1.0.6"></script>
-<script src="photos.js?v=1.0.6"></script>
-<script src="camera.js?v=1.0.6"></script>
-<script src="sync.js?v=1.0.6"></script>
-<script src="app.js?v=1.0.6"></script>
+<script src="store.js?v=1.0.7"></script>
+<script src="auth.js?v=1.0.7"></script>
+<script src="photos.js?v=1.0.7"></script>
+<script src="camera.js?v=1.0.7"></script>
+<script src="recognize.js?v=1.0.7"></script>
+<script src="sync.js?v=1.0.7"></script>
+<script src="app.js?v=1.0.7"></script>
 <script>
 /* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
 (function () {

@@ -11,6 +11,7 @@
   var sync = window.StationSync;
   var photos = window.StationPhotos;
   var camera = window.StationCamera;
+  var recognize = window.StationRecognize;
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -21,7 +22,7 @@
     dash: ['工作台', '今天也要把包裹安排明白'],
     lookup: ['查件', '报尾号或扫单号，货架位与取件状态一屏看清'],
     inbound: ['入库登记', '扫码、回车、下一件'],
-    outbound: ['取件出库', '按后四位或单号找件，支持一次多件'],
+    outbound: ['取件出库', '打开即拍照，自动识别取件码并命名凭证'],
     inventory: ['在库台账', '所有包裹的记录、修改与检索'],
     analytics: ['统计看板', '流转、滞留与货架占用'],
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
@@ -29,7 +30,10 @@
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
   var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '',
-    inFiles: [], proofFiles: [], lastParcel: null };
+    inFiles: [], proofFiles: [], lastParcel: null,
+    /* 拍照取件：一次拍照 → 识别 → 自动选中 → 自动命名凭证的全过程状态 */
+    scan: { status: 'idle', message: '', candidates: [], fileName: '', engine: '',
+      photoIndex: -1, busy: false, autoTried: false, userClosed: false, pickIntent: false } };
   var syncTimer = null;
   var inPreviewUrls = [];
   var proofPreviewUrls = [];
@@ -207,6 +211,10 @@
     } else {
       state.proofFiles = []; $('outProof').value = '';
       renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
+      var s = state.scan;
+      s.status = 'idle'; s.message = ''; s.candidates = []; s.fileName = '';
+      s.photoIndex = -1; s.busy = false; s.pickIntent = false;
+      renderScan();
     }
   }
   function addFiles(which, fileList) {
@@ -225,7 +233,9 @@
     var items = [], warnings = [], failed = 0;
     for (var i = 0; i < files.length; i++) {
       var r;
-      try { r = await photos.put(files[i], kind); }
+      /* 拍照取件生成的 CK_ 文件名带取件码 / 单号，写进仓库时沿用，事后按码能翻到凭证 */
+      var customName = /^(CK|RK)_/.test(files[i].name) ? files[i].name : '';
+      try { r = await photos.put(files[i], kind, { name: customName }); }
       catch (e) { r = { ok: false, error: e.message || String(e) }; }
       if (!r.ok) { failed++; continue; }
       if (r.warning) warnings.push(r.warning);
@@ -264,6 +274,10 @@
     input.setAttribute('capture', 'environment');
     input.click();
     setTimeout(function () { input.removeAttribute('capture'); }, 1500);
+    /* 用户取消了系统相机就不会有 change，别让 pickIntent 挂到下一次「选图」上 */
+    if (which === 'proof' && state.scan.pickIntent) {
+      setTimeout(function () { state.scan.pickIntent = false; }, 30000);
+    }
   }
   async function takePhoto(which) {
     var single = which === 'proof';
@@ -279,6 +293,184 @@
     nativeCapture(which);
     return null;
   }
+
+  /* ---------- 拍照取件：进页面自动开镜头 → 识别 → 自动选中 → 自动命名凭证 ---------- */
+  function renameFile(file, name) {
+    try {
+      return new File([file], name, {
+        type: file.type || 'image/jpeg', lastModified: file.lastModified || Date.now()
+      });
+    } catch (e) { return file; }  /* 老浏览器不支持 File 构造，就保留原名 */
+  }
+  function renderScan() {
+    var s = state.scan;
+    var el = $('scanState');
+    if (!el) return;
+    el.className = 'scan-state' + (s.status === 'err' ? ' err'
+      : (s.status === 'ok' ? ' ok' : (s.status === 'busy' ? ' busy' : '')));
+    el.textContent = s.message || '准备就绪 · 点「拍照取件」或等自动开镜头；识别不到就用下面搜索框手输';
+    var box = $('scanCandidates');
+    box.innerHTML = s.candidates.length
+      ? '<span class="scan-cand-label">识别到多件可能匹配，请点选：</span>' + s.candidates.map(function (c) {
+        var p = c.parcel;
+        return '<button type="button" class="scan-cand" data-scan-id="' + esc(p.id) + '">' +
+          '<b>' + esc(p.pickupCode || '无码') + '</b><span>' + esc(p.trackingNo) + '</span>' +
+          '<em>' + esc(p.slot || '') + '</em></button>';
+      }).join('')
+      : '';
+    var fn = $('scanFileName');
+    fn.hidden = !s.fileName;
+    fn.textContent = s.fileName ? '凭证文件名：' + s.fileName : '';
+    var eng = $('scanEngine');
+    if (eng) {
+      var e = recognize ? recognize.engines() : { any: false, label: '识别模块未加载' };
+      eng.textContent = '本机识别：' + e.label + (e.any
+        ? '' : ' · 这个浏览器不支持本地条码/文字识别，拍照后请手输取件码；照片仍会按时间自动命名');
+    }
+  }
+  async function handlePickupPhoto(file) {
+    var s = state.scan;
+    if (!file || String(file.type || '').indexOf('image/') !== 0) {
+      toast('请选择图片文件', 'err'); return;
+    }
+    s.busy = true; s.status = 'busy';
+    s.message = '正在识别照片里的条码 / 取件码…';
+    s.candidates = []; s.fileName = '';
+    renderScan();
+
+    var inStock = store.listParcels({ status: 'in' });
+    var res;
+    try {
+      res = recognize
+        ? await recognize.detectAndMatch(file, inStock)
+        : { tokens: [], candidates: [], best: null, top: null, supported: false,
+            engineLabel: '识别模块未加载', detected: [], readError: '' };
+    } catch (e) {
+      res = { tokens: [], candidates: [], best: null, top: null, supported: false,
+        engineLabel: '识别失败', detected: [], readError: e.message || String(e) };
+    }
+
+    var name = recognize ? recognize.fileName(res) : '';
+    var named = name ? renameFile(file, name) : file;
+    s.fileName = named.name;
+    s.engine = res.engineLabel || '';
+    s.candidates = res.candidates || [];
+    /* 新拍的一张一定进凭证列表；旧凭证最多留 11 张，仍支持一次多件合并出库 */
+    state.proofFiles = state.proofFiles.slice(-11).concat([named]);
+    s.photoIndex = state.proofFiles.length - 1;
+    renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
+    renderPhotoStatus();
+
+    if (res.best) {
+      var p = res.best.parcel;
+      state.selected[p.id] = true;
+      /* 把命中的串填进搜索框，列表立刻显示这件被勾选的包裹，肉眼可复核再出库 */
+      $('outSearch').value = res.best.token;
+      state.outKeyword = res.best.token;
+      s.status = 'ok';
+      s.message = '识别到「' + res.best.token + '」· 已自动选中 ' + p.trackingNo +
+        '（取件码 ' + (p.pickupCode || '无码') + ' / ' + (p.slot || '未分配') + '）';
+      toast('已自动识别并选中 1 件，确认无误后点「确认出库」');
+    } else if (res.candidates && res.candidates.length) {
+      if (res.top && res.top.token) {
+        $('outSearch').value = res.top.token;
+        state.outKeyword = res.top.token;
+      }
+      s.status = 'busy';
+      s.message = '识别到 ' + res.candidates.length + ' 件可能匹配，请点下方按钮选一件（不会自动出库）';
+    } else {
+      s.status = 'err';
+      s.message = (res.readError || '照片里没找到可对应的在库包裹') +
+        '；凭证已自动命名，可在下方搜索框手输取件码后出库';
+    }
+    s.busy = false;
+    renderScan();
+    renderOutbound();
+  }
+  async function capturePickup(auto) {
+    var s = state.scan;
+    if (s.busy) return;
+    if (!auth.can('write')) {
+      if (!auto) toast('当前账号没有出库权限', 'err');
+      return;
+    }
+    if (!camera || !camera.supported()) {
+      s.pickIntent = true;
+      if (!auto) toast('当前浏览器不支持网页摄像头，改用系统相机', 'err');
+      nativeCapture('proof');
+      return;
+    }
+    s.busy = true; s.status = 'busy';
+    s.message = auto ? '正在自动打开摄像头…' : '摄像头已打开 · 拍完自动识别并命名';
+    renderScan();
+    /* 刚登录完键盘可能还开着，先收起来再弹相机，避免软键盘盖住取景框 */
+    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* 忽略 */ }
+    var files;
+    try {
+      files = await camera.open({
+        single: true,
+        title: '拍照取件 · 自动识别',
+        subtitle: '对准面单条码或取件码标签，拍完自动找件、自动命名凭证',
+        tip: '对准面单 / 取件码后点「拍照」'
+      });
+    } catch (e) { files = null; }
+    s.busy = false;
+    if (camera.lastError) toast(camera.lastError, 'err');
+    if (!files || !files.length) {
+      /* 主动关过一次相机，本会话就不再自动弹，避免每次切页面都被打断 */
+      s.userClosed = true;
+      s.status = 'idle';
+      s.message = '已取消拍照 · 可点「拍照取件」重拍，或用下面搜索框手输取件码';
+      renderScan();
+      return;
+    }
+    await handlePickupPhoto(files[0]);
+  }
+  async function maybeAutoCapture() {
+    var s = state.scan;
+    if (s.autoTried || s.busy || s.userClosed) return;
+    if (!photos.config().autoCapture || !auth.can('write')) return;
+    s.autoTried = true;
+    if (!camera || !camera.supported()) {
+      s.status = 'err';
+      s.message = '当前浏览器不支持网页摄像头；可点「拍照取件」用系统相机，或直接手输取件码';
+      renderScan();
+      return;
+    }
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        var st = await navigator.permissions.query({ name: 'camera' });
+        if (st && st.state === 'denied') {
+          s.userClosed = true;
+          s.status = 'err';
+          s.message = '相机权限被拒绝：请在浏览器/系统设置里允许摄像头，或关掉「自动开镜头」改手输取件码';
+          renderScan();
+          return;
+        }
+      }
+    } catch (e) { /* Safari 不支持 camera 权限查询，直接尝试开镜头 */ }
+    capturePickup(true);
+  }
+  function applyScanChoice(id) {
+    var p = store.listParcels({ status: 'in' }).find(function (x) { return x.id === id; });
+    if (!p) { toast('该包裹已出库，请重新拍照', 'err'); return; }
+    var s = state.scan;
+    state.selected[id] = true;
+    s.status = 'ok';
+    s.message = '已选中 ' + p.trackingNo + '（取件码 ' + (p.pickupCode || '无码') +
+      ' / ' + (p.slot || '未分配') + '）';
+    s.candidates = [];
+    /* 用户改选了另一件，文件名跟着改，别把错的取件码留在凭证上 */
+    if (recognize && s.photoIndex >= 0 && s.photoIndex < state.proofFiles.length) {
+      var name = recognize.fileName({ best: { parcel: p } });
+      state.proofFiles[s.photoIndex] = renameFile(state.proofFiles[s.photoIndex], name);
+      s.fileName = state.proofFiles[s.photoIndex].name;
+      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
+    }
+    renderScan();
+    renderOutbound();
+  }
+
   function togglePhotoBoxes() {
     var m = $('phMode').value;
     $('phGithubBox').hidden = m !== 'github';
@@ -344,6 +536,7 @@
     $('phMax').value = c.maxSide;
     $('phQuality').value = c.quality;
     $('phRequireProof').checked = c.requireProof !== false;
+    $('phAutoCapture').checked = c.autoCapture !== false;
     togglePhotoBoxes();
     refreshProviderUI(false);
     renderPhotoStatus();
@@ -372,7 +565,8 @@
       },
       maxSide: Number($('phMax').value),
       quality: Number($('phQuality').value),
-      requireProof: $('phRequireProof').checked
+      requireProof: $('phRequireProof').checked,
+      autoCapture: $('phAutoCapture').checked
     });
     renderPhotoStatus();
   }
@@ -871,7 +1065,14 @@
     $('checkoutBar').style.display = name === 'outbound' ? 'flex' : 'none';
     window.scrollTo({ top: 0, behavior: 'smooth' });
     if (name === 'inbound') setTimeout(function () { $('inTracking').focus(); }, 120);
-    if (name === 'outbound') setTimeout(function () { $('outSearch').focus(); }, 120);
+    if (name === 'outbound') {
+      /* 出库页默认就是拍照取件：自动开镜头时不聚焦搜索框，免得软键盘盖住取景框 */
+      state.scan.autoTried = false;
+      var willAuto = photos.config().autoCapture && camera && camera.supported() &&
+        auth.can('write') && !state.scan.userClosed;
+      if (willAuto) setTimeout(function () { maybeAutoCapture(); }, 420);
+      else setTimeout(function () { $('outSearch').focus(); }, 120);
+    }
     if (name === 'lookup') setTimeout(function () { $('lookupKey').focus(); }, 120);
   }
 
@@ -1119,6 +1320,7 @@
     $('btnCheckout').innerHTML = n > 1
       ? '<svg class="ic"><use href="#i-merge"/></svg>合并出库 ' + n + ' 件'
       : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
+    renderScan();
   }
 
   /* ---------- 渲染：在库台账 ---------- */
@@ -1422,9 +1624,28 @@
     $('outClearSel').onclick = function () {
       state.selected = {}; renderOutbound();
     };
+    $('btnScanPickup').onclick = function () {
+      state.scan.userClosed = false;
+      capturePickup(false);
+    };
+    $('scanCandidates').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-scan-id]');
+      if (b) applyScanChoice(b.dataset.scanId);
+    });
     $('btnProof').onclick = function () { takePhoto('proof'); };
     $('btnProofPick').onclick = function () { $('outProof').removeAttribute('capture'); $('outProof').click(); };
-    $('outProof').addEventListener('change', function () { addFiles('proof', this.files); this.value = ''; });
+    $('outProof').addEventListener('change', function () {
+      var list = Array.from(this.files || []);
+      this.value = '';
+      /* 系统相机回传的单张照片同样走「识别 → 自动选中 → 自动命名」 */
+      if (state.scan.pickIntent && list.length === 1) {
+        state.scan.pickIntent = false;
+        handlePickupPhoto(list[0]);
+      } else {
+        state.scan.pickIntent = false;
+        addFiles('proof', list);
+      }
+    });
     $('btnCheckout').onclick = doCheckout;
 
     /* 在库台账 */
@@ -1686,6 +1907,7 @@
     if (!guard('write')) return;
     var ids = Object.keys(state.selected);
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
+    var usedScan = state.scan.photoIndex >= 0;
     if (!(await ensureProof())) return;
     var btn = $('btnCheckout');
     btn.disabled = true;
@@ -1700,7 +1922,15 @@
     afterWrite((r.merged ? '合并出库 ' : '已出库 ') + r.count + ' 件 · 批次 ' + r.batchId +
       (pr.items.length ? ' · 共用凭证 ' + pr.items.length + ' 张' : ''));
     reportPhotoResult(pr);
-    $('outSearch').focus();
+    /* 连着取件：这次是拍照取件出的库，确认后自动开下一张；手输出库不打扰 */
+    if (usedScan && photos.config().autoCapture && camera && camera.supported() &&
+      !state.scan.userClosed && auth.can('write')) {
+      setTimeout(function () {
+        if (state.view === 'outbound' && !state.scan.busy) capturePickup(true);
+      }, 650);
+    } else {
+      $('outSearch').focus();
+    }
   }
 
   function init() {

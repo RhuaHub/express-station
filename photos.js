@@ -60,7 +60,9 @@
       },
       maxSide: 1600,
       quality: 0.82,
-      requireProof: true
+      requireProof: true,
+      /* 进入「取件出库」自动开镜头拍照；关掉后退回首屏手动按钮 + 搜索出库 */
+      autoCapture: true
     };
   }
   var fallbackStore = {};
@@ -114,6 +116,7 @@
         c.maxSide = Math.max(600, Math.min(4000, Number(p.maxSide) || c.maxSide));
         c.quality = Math.max(0.4, Math.min(1, Number(p.quality) || c.quality));
         c.requireProof = p.requireProof !== false;
+        c.autoCapture = p.autoCapture !== false;
       }
     } catch (e) { /* 配置损坏则用默认值 */ }
     return c;
@@ -532,10 +535,22 @@
       pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds()) + '-' +
       Math.random().toString(36).slice(2, 7) + '.jpg';
   }
+  /* 拍照取件会把识别出的取件码 / 单号写进文件名，事后在仓库里按码就能翻到凭证。
+     只接受干净的单文件名：不允许路径分隔符、控制字符，强制 .jpg（压缩后就是 JPEG）。 */
+  function safeCustomName(name) {
+    var s = String(name == null ? '' : name)
+      .replace(/[\\/:*?"<>|\x00-\x1f]/g, '_')
+      .replace(/[^0-9A-Za-z_\u4e00-\u9fa5.\-]/g, '_')
+      .replace(/^\.+/, '').trim().slice(0, 90);
+    if (!s) return '';
+    if (!/\.(jpe?g)$/i.test(s)) s = s.replace(/\.[^.]{1,5}$/, '') + '.jpg';
+    return s;
+  }
   /* 云盘目录：入库照片与出库凭证分开归档，各按年月再分一层，便于事后按日期取证 */
-  function buildRel(kind) {
+  function buildRel(kind, customName) {
     var pickup = kind === 'pickup';
-    return (pickup ? '出库凭证' : '入库照片') + '/' + monthKey() + '/' + newName(pickup ? 'CK-' : 'RK-');
+    var file = safeCustomName(customName) || newName(pickup ? 'CK-' : 'RK-');
+    return (pickup ? '出库凭证' : '入库照片') + '/' + monthKey() + '/' + file;
   }
   /* 逐级打开/创建目录，兼容任意层数的 rel（旧版两段路径也能正常读取） */
   async function ensureDirs(root, rel, create) {
@@ -560,12 +575,12 @@
     try { return await fallback(blob, rel, warning); }
     catch (e) { return { ok: false, error: '暂存浏览器也失败：' + (e.message || e) }; }
   }
-  async function put(file, kind) {
+  async function put(file, kind, opts) {
     var c = config();
     var blob;
     try { blob = await compress(file, c.maxSide, c.quality); }
     catch (e) { return { ok: false, error: e.message }; }
-    var rel = buildRel(kind);
+    var rel = buildRel(kind, opts && opts.name);
     var name = rel.split('/').pop();
     if (c.mode === 'local') {
       if (!dirHandleRecord || !dirHandleRecord.handle || !(await ensurePermission())) {
@@ -740,6 +755,7 @@
     config: config, saveConfig: saveConfig, init: init,
     isLocalSupported: isLocalSupported, pickDirectory: pickDirectory,
     put: put, getUrl: getUrl, test: test, status: status, buildRel: buildRel,
+    safeCustomName: safeCustomName,
     providers: function () {
       return PROVIDER_KEYS.map(function (k) {
         return {

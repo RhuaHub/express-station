@@ -46,13 +46,17 @@
     return new Promise(function (resolve) {
       var single = !!opts.single;
       var title = opts.title || '拍照';
+      var subtitle = opts.subtitle || '';
+      var tip = opts.tip || '对准包裹或面单后点「拍照」';
       var done = false, stream = null, facing = 'environment';
       var files = [], thumbUrls = [];
       var baseName = '';
+      var startWatch = null;
 
       root.innerHTML = '<div class="cam-mask"><div class="cam-panel">' +
         '<div class="cam-head"><h3>' + esc(title) + '</h3>' +
         '<button type="button" class="cam-x" data-act="cancel" aria-label="关闭"><svg class="ic"><use href="#i-close"/></svg></button></div>' +
+        (subtitle ? '<div class="cam-sub">' + esc(subtitle) + '</div>' : '') +
         '<div class="cam-stage">' +
         '<video id="camVideo" autoplay playsinline muted></video>' +
         '<div class="cam-error" id="camError" hidden></div>' +
@@ -82,6 +86,7 @@
       function finish(result) {
         if (done) return;
         done = true;
+        if (startWatch) clearTimeout(startWatch);
         stopStream();
         document.removeEventListener('keydown', onKey);
         thumbUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) { /* 忽略 */ } });
@@ -123,7 +128,14 @@
         }
         video.srcObject = stream;
         try { await video.play(); } catch (e) { /* 部分浏览器需用户手势，忽略 */ }
-        hint.textContent = (facing === 'environment' ? '后置' : '前置') + '摄像头 · 对准包裹或面单后点「拍照」';
+        hint.textContent = (facing === 'environment' ? '后置' : '前置') + '摄像头 · ' + tip;
+        /* 自动开镜头时 iOS Safari 可能不给自动播放，画面全黑；2.6 秒后给一句可操作的提示 */
+        if (startWatch) clearTimeout(startWatch);
+        startWatch = setTimeout(function () {
+          if (!done && stream && video && !video.videoWidth) {
+            hint.textContent = '若画面仍是黑的，请先点一下屏幕；不行就关闭本窗口重新点「拍照取件」';
+          }
+        }, 2600);
       }
 
       function drawFrame() {
