@@ -125,7 +125,6 @@
       salt: str(a.salt),
       hash: str(a.hash),
       active: a.active !== false,
-      source: a.source === 'pan123' ? 'pan123' : 'local',
       createdAt: a.createdAt || isoNow(),
       createdBy: str(a.createdBy),
       lastLoginAt: a.lastLoginAt || ''
@@ -145,7 +144,6 @@
     return {
       id: a.id, username: a.username, name: a.name, role: a.role,
       roleName: ROLE_NAMES[a.role] || a.role, active: a.active,
-      source: a.source === 'pan123' ? 'pan123' : 'local',
       createdAt: a.createdAt, createdBy: a.createdBy, lastLoginAt: a.lastLoginAt
     };
   }
@@ -226,7 +224,6 @@
         salt: salt,
         hash: hashPassword(input.password, salt),
         active: true,
-        source: 'local',
         createdAt: isoNow(),
         createdBy: creator || '',
         lastLoginAt: ''
@@ -262,38 +259,6 @@
       writeSession(a.id, !!input.remember);
       return { ok: true, account: publicAccount(a) };
     }
-    /* 云盘账号登录：凭据已由调用方（StationPhotos.verifyLogin）在 123 云盘侧校验通过，
-       这里只负责建立/更新本机账号，并用同一密码留一份本地哈希，保证断网时能重新登录。
-       持有 123 云盘应用密码 = 持有云盘主权限，因此新账号直接给站长角色。 */
-    function loginVault(input) {
-      input = input || {};
-      var username = str(input.username).toLowerCase();
-      if (username.length < 2 || username.length > 64) {
-        return { ok: false, error: '请填写 123 云盘手机号或邮箱' };
-      }
-      var password = String(input.password || '');
-      if (!password) return { ok: false, error: '请填写 123 云盘应用密码' };
-      var a = findByUsername(username);
-      var created = false;
-      if (a) {
-        if (!a.active) return { ok: false, error: '该账号已停用，请联系站长' };
-        a.salt = randomHex(16);
-        a.hash = hashPassword(password, a.salt);
-        a.source = 'pan123';
-        if (str(input.name)) a.name = str(input.name);
-        a.lastLoginAt = isoNow();
-      } else {
-        a = makeAccount({ username: username, name: str(input.name) || username, password: password }, 'owner', '');
-        a.source = 'pan123';
-        a.lastLoginAt = isoNow();
-        db.accounts.push(a);
-        created = true;
-      }
-      save();
-      writeSession(a.id, !!input.remember);
-      return { ok: true, created: created, account: publicAccount(a) };
-    }
-
     function logout() {
       ses.removeItem(SESSION_KEY);
       st.removeItem(REMEMBER_KEY);
@@ -365,9 +330,6 @@
       var c = current();
       if (!c) return { ok: false, error: '请先登录' };
       var a = findById(c.id);
-      if (a.source === 'pan123') {
-        return { ok: false, error: '这个账号用 123 云盘密码登录，请到 123 云盘改应用密码，再回登录页重新登录' };
-      }
       if (hashPassword(oldPassword || '', a.salt) !== a.hash) return { ok: false, error: '原密码不正确' };
       var vp = validPassword(newPassword);
       if (!vp.ok) return vp;
@@ -402,7 +364,7 @@
 
     return {
       KEY: KEY, status: status, current: current, actor: actor, can: can,
-      register: register, login: login, loginVault: loginVault, logout: logout,
+      register: register, login: login, logout: logout,
       list: list, createSub: createSub, updateSub: updateSub, removeSub: removeSub,
       changePassword: changePassword,
       snapshot: snapshot, restore: restore,
