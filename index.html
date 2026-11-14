@@ -58,7 +58,33 @@
       <div><strong id="authStationName">我的快递驿站</strong><span>查件 · 入库 · 出库</span></div>
     </div>
 
-    <div id="authSetup" class="auth-pane">
+    <div class="auth-tabs" role="tablist">
+      <button class="auth-tab active" type="button" data-gate-tab="vault" role="tab"><svg class="ic"><use href="#i-cloud"/></svg>123 云盘登录</button>
+      <button class="auth-tab" type="button" data-gate-tab="local" role="tab"><svg class="ic"><use href="#i-user"/></svg>本机账号</button>
+    </div>
+
+    <div id="authVault" class="auth-pane">
+      <div class="auth-head"><h2>用 123 云盘账号登录</h2><p>填 123 云盘的手机号（或邮箱）和应用密码，向云盘校验通过就直接进系统，不另建账号，照片也直接存进这个云盘。</p></div>
+      <form id="formVault" autocomplete="off">
+        <div class="field"><label for="vaultUser">123 云盘账号</label><input id="vaultUser" class="input" placeholder="手机号 或 邮箱" autocomplete="username"></div>
+        <div class="field"><label for="vaultPass">应用密码</label><input id="vaultPass" class="input" type="password" placeholder="WebDAV 授权管理里生成的那串" autocomplete="current-password"></div>
+        <div class="field"><label for="vaultProxy">CORS 代理地址（Worker 根地址）</label><input id="vaultProxy" class="input" placeholder="https://xxx.workers.dev" autocomplete="off"></div>
+        <label class="switch"><input type="checkbox" id="vaultRemember" checked><span>在这台设备上记住登录（7 天）</span></label>
+        <button type="submit" class="btn btn-primary btn-block" id="btnVaultLogin"><svg class="ic"><use href="#i-cloud"/></svg>登录</button>
+      </form>
+      <div class="auth-links">
+        <button class="link" id="btnVaultHelp" type="button">应用密码在哪里生成？</button>
+      </div>
+      <div id="vaultTip" class="auth-tip" hidden>
+        <b>三步拿到应用密码</b>
+        <p>① 123 云盘网页版 → 工具中心 → 第三方挂载 → <b>WebDAV 授权管理</b> → 添加应用，权限勾「读写」，复制那串应用密码（只显示一次）；<br>
+        ② 把仓库里的 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker，把 Worker 根地址填到上面的「CORS 代理地址」；<br>
+        ③ 账号填 123 云盘登录手机号或邮箱，密码填应用密码。<br>
+        123 云盘不支持跨域直连，这一步代理不能省；应用密码不是网盘登录密码。</p>
+      </div>
+    </div>
+
+    <div id="authSetup" class="auth-pane" hidden>
       <div class="auth-head"><h2>注册站长账号</h2><p>首次使用，先创建一个站长账号。之后可在「账号管理」里给店员开子账号。</p></div>
       <form id="formRegister" autocomplete="off">
         <div class="field"><label for="regName">你的姓名 / 称呼</label><input id="regName" class="input" placeholder="如：李站长" required autocomplete="off"></div>
@@ -86,7 +112,7 @@
     </div>
 
     <div id="authMsg" class="auth-msg" hidden></div>
-    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库。忘记密码且没有备份时，需要清空站点数据重新注册。</span></div>
+    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span><b>123 云盘登录</b>：密码只在本机用来向云盘校验，同时存一份加盐哈希供断网时登录，不会上传任何服务器。<b>本机账号</b>用于店员子账号与纯离线场景，账号库存在这台设备的浏览器里。换设备请用 JSON 全量备份迁移。</span></div>
   </div>
 </div>
 <input type="file" id="authImportFile" accept="application/json,.json" hidden>

@@ -401,26 +401,54 @@
     box.className = 'auth-msg' + (isErr ? ' err' : ' ok');
     box.hidden = false;
   }
+  /* 登录门默认落在哪个页签：没账号、或已配好云盘代理、或本机有云盘账号，都优先 123 云盘登录 */
+  function defaultGateTab() {
+    var st = auth.status();
+    if (!st.hasAccounts) return 'vault';
+    var w = photos.config().webdav;
+    if (w.proxyBase && (w.provider === 'pan123' || w.provider === 'nutstore')) return 'vault';
+    var hasVaultAccount = auth.list().some(function (a) { return a.source === 'pan123'; });
+    return hasVaultAccount ? 'vault' : 'local';
+  }
+  function fillVaultForm() {
+    var w = photos.config().webdav;
+    if (!$('vaultUser').value && w.provider === 'pan123') $('vaultUser').value = w.user || '';
+    $('vaultProxy').value = w.proxyBase || '';
+  }
+  function setGateTab(tab, forceSetup) {
+    var st = auth.status();
+    var showSetup = forceSetup || !st.hasAccounts;
+    $('authVault').hidden = tab !== 'vault';
+    $('authSetup').hidden = !(tab === 'local' && showSetup);
+    $('authLogin').hidden = !(tab === 'local' && !showSetup);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-gate-tab]'), function (b) {
+      var on = b.getAttribute('data-gate-tab') === tab;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    var focusId = tab === 'vault' ? 'vaultUser' : (showSetup ? 'regName' : 'loginUser');
+    setTimeout(function () { try { $(focusId).focus(); } catch (e) { /* 隐藏时不强求 */ } }, 80);
+  }
   function showGate(mode) {
     document.body.classList.add('auth-locked');
     $('authGate').hidden = false;
-    $('authSetup').hidden = mode !== 'setup';
-    $('authLogin').hidden = mode !== 'login';
     $('authStationName').textContent = store.settings().stationName;
     $('authMsg').hidden = true;
-    ['regPass', 'regConfirm', 'loginPass'].forEach(function (id) { $(id).value = ''; });
-    var focusId = mode === 'setup' ? 'regName' : 'loginUser';
-    setTimeout(function () { $(focusId).focus(); }, 80);
+    ['regPass', 'regConfirm', 'loginPass', 'vaultPass'].forEach(function (id) { $(id).value = ''; });
+    fillVaultForm();
+    var tab = mode === 'vault' ? 'vault'
+      : (mode === 'local' || mode === 'setup') ? 'local' : defaultGateTab();
+    setGateTab(tab, mode === 'setup');
   }
   function hideGate() {
     document.body.classList.remove('auth-locked');
     $('authGate').hidden = true;
   }
-  function enterApp() {
+  function enterApp(greetMsg) {
     var c = auth.current();
     if (!c) { showGate(auth.status().needSetup ? 'setup' : 'login'); return; }
     store.setActor(c.name);
-    store.logEvent('login', c.name + ' 登录（' + c.roleName + '）');
+    store.logEvent('login', c.name + ' 登录（' + c.roleName + (c.source === 'pan123' ? ' · 123 云盘' : '') + '）');
     hideGate();
     applyPermissions();
     fillSettings();
@@ -428,7 +456,7 @@
     var target = hashView();
     switchView(target || 'dash', target ? { noHash: true } : undefined);
     if (target) toast('已打开「' + viewTitles[target][0] + '」');
-    else toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
+    else toast(greetMsg || ('欢迎回来，' + c.name + '（' + c.roleName + '）'));
   }
   function leaveApp() {
     var c = auth.current();
@@ -441,6 +469,61 @@
     showGate('login');
   }
   function bindAuth() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-gate-tab]'), function (b) {
+      b.addEventListener('click', function () {
+        $('authMsg').hidden = true;
+        setGateTab(b.getAttribute('data-gate-tab'));
+      });
+    });
+    $('btnVaultHelp').onclick = function () {
+      var tip = $('vaultTip');
+      tip.hidden = !tip.hidden;
+      this.textContent = tip.hidden ? '应用密码在哪里生成？' : '收起说明';
+    };
+
+    /* 123 云盘登录：先向云盘校验凭据，通过后再建立 / 更新本机账号 */
+    $('formVault').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var btn = $('btnVaultLogin');
+      var user = $('vaultUser').value.trim();
+      var pass = $('vaultPass').value;
+      var proxy = $('vaultProxy').value.trim();
+      if (!user || !pass) { authMsg('请填写 123 云盘账号和应用密码', true); return; }
+      btn.disabled = true;
+      authMsg('正在向 123 云盘校验账号…', false);
+      var r;
+      try {
+        r = await photos.verifyLogin({ provider: 'pan123', user: user, pass: pass, proxyBase: proxy });
+      } catch (err) {
+        r = { ok: false, code: 'network', error: String((err && err.message) || err) };
+      }
+      if (!r.ok) {
+        /* 断网兜底：本机已有该账号且密码对得上就先放行，免得没网时彻底进不去 */
+        if (r.code === 'network') {
+          var local = auth.login({ username: user, password: pass, remember: $('vaultRemember').checked });
+          if (local.ok) {
+            btn.disabled = false;
+            enterApp('断网模式：没能连上 123 云盘，已用本机缓存的账号登录');
+            return;
+          }
+        }
+        btn.disabled = false;
+        authMsg(r.error + (r.code === 'noconfig'
+          ? '。等不了代理的话，可以切到「本机账号」建一个纯离线账号先干活'
+          : ''), true);
+        return;
+      }
+      photos.saveConfig({ webdav: { provider: 'pan123', user: user, pass: pass, proxyBase: proxy } });
+      var res = auth.loginVault({
+        username: user, password: pass, remember: $('vaultRemember').checked
+      });
+      btn.disabled = false;
+      if (!res.ok) { authMsg(res.error, true); return; }
+      fillSettings();
+      enterApp(res.created
+        ? '已用 123 云盘账号登录，并建好站长账号（照片将存入这个云盘）'
+        : '已用 123 云盘账号登录');
+    });
     $('formRegister').addEventListener('submit', function (e) {
       e.preventDefault();
       var r = auth.register({
@@ -481,7 +564,8 @@
     $('myAccount').innerHTML = c
       ? '<div class="ma-avatar"><svg class="ic"><use href="#i-user"/></svg></div>' +
         '<div class="ma-info"><strong>' + esc(c.name) + '</strong>' +
-        '<span>@' + esc(c.username) + ' · <b>' + esc(c.roleName) + '</b></span>' +
+        '<span>@' + esc(c.username) + ' · <b>' + esc(c.roleName) + '</b>' +
+        (c.source === 'pan123' ? ' · <span class="tag tag-gold">123 云盘登录</span>' : '') + '</span>' +
         '<span class="muted">最近登录 ' + esc(c.lastLoginAt ? store.fmtTime(c.lastLoginAt) : '本次') + '</span></div>'
       : emptyHTML('未登录');
   }
@@ -1445,7 +1529,7 @@
     bindAccounts();
     fillSettings();
     if (auth.current()) enterApp();
-    else showGate(auth.status().needSetup ? 'setup' : 'login');
+    else showGate('login');   /* 由 defaultGateTab 决定落在 123 云盘还是本机账号 */
     /* 恢复本地目录句柄放后台：IndexedDB 不可用时也不能拖住登录与业务界面 */
     photos.init().catch(function () { /* 照片模块会回退到 WebDAV / 浏览器暂存 */ });
   }

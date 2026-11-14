@@ -372,6 +372,53 @@
     throw new Error('无法识别的图片引用');
   }
 
+  /* 用云盘凭据做登录校验：PROPFIND 根目录，200/207 说明账号与应用密码有效。
+     故意不走 config()，这样登录页在还没保存任何设置时也能先验一次。 */
+  async function verifyLogin(opts) {
+    opts = opts || {};
+    var cur = config().webdav;
+    var w = {
+      provider: PROVIDER_KEYS.indexOf(opts.provider) >= 0 ? opts.provider : (cur.provider || 'pan123'),
+      baseUrl: String(opts.baseUrl != null ? opts.baseUrl : cur.baseUrl).trim(),
+      proxyBase: String(opts.proxyBase != null ? opts.proxyBase : cur.proxyBase).trim(),
+      user: String(opts.user || ''),
+      pass: String(opts.pass || ''),
+      proxyKey: String(opts.proxyKey != null ? opts.proxyKey : cur.proxyKey)
+    };
+    var p = provider(w);
+    if (!w.user) return { ok: false, code: 'empty', error: '请填写 ' + p.name + ' 账号（' + p.account + '）' };
+    if (!w.pass) return { ok: false, code: 'empty', error: '请填写应用密码（不是网盘登录密码）' };
+    if (!w.proxyBase && w.provider !== 'custom') {
+      return {
+        ok: false, code: 'noconfig',
+        error: p.name + ' WebDAV 不返回 CORS 头，浏览器必须经代理：请先部署 deploy/webdav-proxy.js，把 Worker 根地址填到「CORS 代理地址」'
+      };
+    }
+    var base = endpoint(w);
+    if (!base) return { ok: false, code: 'noconfig', error: '还没有可用的请求地址，请检查代理地址' };
+    try {
+      var res = await fetch(joinUrl(base, []), {
+        method: 'PROPFIND',
+        headers: wdHeaders(w, { 'Depth': '0' })
+      });
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, code: 'auth', error: p.name + ' 账号或应用密码不正确（HTTP ' + res.status + '）' };
+      }
+      if (res.status === 404) {
+        return { ok: false, code: 'http', error: '代理地址不对（404）：填 Worker 根地址即可，不要带 ' + p.proxyPath };
+      }
+      if (!res.ok && res.status !== 207) {
+        return { ok: false, code: 'http', error: p.name + ' 返回 HTTP ' + res.status };
+      }
+      return { ok: true, code: 'ok', base: base, provider: w.provider, user: w.user, proxyBase: w.proxyBase };
+    } catch (e) {
+      return {
+        ok: false, code: 'network',
+        error: '连不上 ' + p.name + '：' + (e.message || e) + '。检查代理地址是否可访问、Worker 是否已部署'
+      };
+    }
+  }
+
   async function test() {
     var c = config();
     if (c.mode === 'browser') return { ok: true, message: '当前为浏览器暂存模式，图片不会写入云盘' };
@@ -428,6 +475,7 @@
     config: config, saveConfig: saveConfig, init: init,
     isLocalSupported: isLocalSupported, pickDirectory: pickDirectory,
     put: put, getUrl: getUrl, test: test, status: status, buildRel: buildRel,
+    verifyLogin: verifyLogin,
     providers: function () {
       return PROVIDER_KEYS.map(function (k) {
         return {

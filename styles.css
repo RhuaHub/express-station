@@ -226,6 +226,7 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 .tag-warn { background: var(--warn-bg); color: var(--warn); }
 .tag-danger { background: var(--danger-bg); color: var(--danger); }
 .tag-out { background: var(--line-soft); color: var(--muted); }
+.tag-gold { background: var(--gold-soft); color: var(--gold-deep); }
 .checkout-bar {
   position: fixed; left: 224px; right: 0; bottom: 0; z-index: 25; display: flex; align-items: center; gap: 14px;
   padding: 13px 30px; background: rgba(255, 253, 248, .96); border-top: 1px solid var(--gold-line);
@@ -438,6 +439,22 @@ body.auth-locked .app { display: none; }
 .auth-mark .ic { width: 24px; height: 24px; }
 .auth-brand strong { display: block; font-size: 16px; }
 .auth-brand span { font-size: 12px; color: var(--muted); }
+.auth-tabs { display: flex; gap: 6px; padding: 4px; margin-bottom: 20px; background: var(--line-soft); border-radius: 12px; }
+.auth-tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 8px; border: 0; border-radius: 9px; background: transparent;
+  color: var(--sub); font-size: 13px; font-weight: 600; cursor: pointer;
+  font-family: inherit; transition: background .15s, color .15s;
+}
+.auth-tab .ic { width: 16px; height: 16px; }
+.auth-tab:hover { color: var(--text); }
+.auth-tab.active { background: var(--card); color: var(--gold-deep); box-shadow: var(--shadow); }
+.auth-tip {
+  margin-top: 14px; padding: 12px 14px; border-radius: 10px;
+  background: var(--gold-soft); color: var(--sub); font-size: 11.5px; line-height: 1.75;
+}
+.auth-tip b { display: block; margin-bottom: 4px; color: var(--gold-deep); font-size: 12px; }
+.auth-tip p { margin: 0; }
 .auth-head h2 { font-size: 20px; margin-bottom: 6px; }
 .auth-head p { font-size: 12px; color: var(--sub); line-height: 1.6; margin-bottom: 18px; }
 .auth-pane .field { margin-bottom: 12px; }
