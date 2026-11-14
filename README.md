@@ -116,6 +116,32 @@ bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/pla
 
 > 注：`open-api.123pan.com` 实测返回 `Access-Control-Allow-Origin: *`，`GET /api/v1/user/info`（Bearer token）可直接前端调用。哪天开通了权益包又想接，只需在 `deploy/webdav-proxy.js` 加一个 `/oauth/pan123` 端点存 secret，前端负责跳授权页与带 `state` 校验。
 
+### 参考样本：VidHub 的授权链接为什么不能照抄
+
+线上可见的真实链接长这样（第三方播放器 VidHub 注册的客户端，`client_id` 中段已打码）：
+
+```
+https://yun.123pan.com/auth?client_id=s23oy2xv…96soz
+  &redirect_uri=vidhub%3A%2F%2Foauth-callback%2Faliyundrive
+  &scope=user:base,file:all:read,file:all:write&state=VidHubStateiOS
+```
+
+它和「官方模板」只差三个值，但这三个值正是门槛：
+
+| 字段 | VidHub 的值 | 我们能不能有自己的 |
+| --- | --- | --- |
+| `client_id` | VidHub 的应用 ID | 能，但必须在开放平台建应用，即 ¥25/月权益包 |
+| `redirect_uri` | `vidhub://oauth-callback/aliyundrive`（App 自定义 scheme，绑在该 App 内） | 网页端只能用公网 https；安卓壳来源是 `appassets.androidplatform.net`，登记不了 |
+| 换 token 的 `client_secret` | 存在 VidHub 服务端 | 纯前端存不住，必须 Worker |
+
+实测补充（2026-11-14）：
+
+- 授权页 **不校验** `client_id` 和 `redirect_uri`：随手编一个 32 位 `client_id`、把 `redirect_uri` 换成 `https://example.com/cb`，返回的仍是同一张 4336 字节登录页。**所以「链接能打开」不等于「凭据可用」**。
+- `POST https://open-api.123pan.com/api/v1/oauth2/access_token` 只接受 `application/x-www-form-urlencoded`；用 JSON 提交会一律报 `unsupported_grant_type`（这是踩过的坑，别误判成「端点不支持授权码模式」）。
+- 该端点带 `Access-Control-Allow-Origin: *`，浏览器能跨域直达；真正卡住的是 `client_secret`，不是 CORS。
+
+结论不变：不冒用第三方 `client_id`（拿不到 code，也违反平台规则），也不为一张照片存储付费开权益包。照片走 WebDAV 应用密码 + Worker 中转，免费且够用。
+
 ## 测试
 
 ```bash
