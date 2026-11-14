@@ -502,11 +502,21 @@
                 <button class="btn btn-outline btn-sm" id="btnGhFromSync" type="button">用「GitHub 同步」里的仓库</button>
               </div>
             </div>
+            <div class="field-row">
+              <div class="field"><label for="ghProxyBase">Cloudflare 加速地址（可选）</label><input id="ghProxyBase" class="input" placeholder="https://xxx.workers.dev，结尾不带 /photo" autocomplete="off"></div>
+              <div class="field"><label for="ghProxyKey">加速节点密钥（配了 PROXY_KEY 才填）</label><input id="ghProxyKey" class="input" placeholder="留空表示 Worker 没设密钥" autocomplete="off"></div>
+            </div>
             <label class="switch"><input type="checkbox" id="ghAllowPublic"><span>允许写入公开仓库：<b>默认关闭</b>。面单照片含收件人手机号与地址，公开后任何人可见，别为了省事关掉这道闸</span></label>
+            <label class="switch"><input type="checkbox" id="ghCache"><span>本机缓存照片：同一张只下载一次，第二次点开立即可看，断网也能翻旧单。<b>建议开</b></span></label>
+            <div class="fallback-row" style="margin-top:6px">
+              <span id="ghCacheState" class="muted" style="font-size:12px">缓存状态读取中…</span>
+              <button class="btn btn-outline btn-sm" id="btnGhClearCache" type="button">清除照片缓存</button>
+            </div>
             <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
               token 复用上方「GitHub 同步」里的 <b>Personal Access Token</b>（Contents 读写即可），不需要再填一份。照片会按
               <b>入库照片/出库凭证 + 年-月</b> 提交到 <b>photos/</b> 下，<b>每张照片一次 commit</b>；仓库有 1GB 软上限，单张压缩后约 150–250KB，
-              自己按件量估一下。读取照片也走 API，所以私有仓库在任何设备上都能直接看。
+              自己按件量估一下。<b>加速地址不是必需项</b>：填了之后读图走 Cloudflare 边缘缓存、token 也可以只留在 Worker 里；
+              不填就直连 api.github.com，配合本机缓存也够用（详见 README 的性能一节）。
             </p>
           </div>
           <div id="phWebdavBox" class="ph-box" hidden>

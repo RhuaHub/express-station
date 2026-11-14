@@ -232,6 +232,17 @@
     var n = state.proofFiles.length;
     $('btnProof').innerHTML = '<svg class="ic"><use href="#i-camera"/></svg>' + (n ? '凭证 ' + n + ' 张 · 再拍' : '拍取件凭证');
   }
+  async function renderCacheState() {
+    var el = $('ghCacheState');
+    if (!el) return;
+    var info = await photos.cacheInfo();
+    var c = photos.config();
+    if (!info.supported) { el.textContent = '本机缓存不可用（这个浏览器禁用了本地存储），照片每次都会重新下载'; return; }
+    var hits = info.hit, total = info.hit + info.miss;
+    var rate = total ? Math.round(hits * 100 / total) + '%' : '—';
+    el.textContent = '已缓存 ' + info.count + '/' + info.max + ' 张 · 本次命中 ' + hits + '/' + total +
+      '（' + rate + '）' + (c.github.cache ? '' : ' · 缓存开关已关');
+  }
   /* 拍照：优先调用设备摄像头实时预览，不可用时回退到系统相机 / 相册 */
   function nativeCapture(which) {
     var input = $(which === 'in' ? 'inPhotos' : 'outProof');
@@ -312,12 +323,16 @@
     $('ghBranch').value = c.github.branch;
     $('ghDir').value = c.github.dir;
     $('ghAllowPublic').checked = !!c.github.allowPublic;
+    $('ghProxyBase').value = c.github.proxyBase;
+    $('ghProxyKey').value = c.github.proxyKey;
+    $('ghCache').checked = c.github.cache !== false;
     $('phMax').value = c.maxSide;
     $('phQuality').value = c.quality;
     $('phRequireProof').checked = c.requireProof !== false;
     togglePhotoBoxes();
     refreshProviderUI(false);
     renderPhotoStatus();
+    renderCacheState();
   }
   function savePhotoForm() {
     photos.saveConfig({
@@ -335,7 +350,10 @@
         repo: $('ghRepo').value.trim(),
         branch: $('ghBranch').value.trim(),
         dir: $('ghDir').value.trim() || 'photos',
-        allowPublic: $('ghAllowPublic').checked
+        allowPublic: $('ghAllowPublic').checked,
+        proxyBase: $('ghProxyBase').value.trim(),
+        proxyKey: $('ghProxyKey').value.trim(),
+        cache: $('ghCache').checked
       },
       maxSide: Number($('phMax').value),
       quality: Number($('phQuality').value),
@@ -363,16 +381,18 @@
         '<div class="viewer-meta"><span class="viewer-kind">' + (ph.kind === 'pickup' ? '取件凭证' : '入库照片') + '</span>' +
         '<button type="button" data-detach="' + esc(ph.id) + '">移除引用</button></div></div>';
     }).join('');
-    p.photos.forEach(function (ph, idx) {
+    var loads = p.photos.map(function (ph, idx) {
       var box = grid.children[idx] && grid.children[idx].querySelector('[data-img]');
-      if (!box) return;
-      photos.getUrl(ph.ref).then(function (url) {
+      if (!box) return null;
+      return photos.getUrl(ph.ref).then(function (url) {
         viewerUrls.push(url);
         box.innerHTML = '<img src="' + url + '" alt="照片">';
       }).catch(function (e) {
         box.textContent = e.message || '读取失败';
       });
     });
+    /* 照片读完后刷新缓存命中率，顺便让「清除缓存」旁边的数字是实时的 */
+    Promise.all(loads).then(renderCacheState, renderCacheState);
     grid.addEventListener('click', function (e) {
       var b = e.target.closest('[data-detach]');
       if (!b) return;
@@ -1366,6 +1386,16 @@
       togglePhotoBoxes();
       savePhotoForm();
       toast('已取用 ' + s.repo + ' @ ' + (s.branch || 'main') + '，点「测试连接」确认能写');
+    };
+    $('btnGhClearCache').onclick = async function () {
+      var r = await photos.clearCache();
+      renderCacheState();
+      toast(r.ok ? '已清空照片缓存，下次打开会重新从 GitHub 拉' : ('清除失败：' + r.error), r.ok ? 'ok' : 'err');
+    };
+    $('ghCache').onchange = function () {
+      savePhotoForm();
+      renderCacheState();
+      toast($('ghCache').checked ? '已开启本机缓存' : '已关闭本机缓存：每张照片都会重新下载');
     };
     $('btnPhPick').onclick = async function () {
       var r = await photos.pickDirectory();

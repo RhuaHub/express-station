@@ -1,14 +1,22 @@
-/* 图片存储层：阿里云盘本地同步目录 / AList WebDAV / 浏览器暂存兜底。
-   只存文件本体，台账里只保存引用字符串；配置与凭据仅在当前浏览器。 */
+/* 图片存储层：GitHub 仓库（默认）/ 云盘 WebDAV / 本机同步目录 / 浏览器暂存兜底。
+   只存文件本体，台账里只保存引用字符串；配置与凭据仅在当前浏览器。
+   GitHub 读取带本机 IndexedDB 缓存，并可选经 Cloudflare Worker 走边缘缓存。 */
 (function (global) {
   'use strict';
 
   var CFG_KEY = 'express-station.photos.v1';
   var DB_NAME = 'express-station-media';
-  var DB_VERSION = 1;
+  /* v2：多了 cache 仓（GitHub 照片的本机缓存），旧库升级时只新增，不动 files/meta */
+  var DB_VERSION = 2;
   var S_FILES = 'files';
   var S_META = 'meta';
+  var S_CACHE = 'cache';
+  /* 缓存上限：按张数算，400 张约 60–100MB，够覆盖几个月的常用查询，又不至于把磁盘撑满 */
+  var CACHE_MAX = 400;
   var dirHandleRecord = null;
+  var cacheStats = { hit: 0, miss: 0 };
+  var ghInflight = {};
+  var pruneTimer = null;
 
   /* 云盘服务预设：upstream 是官方 WebDAV 根地址，proxyPath 是 Worker 里的路由前缀。
      两者都缺 CORS 头，必须经自建 Worker 中转；AList 自带 CORS，可直连。 */
@@ -46,7 +54,10 @@
       mode: 'github',
       dirName: 'express-station',
       webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '', user: '', pass: '', proxyKey: '' },
-      github: { repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null },
+      github: {
+        repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null,
+        proxyBase: '', proxyKey: '', cache: true
+      },
       maxSide: 1600,
       quality: 0.82,
       requireProof: true
@@ -87,7 +98,12 @@
           branch: String((p.github && p.github.branch) || '').trim(),
           dir: String((p.github && p.github.dir) || 'photos').trim().replace(/^\/+|\/+$/g, '') || 'photos',
           allowPublic: !!(p.github && p.github.allowPublic),
-          isPublic: p.github && typeof p.github.isPublic === 'boolean' ? p.github.isPublic : null
+          isPublic: p.github && typeof p.github.isPublic === 'boolean' ? p.github.isPublic : null,
+          /* 可选的 Cloudflare 只读加速节点；留空则直连 api.github.com */
+          proxyBase: String((p.github && p.github.proxyBase) || '').trim().replace(/\/+$/, ''),
+          proxyKey: String((p.github && p.github.proxyKey) || ''),
+          /* 默认开：同一张照片只下载一次 */
+          cache: !(p.github && p.github.cache === false)
         };
         c.maxSide = Math.max(600, Math.min(4000, Number(p.maxSide) || c.maxSide));
         c.quality = Math.max(0.4, Math.min(1, Number(p.quality) || c.quality));
@@ -99,7 +115,14 @@
   function saveConfig(patch) {
     var c = Object.assign(config(), patch || {});
     if (patch && patch.webdav) c.webdav = Object.assign(config().webdav, patch.webdav);
-    if (patch && patch.github) c.github = Object.assign(config().github, patch.github);
+    if (patch && patch.github) {
+      var g = Object.assign(config().github, patch.github);
+      /* 换了仓库，旧的「公开/私有」结论就失效了；不清掉会把私有仓库当成公开的拦住。
+         显式传了 isPublic 的调用（test/put 回来写缓存）不受影响。 */
+      if (patch.github.isPublic === undefined && patch.github.repo !== undefined &&
+        String(patch.github.repo || '') !== config().github.repo) g.isPublic = null;
+      c.github = g;
+    }
     storage().setItem(CFG_KEY, JSON.stringify(c));
     return config();
   }
@@ -124,8 +147,14 @@
         var db = req.result;
         if (!db.objectStoreNames.contains(S_FILES)) db.createObjectStore(S_FILES, { keyPath: 'key' });
         if (!db.objectStoreNames.contains(S_META)) db.createObjectStore(S_META, { keyPath: 'key' });
+        if (!db.objectStoreNames.contains(S_CACHE)) {
+          var cs = db.createObjectStore(S_CACHE, { keyPath: 'key' });
+          cs.createIndex('at', 'at');
+        }
       };
       req.onsuccess = function () { finish(resolve, req.result); };
+      /* 另一个标签页还开着旧版本库时升级会被挡住，直接失败比干等 3 秒好 */
+      req.onblocked = function () { finish(reject, new Error('IndexedDB 被其它标签页占用，请关掉多余页面')); };
       req.onerror = function () { finish(reject, req.error || new Error('IndexedDB 打开失败')); };
     });
   }
@@ -146,6 +175,51 @@
         var req = tx.objectStore(name).get(key);
         req.onsuccess = function () { db.close(); resolve(req.result); };
         req.onerror = function () { db.close(); reject(req.error || new Error('读取失败')); };
+      });
+    });
+  }
+  function idbCount(name) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(name, 'readonly');
+        var req = tx.objectStore(name).count();
+        req.onsuccess = function () { db.close(); resolve(req.result); };
+        req.onerror = function () { db.close(); reject(req.error || new Error('统计失败')); };
+      });
+    });
+  }
+  function idbClear(name) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(name, 'readwrite');
+        tx.objectStore(name).clear();
+        tx.oncomplete = function () { db.close(); resolve(true); };
+        tx.onerror = function () { db.close(); reject(tx.error || new Error('清空失败')); };
+      });
+    });
+  }
+  /* 按 at 索引删最旧的若干条；keep 是保留张数 */
+  function idbPruneOldest(name, indexName, keep) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(name, 'readwrite');
+        var store = tx.objectStore(name);
+        var removed = 0, excess = 0;
+        var crest = store.count();
+        crest.onsuccess = function () {
+          excess = Math.max(0, crest.result - keep);
+          if (!excess) return;
+          var cur = store.index(indexName).openCursor();
+          cur.onsuccess = function () {
+            var c = cur.result;
+            if (!c || removed >= excess) return;
+            c.delete();
+            removed++;
+            c.continue();
+          };
+        };
+        tx.oncomplete = function () { db.close(); resolve(removed); };
+        tx.onerror = function () { db.close(); reject(tx.error || new Error('清理缓存失败')); };
       });
     });
   }
@@ -279,10 +353,14 @@
       branch: String(g.branch || sync.branch || 'main'),
       dir: String(g.dir || 'photos').replace(/^\/+|\/+$/g, ''),
       allowPublic: !!g.allowPublic,
-      isPublic: g.isPublic
+      isPublic: g.isPublic,
+      proxyBase: String(g.proxyBase || '').replace(/\/+$/, ''),
+      proxyKey: String(g.proxyKey || ''),
+      cache: g.cache !== false
     };
   }
   function ghReady(t) { return !!(t.token && /^[^/\s]+\/[^/\s]+$/.test(t.repo)); }
+  function nowMs() { return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now(); }
   function ghPath(t, rel) { return (t.dir ? t.dir + '/' : '') + rel; }
   function ghHeaders(t, extra) {
     return Object.assign({
@@ -336,14 +414,81 @@
     if (!res.ok) throw new Error(ghError(res.status));
     return path;
   }
-  async function githubGet(path) {
-    var t = ghSettings();
-    if (!t.token) throw new Error('读取仓库照片需要 token（在「GitHub 同步」里填）');
+  /* 读取结果按「仓库@分支:路径」缓存到本机 IndexedDB。
+     文件名带时间戳与随机串、内容不会变，所以命中即视为最新；换仓库/分支自然换键，不会串。 */
+  function ghCacheKey(t, path) { return 'gh:' + t.repo + '@' + t.branch + ':' + path; }
+  function ghCachePut(key, blob) {
+    idbPut(S_CACHE, { key: key, blob: blob, at: Date.now(), size: blob.size }).then(function () {
+      /* 攒一批再剪，避免每张都开一次事务 */
+      clearTimeout(pruneTimer);
+      pruneTimer = setTimeout(function () {
+        idbPruneOldest(S_CACHE, 'at', CACHE_MAX).catch(function () { /* 清理失败不影响读图 */ });
+      }, 4000);
+    }).catch(function () { /* 缓存写失败（配额满 / 隐私模式）就当没缓存，不影响主流程 */ });
+  }
+  /* 直连 api.github.com：注入了 token，私有仓库也能拿原始字节 */
+  async function ghDirectBlob(t, path) {
+    if (!t.token) throw new Error('读取仓库照片需要 token（在「GitHub 同步」里填），或配一个加速节点免 token');
     var url = GH_API + '/repos/' + t.repo + '/contents/' + path.split('/').map(encodeURIComponent).join('/') +
       '?ref=' + encodeURIComponent(t.branch);
-    var res = await fetch(url, { headers: ghHeaders(t, { 'Accept': 'application/vnd.github.raw' }) });
+    var res = await fetch(url, {
+      headers: ghHeaders(t, { 'Accept': 'application/vnd.github.raw' }),
+      cache: 'no-store'
+    });
     if (!res.ok) throw new Error('GitHub 读取失败：' + ghError(res.status));
-    return URL.createObjectURL(await res.blob());
+    return res.blob();
+  }
+  /* 经 Cloudflare Worker：边缘缓存 + token 留在服务端，浏览器不用带 PAT */
+  async function ghProxyBlob(t, path) {
+    var url = t.proxyBase + '/photo?repo=' + encodeURIComponent(t.repo) +
+      '&branch=' + encodeURIComponent(t.branch) + '&path=' + encodeURIComponent(path);
+    var headers = {};
+    if (t.proxyKey) headers['X-Station-Key'] = t.proxyKey;
+    var res = await fetch(url, { headers: headers, cache: 'no-store' });
+    if (!res.ok) {
+      throw new Error('加速节点读取失败：HTTP ' + res.status +
+        (res.status === 401 || res.status === 403 ? '（X-Station-Key 不对，或 Worker 没配 GH_TOKEN）' : '') +
+        (res.status === 404 ? '（照片不在该分支，或 GH_TOKEN 无权读这个私有仓库）' : ''));
+    }
+    return res.blob();
+  }
+  async function ghRawBlob(t, path) {
+    return t.proxyBase ? ghProxyBlob(t, path) : ghDirectBlob(t, path);
+  }
+  async function githubBlob(path) {
+    var t = ghSettings();
+    if (!/^[^/\s]+\/[^/\s]+$/.test(t.repo)) throw new Error('没填仓库：在下面填 owner/repo，或先配置「GitHub 同步」');
+    var key = ghCacheKey(t, path);
+    if (t.cache) {
+      try {
+        var rec = await idbGet(S_CACHE, key);
+        if (rec && rec.blob) { cacheStats.hit++; return rec.blob; }
+      } catch (e) { /* 缓存坏了就退回网络 */ }
+    }
+    /* 同一张照片被同时请求（比如网格里重复引用）时只发一次 */
+    if (ghInflight[key]) return ghInflight[key];
+    cacheStats.miss++;
+    var task = ghRawBlob(t, path).then(function (blob) {
+      if (t.cache) ghCachePut(key, blob);
+      delete ghInflight[key];
+      return blob;
+    }, function (e) {
+      delete ghInflight[key];
+      throw e;
+    });
+    ghInflight[key] = task;
+    return task;
+  }
+  async function clearPhotoCache() {
+    try { await idbClear(S_CACHE); } catch (e) { return { ok: false, error: e.message || String(e) }; }
+    cacheStats = { hit: 0, miss: 0 };
+    return { ok: true };
+  }
+  async function cacheInfo() {
+    var out = { count: 0, hit: cacheStats.hit, miss: cacheStats.miss, max: CACHE_MAX, supported: true };
+    try { out.count = await idbCount(S_CACHE); }
+    catch (e) { out.supported = false; }
+    return out;
   }
 
   /* ---------- 压缩与文件名 ---------- */
@@ -477,8 +622,8 @@
       return URL.createObjectURL(await res.blob());
     }
     if (String(ref).indexOf('github:') === 0) {
-      var ghRel = String(ref).slice(7);
-      return await githubGet(ghRel);
+      /* 缓存命中时这里只是把 Blob 包一层 URL，几乎零耗时；URL 仍交给调用方 revoke */
+      return URL.createObjectURL(await githubBlob(String(ref).slice(7)));
     }
     throw new Error('无法识别的图片引用');
   }
@@ -491,17 +636,32 @@
       if (!t.token) return { ok: false, error: '请先在「GitHub 同步」里填 Personal Access Token（需 Contents 读写权限）' };
       if (!/^[^/\s]+\/[^/\s]+$/.test(t.repo)) return { ok: false, error: '请填仓库，格式 owner/repo' };
       try {
+        var t0 = nowMs();
         var repo = await ghRepoInfo(t);
+        var directMs = Math.round(nowMs() - t0);
         saveConfig({ github: { isPublic: !repo.private } });
         var br = await fetch(GH_API + '/repos/' + t.repo + '/branches/' + encodeURIComponent(t.branch), { headers: ghHeaders(t) });
         if (!br.ok) return { ok: false, error: '分支不可用：' + ghError(br.status) };
         if (!repo.private && !t.allowPublic) {
           return { ok: false, error: '这个仓库是公开的：照片会对外可见（面单含手机号/地址）。换私有仓库，或勾选「允许写入公开仓库」' };
         }
-        return {
-          ok: true,
-          message: '可写：' + t.repo + ' @ ' + t.branch + ' · ' + (repo.private ? '私有仓库' : '公开仓库') + ' · 目录 ' + t.dir + '/'
-        };
+        var line = '可写：' + t.repo + ' @ ' + t.branch + ' · ' + (repo.private ? '私有仓库' : '公开仓库') + ' · 目录 ' + t.dir + '/';
+        line += ' · 直连 ' + directMs + 'ms';
+        var extra = { directMs: directMs, proxyMs: null, cache: t.cache };
+        if (t.proxyBase) {
+          try {
+            var p0 = nowMs();
+            var pr = await fetch(t.proxyBase + '/ping', {
+              headers: t.proxyKey ? { 'X-Station-Key': t.proxyKey } : {}, cache: 'no-store'
+            });
+            if (!pr.ok) { line += ' · 加速节点 HTTP ' + pr.status; }
+            else { extra.proxyMs = Math.round(nowMs() - p0); line += ' · 加速节点 ' + extra.proxyMs + 'ms'; }
+          } catch (e) {
+            line += ' · 加速节点不可达（' + (e.message || e) + '）';
+          }
+        }
+        line += t.cache ? ' · 本机缓存已开' : ' · 本机缓存已关';
+        return { ok: true, message: line, stats: extra };
       } catch (e) {
         return { ok: false, error: '连不上 GitHub：' + (e.message || e) };
       }
@@ -554,7 +714,8 @@
       var t = ghSettings();
       if (!ghReady(t)) return 'GitHub 未配置（缺 token 或仓库）· 照片暂存浏览器';
       var vis = typeof t.isPublic === 'boolean' ? (t.isPublic ? '公开仓库·会被拦' : '私有仓库') : '未校验';
-      return 'GitHub ' + t.repo + ' · ' + t.dir + '/ · ' + vis;
+      return 'GitHub ' + t.repo + ' · ' + t.dir + '/ · ' + vis +
+        (t.proxyBase ? ' · 加速' : ' · 直连') + (t.cache ? ' + 缓存' : '');
     }
     if (c.mode === 'webdav') {
       var p = provider(c.webdav);
@@ -589,10 +750,21 @@
       var t = ghSettings();
       return {
         repo: t.repo, branch: t.branch, dir: t.dir, ready: ghReady(t),
-        allowPublic: t.allowPublic, isPublic: t.isPublic
+        allowPublic: t.allowPublic, isPublic: t.isPublic,
+        proxyBase: t.proxyBase, cache: t.cache
       };
     },
-    githubPath: function (rel) { return ghPath(ghSettings(), rel || '入库照片/2026-01/RK-x.jpg'); }
+    githubPath: function (rel) { return ghPath(ghSettings(), rel || '入库照片/2026-01/RK-x.jpg'); },
+    /* 缓存与加速：给设置页做状态展示、清空与本机验证 */
+    cacheInfo: cacheInfo,
+    clearCache: clearPhotoCache,
+    cacheLimit: function () { return CACHE_MAX; },
+    photoUrl: function (repo, branch, path) {
+      var t = Object.assign(ghSettings(), { repo: repo || '', branch: branch || '' });
+      return t.proxyBase
+        ? t.proxyBase + '/photo?repo=' + encodeURIComponent(t.repo) + '&branch=' + encodeURIComponent(t.branch) + '&path=' + encodeURIComponent(path || '')
+        : GH_API + '/repos/' + t.repo + '/contents/' + String(path || '').split('/').map(encodeURIComponent).join('/') + '?ref=' + encodeURIComponent(t.branch);
+    }
   };
   global.StationPhotos = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

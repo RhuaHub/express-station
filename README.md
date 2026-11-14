@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 网页 | `index.html` | 双击即用，也可部署到 Cloudflare Pages / GitHub Pages |
 | PWA | 浏览器「安装到桌面」 | 支持离线打开，桌面图标、启动画面齐全 |
-| 安卓 App | `android/dist/express-station-1.0.2.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
+| 安卓 App | `android/dist/express-station-1.0.3.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
 
 ## 功能
 
@@ -38,7 +38,7 @@ sw.js                 离线缓存（仅同源 GET）
 icons/                PWA 与桌面图标
 android/              安卓 App 壳（WebView）与打包脚本
 deploy/               WebDAV CORS 代理 Worker、AList 容器配置
-tests/smoke.js        回归测试（59 项）
+tests/smoke.js        回归测试（64 项）
 tools/                图标生成、无头浏览器探针等辅助脚本
 ```
 
@@ -69,6 +69,36 @@ tools/                图标生成、无头浏览器探针等辅助脚本
 - **必须私有仓库**。面单照片含收件人手机号与地址，公开仓库会把它们公开展示。代码层面默认拦截：审计到公开仓库时直接拒写并回退浏览器暂存，需要勾选「允许写入公开仓库」才会放行。
 - **每张照片一次 commit**。优势是天然版本化、可在 GitHub 网页里按日期翻；代价是提交历史会很多，仓库有 1GB 软上限（单张压缩后约 150–250KB，一天 100 件约 20MB/月）。件量大就调低「图片最长边」、或定期清理旧月份目录。
 - **删除不可逆**。照片一旦提交就进了 git 历史，从仓库删文件不会缩小 `.git` 体积；真要清理需改写历史。台账里「移除引用」只删引用，不动仓库文件。
+
+#### 读图速度：三层缓存与实测数据
+
+读一张照片有三条路径，默认只用第 1 条：
+
+| 层 | 怎么生效 | 实测 | 代价 |
+| --- | --- | --- | --- |
+| **1. 本机 IndexedDB 缓存（默认开）** | 首次读后把字节存本机，同一路径再读直接返回 | 首次网络耗时，之后 **≈5 ms、0 请求** | 无，占用本机磁盘（上限 400 张自动淘汰最旧） |
+| 2. Cloudflare 只读加速节点（可选） | `deploy/gh-photo-proxy.js`，边缘缓存 + 服务端保管 token | 边缘命中 ≈1 s（本机网络 `colo=SJC`） | 部署一个 Worker |
+| 3. 直连 `api.github.com` | 什么都不配 | **0.42–0.82 s** TTFB / 张 | 浏览器持有 PAT |
+
+实测数据（2026-11-14，本机网络）：
+
+```
+api.github.com/repos/.../contents/...    ttfb 0.815s / 0.426s / 0.482s
+Cloudflare 边缘（cdnjs 静态资源，等于缓存命中）  ttfb 1.245s / 1.126s / 1.079s
+本机缓存命中                                ≈5 ms，0 次网络请求
+```
+
+**结论要说清楚**：在这台机器上，**经过 Cloudflare 并不会更快**——同一份静态资源从 CF 边缘拿是 1.1 s 左右，直连 GitHub API 反而 0.4–0.8 s。`https://www.cloudflare.com/cdn-cgi/trace` 返回 `colo=SJC` / `loc=CN`，也就是流量同样绕美西，首字节没有优势。真正把「翻旧单」从一秒多降到几毫秒的是**本机缓存**，而它不需要部署任何东西。
+
+那 Worker 还有没有必要？有两个场景值得：
+
+- **token 不想留在浏览器**。读私有仓库要 PAT，放在 Worker 的 Secret 里（`Contents: Read` 只读权限），前端只持有一个 `PROXY_KEY`。写仍然走浏览器里的读写 token，这个节点**故意不支持写**，不会变成对外开放的入口。
+- **多台设备、多人反复看同一批照片**。边缘缓存对「第一次拉」没帮助，但对「第二台设备拉同一张」是命中。
+
+配置：Worker 里设 `GH_TOKEN`（fine-grained，只勾 `Contents: Read`）、可选 `PROXY_KEY` 与 `ALLOWED_ORIGINS`，然后把 Worker 根地址填进「图片存储 → Cloudflare 加速地址」，配了密钥就同时填「加速节点密钥」。`webdav-proxy.js` 和它互不影响，可以部署在同一个账号下。
+
+不配也完全可用：直连 + 本机缓存已经覆盖单机驿站的日常场景。
+
 
 **为什么必须有个 Worker**：坚果云与 123 云盘的 WebDAV 都不返回 `Access-Control-Allow-Origin`（实测连 OPTIONS 预检都直接 401），浏览器会拦掉上传。`deploy/webdav-proxy.js` 只做转发和补 CORS 头，不存任何账号密码，免费额度足够个人使用。
 
@@ -112,7 +142,7 @@ Worker 路由：`/pan123` → 123 云盘，`/nutstore` → 坚果云，`/webdav`
 bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/platform
 ```
 
-产物在 `android/dist/express-station-1.0.2.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
+产物在 `android/dist/express-station-1.0.3.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
 详细说明见 [android/README.md](android/README.md)。
 
 ## 数据与隐私

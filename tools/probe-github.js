@@ -30,6 +30,9 @@ window.addEventListener('load', function () {
         document.documentElement.setAttribute('data-tip', hidden('phWebdavTipBox'));
         document.documentElement.setAttribute('data-ghdir', q('ghDir'));
         document.documentElement.setAttribute('data-allowpub', String(document.getElementById('ghAllowPublic').checked));
+        document.documentElement.setAttribute('data-cachebox', String(document.getElementById('ghCache').checked));
+        document.documentElement.setAttribute('data-cachestate', q('ghCacheState'));
+        document.documentElement.setAttribute('data-proxyfield', String(!!document.getElementById('ghProxyBase')));
         document.documentElement.setAttribute('data-status', q('photoStatus'));
         document.documentElement.setAttribute('data-probe', 'done');
       }, 400);

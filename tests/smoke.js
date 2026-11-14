@@ -797,6 +797,71 @@ checkAsync('GitHub 直存：测试连接能区分公开与私有仓库', async (
   p.saveConfig({ mode: 'github', github: { repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null } });
 });
 
+check('照片读取：本机缓存开关与加速节点地址解析', () => {
+  const p = require('../photos.js');
+  p.saveConfig({ github: { proxyBase: '', proxyKey: '', cache: true } });
+  assert.strictEqual(p.githubTarget().cache, true, '本机缓存应默认开启');
+  assert.strictEqual(p.githubTarget().proxyBase, '', '默认不启用加速节点');
+
+  // 直连形态
+  const direct = p.photoUrl('me/repo', 'main', 'photos/入库照片/2026-11/RK-1.jpg');
+  assert.ok(/^https:\/\/api\.github\.com\/repos\/me\/repo\/contents\/photos\/%E5%85%A5/.test(direct), '直连地址不对：' + direct);
+
+  // 尾斜杠必须吃掉，否则会拼出 //photo
+  p.saveConfig({ github: { proxyBase: 'https://gh.example.workers.dev/' } });
+  assert.strictEqual(p.githubTarget().proxyBase, 'https://gh.example.workers.dev');
+
+  // 代理形态：repo / branch / path 全部走 query 并编码，避免路径里的中文和斜杠被拆开
+  assert.strictEqual(p.photoUrl('me/repo', 'main', 'photos/入库照片/2026-11/RK-1.jpg'),
+    'https://gh.example.workers.dev/photo?repo=me%2Frepo&branch=main&path=photos%2F%E5%85%A5%E5%BA%93%E7%85%A7%E7%89%87%2F2026-11%2FRK-1.jpg');
+
+  // 关缓存要能持久化，且不会把 cloud 配置带坏
+  assert.strictEqual(p.saveConfig({ github: { cache: false } }).github.cache, false);
+  assert.strictEqual(p.saveConfig({ github: { cache: true, proxyBase: '', proxyKey: '' } }).github.cache, true);
+  assert.strictEqual(p.cacheLimit(), 400, '缓存上限应为 400 张');
+});
+
+check('换仓库后旧的公开/私有结论必须失效', () => {
+  const p = require('../photos.js');
+  p.saveConfig({ github: { repo: 'me/a', isPublic: true } });
+  assert.strictEqual(p.config().github.isPublic, true, '显式写入的结论要保留');
+  assert.strictEqual(p.saveConfig({ github: { repo: 'me/a' } }).github.isPublic, true, '同仓库重复保存不该清掉结论');
+  assert.strictEqual(p.saveConfig({ github: { repo: 'me/b' } }).github.isPublic, null,
+    '换仓库后必须重新校验，否则私有仓库会被旧结论当成公开的拦住');
+  p.saveConfig({ github: { repo: '', isPublic: null } });
+});
+
+check('Cloudflare 照片加速 Worker：只读、防穿越、带边缘缓存', () => {
+  const w = fs.readFileSync(path.join(root, 'deploy', 'gh-photo-proxy.js'), 'utf8');
+  ['caches.default', 'GH_TOKEN', 'PROXY_KEY', 'X-Station-Key', 'application/vnd.github.raw',
+    '/photo', '/ping', 'ALLOWED_ORIGINS', 'CACHE_TTL', 'private, max-age', 'immutable', 'X-Cache']
+    .forEach(k => assert.ok(w.includes(k), 'Worker 缺少 ' + k));
+  assert.ok(/request\.method !== 'GET'/.test(w), '应显式拒绝非 GET 请求');
+  assert.ok(!/method:\s*'PUT'/.test(w), '这个节点不能接受写入，否则等于对外开放仓库写权限');
+  assert.ok(/=== '\.\.'/.test(w), '必须拦截 ../ 路径穿越');
+  assert.ok(/gh-photo-proxy\.internal/.test(w), '缓存键要用固定内部域名，避免请求差异把缓存打散');
+  assert.ok(!/(?:GH_TOKEN|PROXY_KEY)\s*=\s*['"][^'"]{8,}['"]/.test(w), 'Worker 里不能写死 token 或密钥');
+});
+
+check('设置页：加速地址、密钥与照片缓存开关都在 GitHub 区块里', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['ghProxyBase', 'ghProxyKey', 'ghCache', 'ghCacheState', 'btnGhClearCache']
+    .forEach(id => assert.ok(html.includes('id="' + id + '"'), '设置页缺字段 ' + id));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/photos\.clearCache\(\)/.test(app), '要有清除缓存的动作');
+  assert.ok(/photos\.cacheInfo\(\)/.test(app), '要展示缓存状态');
+  assert.ok(/ghProxyBase'\)\.value/.test(app), '要读写加速地址');
+});
+
+checkAsync('照片缓存：没有 IndexedDB 时静默降级而不是抛错', async () => {
+  const p = require('../photos.js');
+  const info = await p.cacheInfo();
+  assert.strictEqual(info.supported, false, 'Node 环境没有 IndexedDB，应报不支持');
+  assert.strictEqual(info.count, 0);
+  const clear = await p.clearCache();
+  assert.strictEqual(typeof clear.ok, 'boolean', 'clearCache 应返回结果而不是抛异常');
+});
+
 (async () => {
   for (const c of asyncChecks) {
     await c.fn();
