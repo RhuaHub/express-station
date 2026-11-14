@@ -314,6 +314,55 @@ check('重复注册、账号格式与密码强度都被拒绝', () => {
   assert.strictEqual(auth.createSub({ username: 'Bad User', password: '123456' }).ok, false);
   assert.strictEqual(auth.createSub({ username: 'short', password: '123' }).ok, false);
 });
+check('关掉自助注册：只有零账号时能初始化，之后只能由站长添加', () => {
+  const a = authApi.createAuth(authApi.memoryStorage(), authApi.memoryStorage());
+  assert.strictEqual(a.status().needSetup, true);
+  assert.strictEqual(a.status().canRegister, true);
+  assert.strictEqual(a.register({ name: '站长', username: 'boss', password: 'abc12345', confirm: 'abc12345' }).ok, true);
+  assert.strictEqual(a.status().needSetup, false);
+  assert.strictEqual(a.status().canRegister, false);
+  /* 外人拿到地址也无法自己开号 */
+  const outsider = a.register({ name: '外人', username: 'intruder', password: 'abc12345', confirm: 'abc12345' });
+  assert.strictEqual(outsider.ok, false);
+  assert.ok(/已初始化/.test(outsider.error), '拒绝注册应说明站点已初始化');
+  assert.strictEqual(a.list().length, 1, '被拒的注册不得留下账号');
+  /* 站长后台添加仍然可用 */
+  assert.strictEqual(a.createSub({ name: '小王', username: 'clerk', password: 'pass123', role: 'operator' }).ok, true);
+  assert.strictEqual(a.list().length, 2);
+});
+check('连续输错密码锁定本设备，且不泄露账号是否存在', () => {
+  const a = authApi.createAuth(authApi.memoryStorage(), authApi.memoryStorage());
+  a.register({ name: '站长', username: 'boss', password: 'abc12345', confirm: 'abc12345' });
+  a.logout();
+  const wrong = a.login({ username: 'boss', password: 'wrong-pass' });
+  const ghost = a.login({ username: 'ghost', password: 'wrong-pass' });
+  assert.strictEqual(wrong.ok, false);
+  assert.strictEqual(ghost.error, wrong.error, '账号不存在与密码错误必须给同一提示');
+  for (let i = 0; i < 3; i++) a.login({ username: 'boss', password: 'wrong-pass' });
+  assert.ok(a.lockRemain() > 0, '连续 5 次失败后应锁定');
+  const locked = a.login({ username: 'boss', password: 'abc12345' });
+  assert.strictEqual(locked.ok, false, '锁定期间正确密码也不放行');
+  assert.ok(locked.lockSeconds > 0 && /秒后再试/.test(locked.error));
+  /* 达到失败上限时状态里也要报出来，UI 才能提示 */
+  assert.ok(a.status().lockSeconds > 0);
+  a.clearLock();
+  assert.strictEqual(a.login({ username: 'boss', password: 'abc12345' }).ok, true);
+});
+check('登录页默认不暴露注册入口，初始化改为显式触发', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const setupTag = (html.match(/<div id="authSetup"[^>]*>/) || [''])[0];
+  const loginTag = (html.match(/<div id="authLogin"[^>]*>/) || [''])[0];
+  assert.ok(/\bhidden\b/.test(setupTag), '初始化表单默认必须隐藏');
+  assert.ok(!/\bhidden\b/.test(loginTag), '登录表单应默认可见');
+  ['不开放自助注册', 'id="authBootHint"', 'setup=1', '长按上方标题']
+    .forEach(k => assert.ok(html.includes(k), '登录页缺少 ' + k));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/function wantSetup\(/.test(app), '缺少初始化入口判定');
+  assert.ok(!/showGate\(auth\.status\(\)\.needSetup \?/.test(app), '不得再自动弹出注册表单');
+  assert.ok(/IDLE_MS/.test(app) && /function idleTick\(/.test(app), '缺少闲置自动锁屏');
+  assert.ok(/data-perm="owner"[^>]*id="formAddSub"|id="formAddSub"[^>]*data-perm="owner"/.test(html) ||
+    /<form id="formAddSub"[^>]*data-perm="owner"/.test(html), '新增子账号必须只对站长开放');
+});
 check('创建子账号并检查角色权限矩阵', () => {
   assert.strictEqual(auth.createSub({ name: '小王', username: 'clerk', password: 'pass123', role: 'operator' }).ok, true);
   assert.strictEqual(auth.createSub({ name: '访客', username: 'guest', password: 'pass123', role: 'viewer' }).ok, true);

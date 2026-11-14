@@ -58,8 +58,8 @@
       <div><strong id="authStationName">我的快递驿站</strong><span>查件 · 入库 · 出库</span></div>
     </div>
 
-    <div id="authSetup" class="auth-pane">
-      <div class="auth-head"><h2>注册站长账号</h2><p>首次使用，先创建一个站长账号。之后可在「账号管理」里给店员开子账号。</p></div>
+    <div id="authSetup" class="auth-pane" hidden>
+      <div class="auth-head"><h2>站点初始化</h2><p>只有<b>首次部署</b>（本机还没有任何账号）时才会出现这一步。创建站长账号后，此入口立即失效，之后所有账号都由站长在「账号管理」里添加。</p></div>
       <form id="formRegister" autocomplete="off">
         <div class="field"><label for="regName">你的姓名 / 称呼</label><input id="regName" class="input" placeholder="如：李站长" required autocomplete="off"></div>
         <div class="field"><label for="regUser">登录账号</label><input id="regUser" class="input" placeholder="2–32 位字母、数字、_ . -" required autocomplete="off"></div>
@@ -68,12 +68,16 @@
           <div class="field"><label for="regConfirm">确认密码</label><input id="regConfirm" class="input" type="password" required autocomplete="new-password"></div>
         </div>
         <label class="switch"><input type="checkbox" id="regRemember" checked><span>在这台设备上记住登录（7 天）</span></label>
-        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-lock"/></svg>创建并登录</button>
+        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-lock"/></svg>创建站长账号并进入</button>
       </form>
     </div>
 
-    <div id="authLogin" class="auth-pane" hidden>
+    <div id="authLogin" class="auth-pane">
       <div class="auth-head"><h2>登录驿站</h2><p>请用站长或店员账号登录，所有操作都会记下操作人。</p></div>
+      <div id="authBootHint" class="auth-tip" hidden>
+        <b>本站尚未初始化</b>
+        <span>站长请打开 <code>index.html?setup=1</code>，或在安卓 App 里长按上方标题 1.2 秒，进入初始化创建站长账号。初始化只能做一次。</span>
+      </div>
       <form id="formLogin" autocomplete="off">
         <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username"></div>
         <div class="field"><label for="loginPass">密码</label><input id="loginPass" class="input" type="password" required autocomplete="current-password"></div>
@@ -83,10 +87,11 @@
       <div class="auth-links">
         <button class="link" id="btnAuthImport">已有备份？导入恢复账号与数据</button>
       </div>
+      <p class="auth-tip">本站<b>不开放自助注册</b>。需要新账号请找站长，在「账号管理 → 新增子账号」里开通。</p>
     </div>
 
     <div id="authMsg" class="auth-msg" hidden></div>
-    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库。忘记密码且没有备份时，需要清空站点数据重新注册。</span></div>
+    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。连续输错密码会临时锁定本设备。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库；账号库丢失又无备份时，只能重新初始化站点。</span></div>
   </div>
 </div>
 <input type="file" id="authImportFile" accept="application/json,.json" hidden>
@@ -439,7 +444,7 @@
           </div>
           <div class="card">
             <div class="card-head"><h3>新增子账号</h3><svg class="ic muted"><use href="#i-users"/></svg></div>
-            <p class="hint">给店员各开一个账号，入库、出库、拍照都会记下操作人。操作员可办日常业务；只读访客只能查件和看台账。</p>
+            <p class="hint">这是本站<b>唯一</b>的账号来源：自助注册已关闭，外人无法自行注册。给店员各开一个账号，入库、出库、拍照都会记下操作人。操作员可办日常业务；只读访客只能查件和看台账。人走了直接「停用」，别删，历史流水里的操作人还能对上。</p>
             <form id="formAddSub" data-perm="owner" class="settings-form" autocomplete="off">
               <div class="field-row">
                 <div class="field"><label for="subName">显示姓名</label><input id="subName" class="input" placeholder="如：小王" required></div>

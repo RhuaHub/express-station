@@ -7,7 +7,14 @@
   var KEY = 'express-station.accounts.v1';
   var SESSION_KEY = 'express-station.session.v1';
   var REMEMBER_KEY = 'express-station.remember.v1';
+  var LOCK_KEY = 'express-station.loginlock.v1';
   var ROUNDS = 400;
+
+  /* 登录失败限速：连续错 5 次开始锁定，之后每错一次锁定时长翻倍，上限 15 分钟。
+     纯前端只能做到「本设备」粒度，清空浏览器数据即可绕过，主要挡住随手猜密码。 */
+  var MAX_TRIES = 5;
+  var BASE_LOCK_MS = 60 * 1000;
+  var MAX_LOCK_MS = 15 * 60 * 1000;
 
   var ROLE_NAMES = { owner: '站长', operator: '操作员', viewer: '只读访客' };
   /* owner：全部；operator：日常入库出库与台账；viewer：只看不动 */
@@ -183,11 +190,16 @@
     }
 
     function status() {
+      var lock = lockRemain();
       return {
         hasAccounts: db.accounts.length > 0,
         count: db.accounts.length,
         loggedIn: !!current(),
-        needSetup: db.accounts.length === 0
+        needSetup: db.accounts.length === 0,
+        /* 只有「一个账号都没有」时才允许初始化；之后自助注册永久关闭 */
+        canRegister: db.accounts.length === 0,
+        lockSeconds: lock,
+        lockLeft: lock > 0 ? lock : 0
       };
     }
     function current() {
@@ -233,7 +245,8 @@
     /* 首次使用：注册站长。已有账号后禁止再次调用，避免被绕过提权 */
     function register(input) {
       input = input || {};
-      if (db.accounts.length) return { ok: false, error: '本站已创建站长账号，请直接登录' };
+      /* 自助注册只用于「站点初始化」，有账号后彻底关闭，新账号只能由站长在后台添加 */
+      if (db.accounts.length) return { ok: false, error: '本站已初始化，不能自助注册，请联系站长开通账号' };
       var username = str(input.username).toLowerCase();
       if (!/^[a-z0-9_.-]{2,32}$/.test(username)) {
         return { ok: false, error: '登录账号需 2–32 位，只能用字母、数字、_ . -' };
@@ -243,6 +256,7 @@
       if (String(input.password) !== String(input.confirm)) return { ok: false, error: '两次输入的密码不一致' };
       var a = makeAccount({ username: username, name: input.name, password: input.password }, 'owner', '');
       db.accounts.push(a);
+      clearLock();
       save();
       writeSession(a.id, !!input.remember);
       return { ok: true, account: publicAccount(a) };
@@ -250,14 +264,58 @@
 
     function login(input) {
       input = input || {};
+      var wait = lockRemain();
+      if (wait > 0) {
+        return { ok: false, error: '密码错误次数过多，请 ' + wait + ' 秒后再试', lockSeconds: wait };
+      }
       var a = findByUsername(input.username);
-      if (!a) return { ok: false, error: '账号不存在' };
+      /* 账号不存在与密码错误给同一个提示，避免被用来探测账号是否存在 */
+      if (!a) {
+        noteFail();
+        return failResult('账号或密码不正确');
+      }
       if (!a.active) return { ok: false, error: '该账号已停用，请联系站长' };
-      if (hashPassword(input.password || '', a.salt) !== a.hash) return { ok: false, error: '密码不正确' };
+      if (hashPassword(input.password || '', a.salt) !== a.hash) {
+        noteFail();
+        return failResult('账号或密码不正确');
+      }
+      clearLock();
       a.lastLoginAt = isoNow();
       save();
       writeSession(a.id, !!input.remember);
       return { ok: true, account: publicAccount(a) };
+    }
+    /* 失败时把「还剩几次会锁」一起带回去，让用户知道后果 */
+    function failResult(base) {
+      var l = readLock();
+      var left = MAX_TRIES - (l.fails || 0);
+      if (left > 0 && left <= 2) return { ok: false, error: base + '（再错 ' + left + ' 次将锁定）', left: left };
+      return { ok: false, error: base, left: left };
+    }
+    function readLock() {
+      var r = readJSON(st, LOCK_KEY) || {};
+      return { fails: Math.max(0, Number(r.fails) || 0), until: Number(r.until) || 0 };
+    }
+    function writeLock(v) {
+      try { st.setItem(LOCK_KEY, JSON.stringify(v)); } catch (e) { /* 隐私模式写不进去就不限速，不阻断登录 */ }
+    }
+    function lockRemain() {
+      var l = readLock();
+      if (!l.until || l.until <= Date.now()) return 0;
+      return Math.ceil((l.until - Date.now()) / 1000);
+    }
+    function noteFail() {
+      var l = readLock();
+      l.fails = (l.fails || 0) + 1;
+      if (l.fails >= MAX_TRIES) {
+        var ms = Math.min(BASE_LOCK_MS * Math.pow(2, l.fails - MAX_TRIES), MAX_LOCK_MS);
+        l.until = Date.now() + ms;
+      }
+      writeLock(l);
+      return l.fails;
+    }
+    function clearLock() {
+      try { st.removeItem(LOCK_KEY); } catch (e) { /* 忽略 */ }
     }
     function logout() {
       ses.removeItem(SESSION_KEY);
@@ -365,6 +423,7 @@
     return {
       KEY: KEY, status: status, current: current, actor: actor, can: can,
       register: register, login: login, logout: logout,
+      lockRemain: lockRemain, clearLock: clearLock, MAX_TRIES: MAX_TRIES,
       list: list, createSub: createSub, updateSub: updateSub, removeSub: removeSub,
       changePassword: changePassword,
       snapshot: snapshot, restore: restore,

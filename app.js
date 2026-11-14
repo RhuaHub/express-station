@@ -402,7 +402,19 @@
     box.className = 'auth-msg' + (isErr ? ' err' : ' ok');
     box.hidden = false;
   }
+  /* 初始化入口只在「一个账号都没有」且显式请求时才放行：
+     ① 打开带 #setup 或 ?setup=1 的地址；② 在登录面板长按标题 1.2 秒（安卓 App 用这个）。
+     站内不再默认展示注册表单，外人打开网站只能看到登录框。 */
+  function wantSetup() {
+    if (!auth.status().needSetup) return false;
+    var h = String(location.hash || '').toLowerCase();
+    var q = String(location.search || '').toLowerCase();
+    return h === '#setup' || h === '#/setup' || q.indexOf('setup=1') >= 0;
+  }
   function showGate(mode) {
+    var st = auth.status();
+    /* 有账号时注册入口永久失效，任何情况下都回落到登录 */
+    if (mode === 'setup' && !st.needSetup) mode = 'login';
     document.body.classList.add('auth-locked');
     $('authGate').hidden = false;
     $('authSetup').hidden = mode !== 'setup';
@@ -410,6 +422,11 @@
     $('authStationName').textContent = store.settings().stationName;
     $('authMsg').hidden = true;
     ['regPass', 'regConfirm', 'loginPass'].forEach(function (id) { $(id).value = ''; });
+    /* 无账号时在登录页给出唯一线索，避免站长自己也不知道怎么初始化 */
+    var boot = $('authBootHint');
+    if (boot) {
+      boot.hidden = !(mode === 'login' && st.needSetup);
+    }
     var focusId = mode === 'setup' ? 'regName' : 'loginUser';
     setTimeout(function () { $(focusId).focus(); }, 80);
   }
@@ -419,7 +436,7 @@
   }
   function enterApp() {
     var c = auth.current();
-    if (!c) { showGate(auth.status().needSetup ? 'setup' : 'login'); return; }
+    if (!c) { showGate(wantSetup() ? 'setup' : 'login'); return; }
     store.setActor(c.name);
     store.logEvent('login', c.name + ' 登录（' + c.roleName + '）');
     hideGate();
@@ -441,6 +458,30 @@
     syncHash('dash');
     showGate('login');
   }
+  /* 闲置自动锁定：设备放在柜台上没人管时，别让人顺手点进去。
+     15 分钟无操作即回登录门；正在输入框里打字（可能填到一半）不抢锁。 */
+  var IDLE_MS = 15 * 60 * 1000;
+  var idleAt = Date.now();
+  function markActive() { idleAt = Date.now(); }
+  function idleTick() {
+    if (!auth.current() || document.body.classList.contains('auth-locked')) return;
+    var ae = document.activeElement;
+    var tag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') { idleAt = Date.now(); return; }
+    if (Date.now() - idleAt < IDLE_MS) return;
+    leaveApp();
+    authMsg('已闲置 ' + Math.round(IDLE_MS / 60000) + ' 分钟，为防止他人操作已自动锁定，请重新登录', false);
+  }
+  function bindIdle() {
+    ['mousedown', 'keydown', 'touchstart', 'change', 'wheel'].forEach(function (ev) {
+      document.addEventListener(ev, markActive, { passive: true, capture: true });
+    });
+    setInterval(idleTick, 30000);
+    /* 切回前台立刻判断一次，别等下一个 30 秒 */
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) idleTick();
+    });
+  }
   function bindAuth() {
     $('formRegister').addEventListener('submit', function (e) {
       e.preventDefault();
@@ -450,10 +491,14 @@
         remember: $('regRemember').checked
       });
       if (!r.ok) { authMsg(r.error, true); return; }
+      toast('初始化完成，注册入口已关闭，之后请在「账号管理」里添加店员');
       enterApp();
     });
     $('formLogin').addEventListener('submit', function (e) {
       e.preventDefault();
+      /* 锁定期间连正确密码也不放行，避免绕过限速反复试 */
+      var wait = auth.lockRemain ? auth.lockRemain() : 0;
+      if (wait > 0) { authMsg('密码错误次数过多，请 ' + wait + ' 秒后再试', true); return; }
       var r = auth.login({
         username: $('loginUser').value, password: $('loginPass').value,
         remember: $('loginRemember').checked
@@ -461,6 +506,29 @@
       if (!r.ok) { authMsg(r.error, true); return; }
       enterApp();
     });
+    /* 无账号时长按标题 1.2 秒进入初始化（安卓 App 内没法改地址，只能靠手势） */
+    var brand = document.querySelector('.auth-brand');
+    if (brand && !brand.dataset.longpress) {
+      brand.dataset.longpress = '1';
+      var timer = null;
+      var start = function () {
+        timer = setTimeout(function () {
+          timer = null;
+          if (auth.status().needSetup) {
+            showGate('setup');
+            authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
+          } else {
+            authMsg('本站已初始化，注册入口已关闭', true);
+          }
+        }, 1200);
+      };
+      var stop = function () { if (timer) { clearTimeout(timer); timer = null; } };
+      brand.addEventListener('mousedown', start);
+      brand.addEventListener('touchstart', start, { passive: true });
+      ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(function (ev) {
+        brand.addEventListener(ev, stop);
+      });
+    }
     $('btnAuthImport').onclick = function () { $('authImportFile').click(); };
     $('authImportFile').addEventListener('change', async function () {
       var file = this.files && this.files[0];
@@ -1464,10 +1532,11 @@
     store.registerAccountsProvider(auth);
     bind();            /* 事件只绑定一次，登录/退出只切换门与重新渲染 */
     bindAuth();
+    bindIdle();
     bindAccounts();
     fillSettings();
     if (auth.current()) enterApp();
-    else showGate(auth.status().needSetup ? 'setup' : 'login');
+    else showGate(wantSetup() ? 'setup' : 'login');
     /* 恢复本地目录句柄放后台：IndexedDB 不可用时也不能拖住登录与业务界面 */
     photos.init().catch(function () { /* 照片模块会回退到 WebDAV / 浏览器暂存 */ });
   }

@@ -446,6 +446,16 @@ body.auth-locked .app { display: none; }
 .auth-pane .field-row { gap: 10px; }
 .auth-pane .btn-block { margin-top: 6px; }
 .auth-links { margin-top: 14px; text-align: center; }
+.auth-tip {
+  margin-top: 12px; padding: 9px 12px; border-radius: 9px; font-size: 11px;
+  line-height: 1.7; background: var(--line-soft); color: var(--sub);
+}
+.auth-tip[hidden] { display: none !important; }
+.auth-tip b { display: block; margin-bottom: 3px; color: var(--text); font-size: 12px; }
+.auth-tip code {
+  padding: 1px 5px; border-radius: 4px; background: var(--gold-soft);
+  color: var(--gold-deep); font-family: ui-monospace, Menlo, Consolas, monospace;
+}
 .auth-msg { margin-top: 14px; padding: 9px 12px; border-radius: 9px; font-size: 12px; background: var(--ok-bg); color: var(--ok); }
 .auth-msg.err { background: var(--danger-bg); color: var(--danger); }
 .auth-note {
