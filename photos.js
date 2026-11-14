@@ -42,7 +42,7 @@
     return {
       mode: 'webdav',
       dirName: 'express-station',
-      webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '', user: '', pass: '', proxyKey: '' },
+      webdav: { provider: 'pan123', baseUrl: '', proxyBase: '', user: '', pass: '', proxyKey: '' },
       maxSide: 1600,
       quality: 0.82,
       requireProof: true
@@ -68,8 +68,8 @@
         c.webdav = {
           provider: PROVIDER_KEYS.indexOf(p.webdav && p.webdav.provider) >= 0
             ? p.webdav.provider
-            /* 旧配置没有 provider：填了 Worker 或自定义地址的一律按自定义处理 */
-            : (p.webdav && p.webdav.baseUrl ? 'custom' : 'nutstore'),
+            /* 旧配置没有 provider：填了地址的一律按自定义处理，空配置默认 123 云盘 */
+            : (p.webdav && p.webdav.baseUrl ? 'custom' : 'pan123'),
           baseUrl: String((p.webdav && p.webdav.baseUrl) || '').trim().replace(/\/+$/, ''),
           proxyBase: String((p.webdav && p.webdav.proxyBase) || '').trim().replace(/\/+$/, ''),
           user: String((p.webdav && p.webdav.user) || ''),
