@@ -164,8 +164,19 @@
       });
     }, 2500);
   }
+  /* 本地存储写不进去（无痕模式 / 存储满 / 系统限制）时只提示一次，避免每次操作都弹 */
+  var storageWarned = false;
+  function warnStorageOnce() {
+    if (storageWarned) return;
+    var okStore = typeof store.storageOk !== 'function' || store.storageOk();
+    var okAuth = auth.status ? auth.status().storageOk !== false : true;
+    if (okStore && okAuth) return;
+    storageWarned = true;
+    toast('本机存储写不进去（无痕模式或空间不足）：这次改动刷新后会丢，请尽快导出备份', 'err');
+  }
   function afterWrite(msg, type) {
     if (msg) toast(msg, type);
+    warnStorageOnce();
     renderAll();
     scheduleSync();
   }
@@ -435,6 +446,8 @@
     box.textContent = text;
     box.className = 'auth-msg' + (isErr ? ' err' : ' ok');
     box.hidden = false;
+    /* 手机上键盘会挡掉下半屏，错误提示在按钮下方很容易看不见，主动带进视野 */
+    try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* 老浏览器忽略 */ }
   }
   /* 初始化入口只在「一个账号都没有」且显式请求时才放行：
      ① 打开带 #setup 或 ?setup=1 的地址；② 在登录面板长按标题 1.2 秒（安卓 App 用这个）。
@@ -461,8 +474,15 @@
     if (boot) {
       boot.hidden = !(mode === 'login' && st.needSetup);
     }
+    /* 存储不可写（无痕模式/配额满）时提前说清楚，别等用户输完密码以为账号错了 */
+    var sh = $('authStorageHint');
+    if (sh) sh.hidden = st.storageOk !== false;
     var focusId = mode === 'setup' ? 'regName' : 'loginUser';
-    setTimeout(function () { $(focusId).focus(); }, 80);
+    /* 触屏设备不自动聚焦：一进页面就弹键盘，iOS 还会因输入框字号不足 16px 自动放大，
+       把登录按钮顶出可视区——这正是「手机上点不到登录」的典型成因。 */
+    var coarse = false;
+    try { coarse = window.matchMedia('(hover: none), (pointer: coarse)').matches; } catch (e) { coarse = false; }
+    if (!coarse) setTimeout(function () { $(focusId).focus(); }, 80);
   }
   function hideGate() {
     document.body.classList.remove('auth-locked');
@@ -471,9 +491,10 @@
   function enterApp() {
     var c = auth.current();
     if (!c) { showGate(wantSetup() ? 'setup' : 'login'); return; }
-    store.setActor(c.name);
-    store.logEvent('login', c.name + ' 登录（' + c.roleName + '）');
+    /* 先放行进入，再补记账：写日志失败不该把登录卡在门口 */
     hideGate();
+    store.setActor(c.name);
+    try { store.logEvent('login', c.name + ' 登录（' + c.roleName + '）'); } catch (e) { /* 日志失败不影响使用 */ }
     applyPermissions();
     fillSettings();
     renderAll();
@@ -481,10 +502,12 @@
     switchView(target || 'dash', target ? { noHash: true } : undefined);
     if (target) toast('已打开「' + viewTitles[target][0] + '」');
     else toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
+    /* 放在最后：存储告警比「欢迎回来」更需要被看见 */
+    warnStorageOnce();
   }
   function leaveApp() {
     var c = auth.current();
-    if (c) store.logEvent('logout', c.name + ' 退出登录');
+    if (c) { try { store.logEvent('logout', c.name + ' 退出登录'); } catch (e) { /* 忽略 */ } }
     auth.logout();
     store.setActor('');
     state.selected = {}; state.outKeyword = ''; state.lookupKey = '';
@@ -517,50 +540,83 @@
     });
   }
   function bindAuth() {
+    /* 手机键盘弹出时，position:fixed 的登录门不会被压缩，按钮会躲在键盘后面且滚不到。
+       用 visualViewport 算出键盘占了多高，写进 --kb，给登录门留出可滚动的余量。 */
+    (function bindKeyboardInset() {
+      var vv = window.visualViewport;
+      if (!vv || !vv.addEventListener) return;
+      var apply = function () {
+        var gap = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+        document.documentElement.style.setProperty('--kb', gap + 'px');
+      };
+      vv.addEventListener('resize', apply);
+      vv.addEventListener('scroll', apply);
+      apply();
+    })();
     $('formRegister').addEventListener('submit', function (e) {
       e.preventDefault();
-      var r = auth.register({
-        name: $('regName').value, username: $('regUser').value,
-        password: $('regPass').value, confirm: $('regConfirm').value,
-        remember: $('regRemember').checked
-      });
-      if (!r.ok) { authMsg(r.error, true); return; }
-      toast('初始化完成，注册入口已关闭，之后请在「账号管理」里添加店员');
-      enterApp();
+      try {
+        var r = auth.register({
+          name: $('regName').value, username: $('regUser').value,
+          password: $('regPass').value, confirm: $('regConfirm').value,
+          remember: $('regRemember').checked
+        });
+        if (!r.ok) { authMsg(r.error, true); return; }
+        toast('初始化完成，注册入口已关闭，之后请在「账号管理」里添加店员');
+        enterApp();
+      } catch (err) {
+        /* 兜住任何意外异常：不能让按钮点下去毫无反应 */
+        authMsg('初始化失败：' + (err && err.message ? err.message : '浏览器拒绝写入本地存储'), true);
+      }
     });
     $('formLogin').addEventListener('submit', function (e) {
       e.preventDefault();
-      /* 锁定期间连正确密码也不放行，避免绕过限速反复试 */
-      var wait = auth.lockRemain ? auth.lockRemain() : 0;
-      if (wait > 0) { authMsg('密码错误次数过多，请 ' + wait + ' 秒后再试', true); return; }
-      var r = auth.login({
-        username: $('loginUser').value, password: $('loginPass').value,
-        remember: $('loginRemember').checked
-      });
-      if (!r.ok) { authMsg(r.error, true); return; }
-      enterApp();
+      try {
+        /* 锁定期间连正确密码也不放行，避免绕过限速反复试 */
+        var wait = auth.lockRemain ? auth.lockRemain() : 0;
+        if (wait > 0) { authMsg('密码错误次数过多，请 ' + wait + ' 秒后再试', true); return; }
+        var r = auth.login({
+          username: $('loginUser').value, password: $('loginPass').value,
+          remember: $('loginRemember').checked
+        });
+        if (!r.ok) { authMsg(r.error, true); return; }
+        enterApp();
+        if (r.warning) toast(r.warning, 'err');
+      } catch (err) {
+        authMsg('登录失败：' + (err && err.message ? err.message : '浏览器拒绝写入本地存储'), true);
+      }
     });
     /* 无账号时长按标题 1.2 秒进入初始化（安卓 App 内没法改地址，只能靠手势） */
     var brand = document.querySelector('.auth-brand');
     if (brand && !brand.dataset.longpress) {
       brand.dataset.longpress = '1';
       var timer = null;
-      var start = function () {
-        timer = setTimeout(function () {
-          timer = null;
-          if (auth.status().needSetup) {
-            showGate('setup');
-            authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
-          } else {
-            authMsg('本站已初始化，注册入口已关闭', true);
-          }
-        }, 1200);
+      var trySetup = function () {
+        if (!auth.status().needSetup) { authMsg('本站已初始化，注册入口已关闭', true); return; }
+        showGate('setup');
+        authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
       };
       var stop = function () { if (timer) { clearTimeout(timer); timer = null; } };
+      var start = function () {
+        stop();
+        timer = setTimeout(function () { timer = null; trySetup(); }, 1200);
+      };
+      /* 手机长按会先弹系统菜单（iOS 的「拷贝/查询」），那一下会触发 touchcancel 把计时器清掉，
+         所以必须屏蔽长按菜单与文字选中（配合 CSS 的 touch-callout / user-select），
+         否则初始化入口在移动端等于不存在。 */
+      brand.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       brand.addEventListener('mousedown', start);
       brand.addEventListener('touchstart', start, { passive: true });
-      ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(function (ev) {
-        brand.addEventListener(ev, stop);
+      ['mouseup', 'mouseleave', 'touchend', 'touchcancel', 'touchmove'].forEach(function (ev) {
+        brand.addEventListener(ev, stop, ev === 'touchmove' ? { passive: true } : undefined);
+      });
+      /* 长按仍被系统吃掉时的兜底：2.5 秒内连点 5 下 */
+      var taps = [];
+      brand.addEventListener('click', function () {
+        var now = Date.now();
+        taps.push(now);
+        taps = taps.filter(function (t) { return now - t < 2500; });
+        if (taps.length >= 5) { taps = []; trySetup(); }
       });
     }
     $('btnAuthImport').onclick = function () { $('authImportFile').click(); };

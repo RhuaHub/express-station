@@ -862,6 +862,71 @@ checkAsync('照片缓存：没有 IndexedDB 时静默降级而不是抛错', asy
   assert.strictEqual(typeof clear.ok, 'boolean', 'clearCache 应返回结果而不是抛异常');
 });
 
+check('本地存储写不进去时：注册明确报错，不静默成功', () => {
+  const authApi = require('../auth.js');
+  const bad = {
+    getItem: function () { return null; },
+    setItem: function () { throw new Error('QuotaExceededError'); },
+    removeItem: function () { }
+  };
+  const a = authApi.createAuth(bad, bad);
+  assert.strictEqual(a.status().storageOk, false, '启动探测就该发现存储不可写');
+  const r = a.register({ name: '测试', username: 'quotauser', password: 'quota123456', confirm: 'quota123456' });
+  assert.strictEqual(r.ok, false, '账号存不下来时不能假装成功');
+  assert.ok(/本地存储/.test(r.error), '提示应点明是本地存储的问题：' + r.error);
+  assert.strictEqual(a.status().count, 0, '失败的注册不能留在内存里');
+});
+
+check('本地存储写不进去时：登录仍能进入，并提示刷新会掉线', () => {
+  const authApi = require('../auth.js');
+  const base = authApi.memoryStorage();
+  const writer = authApi.createAuth(base, authApi.memoryStorage());
+  assert.strictEqual(writer.register({
+    name: '测试', username: 'quituser', password: 'quit123456', confirm: 'quit123456'
+  }).ok, true);
+
+  /* 读得到、写不进：等同无痕模式 */
+  const ro = {
+    getItem: function (k) { return base.getItem(k); },
+    setItem: function () { throw new Error('QuotaExceededError'); },
+    removeItem: function () { }
+  };
+  const a = authApi.createAuth(ro, ro);
+  let r;
+  assert.doesNotThrow(function () { r = a.login({ username: 'quituser', password: 'quit123456' }); },
+    '存储异常不能冒到提交处理器外面，那会让「点登录毫无反应」');
+  assert.strictEqual(r.ok, true, '登录本身应当成功：' + r.error);
+  assert.ok(/只在当前页面/.test(r.warning || ''), '必须提示只在当前页面有效：' + r.warning);
+  assert.ok(!!a.current(), '要有内存会话兜底，否则会「登录成功→立刻弹回登录页」');
+  assert.doesNotThrow(function () { a.logout(); }, '退出登录也不能因为存储异常而崩');
+  assert.strictEqual(a.current(), null);
+});
+
+check('台账写入失败不抛异常，但会如实报告没存下来', () => {
+  const bad = {
+    getItem: function () { return null; },
+    setItem: function () { throw new Error('QuotaExceededError'); },
+    removeItem: function () { }
+  };
+  const s2 = api.createStore(bad);
+  assert.strictEqual(s2.storageOk(), true, '还没写之前应视为可用');
+  assert.doesNotThrow(function () { s2.addParcel({ trackingNo: 'QUOTA001' }); }, '入库不能因存储异常中断');
+  assert.strictEqual(s2.storageOk(), false, '写失败后要能被界面查出来');
+});
+
+check('移动端登录：输入框 16px 防缩放、触屏延迟、键盘余量都已就位', () => {
+  const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+  assert.ok(/\.input,\s*select\.input[\s\S]{0,90}font-size:\s*16px/.test(css),
+    '移动端输入框必须 16px，否则 iOS 聚焦会放大整页并把按钮顶出屏幕');
+  assert.ok(/touch-action:\s*manipulation/.test(css), '按钮要取消双击缩放的 300ms 等待');
+  assert.ok(/-webkit-touch-callout:\s*none/.test(css), '长按标题要屏蔽系统菜单，否则初始化入口点不出来');
+  assert.ok(/var\(--kb/.test(css), '登录门要按键盘高度留出可滚动余量');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/visualViewport/.test(app), '要用 visualViewport 算键盘高度');
+  assert.ok(/authStorageHint/.test(app), '存储不可用要在登录页直接说明');
+  assert.ok(/pointer:\s*coarse/.test(app), '触屏设备不应自动聚焦弹键盘');
+});
+
 (async () => {
   for (const c of asyncChecks) {
     await c.fn();

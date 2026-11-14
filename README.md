@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 网页 | `index.html` | 双击即用，也可部署到 Cloudflare Pages / GitHub Pages |
 | PWA | 浏览器「安装到桌面」 | 支持离线打开，桌面图标、启动画面齐全 |
-| 安卓 App | `android/dist/express-station-1.0.3.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
+| 安卓 App | `android/dist/express-station-1.0.4.apk` | 内置同一套页面，摄像头、扫码枪、导出都可用 |
 
 ## 功能
 
@@ -38,7 +38,7 @@ sw.js                 离线缓存（仅同源 GET）
 icons/                PWA 与桌面图标
 android/              安卓 App 壳（WebView）与打包脚本
 deploy/               WebDAV CORS 代理 Worker、AList 容器配置
-tests/smoke.js        回归测试（64 项）
+tests/smoke.js        回归测试（68 项）
 tools/                图标生成、无头浏览器探针等辅助脚本
 ```
 
@@ -136,13 +136,31 @@ Worker 路由：`/pan123` → 123 云盘，`/nutstore` → 坚果云，`/webdav`
 > 如实说明：这是纯前端应用，账号库和台账都在浏览器本地。防护挡的是「打开你链接的陌生人」和「随手拿起设备的人」；能物理接触设备并清空浏览器数据的人，等于把站点恢复出厂，只能重新初始化——那也读不到你原来浏览器里的数据。真正的多用户隔离需要服务端，本项目刻意不做。 |
 
 
+### 手机上登录不了？先看这四条
+
+移动端出问题几乎都落在下面四种，1.0.4 已全部处理：
+
+| 现象 | 原因 | 现在的行为 |
+|---|---|---|
+| 点「登录」完全没反应，连错误提示都没有 | 无痕/隐私模式或存储配额满时，`localStorage.setItem` 抛异常，异常冒到提交处理器外，整条流程被打断 | 所有写入都兜住异常；登录改用**内存会话**照常进入，并明确提示「刷新会掉线」；登录页顶部直接显示存储不可用的警告 |
+| 输入账号时整页突然放大、按钮跑出屏幕 | iOS/Android 对字号 **<16px** 的输入框会在聚焦瞬间自动放大 | 触屏设备（`pointer: coarse`，含横屏）输入框统一 16px |
+| 输入框被键盘挡住、按钮点不到 | `position: fixed` 的登录门不会随键盘压缩 | 用 `visualViewport` 算出键盘高度写进 `--kb`，登录门可滚动到按钮上方 |
+| 手机横屏时标题被裁掉、顶部滚不上去 | flex 垂直居中 + 内容溢出时，顶部会落到滚动范围之外 | 改成 `margin: auto` 居中，溢出时自动塌成 0；矮屏另有一套紧凑样式 |
+
+另外两点：
+
+- **手机上怎么进初始化**：长按标题 1.2 秒（已屏蔽系统长按菜单与文字选中，否则 iOS 会先弹「拷贝/查询」把计时器打断），或 **2.5 秒内连点标题 5 下**。
+- **触屏点击延迟**：按钮统一 `touch-action: manipulation`，去掉双击缩放的 300ms 等待，不会再出现「点一下没反应、要再点一下」。
+
+自测方式（不用真手机）：`node tools/serve.js 8765` 起本地服务，再 `MOBILE=1 node tools/cdp-probe.js http://127.0.0.1:8765/index.html <表达式文件>`，用 CDP 模拟 390×844 竖屏与 844×390 横屏；`PRE_SCRIPT` 参数可以在页面脚本之前封掉 `localStorage`，复现无痕模式。
+
 ### 安卓 App
 
 ```bash
 bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/platform
 ```
 
-产物在 `android/dist/express-station-1.0.3.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
+产物在 `android/dist/express-station-1.0.4.apk`，传到手机安装即可（首次需允许「安装未知来源应用」）。
 详细说明见 [android/README.md](android/README.md)。
 
 ## 数据与隐私

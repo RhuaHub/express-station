@@ -62,7 +62,7 @@
       <div class="auth-head"><h2>站点初始化</h2><p>只有<b>首次部署</b>（本机还没有任何账号）时才会出现这一步。创建站长账号后，此入口立即失效，之后所有账号都由站长在「账号管理」里添加。</p></div>
       <form id="formRegister" autocomplete="off">
         <div class="field"><label for="regName">你的姓名 / 称呼</label><input id="regName" class="input" placeholder="如：李站长" required autocomplete="off"></div>
-        <div class="field"><label for="regUser">登录账号</label><input id="regUser" class="input" placeholder="2–32 位字母、数字、_ . -" required autocomplete="off"></div>
+        <div class="field"><label for="regUser">登录账号</label><input id="regUser" class="input" placeholder="2–32 位字母、数字、_ . -" required autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
         <div class="field-row">
           <div class="field"><label for="regPass">密码（至少 6 位）</label><input id="regPass" class="input" type="password" required autocomplete="new-password"></div>
           <div class="field"><label for="regConfirm">确认密码</label><input id="regConfirm" class="input" type="password" required autocomplete="new-password"></div>
@@ -76,11 +76,15 @@
       <div class="auth-head"><h2>登录驿站</h2><p>请用站长或店员账号登录，所有操作都会记下操作人。</p></div>
       <div id="authBootHint" class="auth-tip" hidden>
         <b>本站尚未初始化</b>
-        <span>站长请打开 <code>index.html?setup=1</code>，或在安卓 App 里长按上方标题 1.2 秒，进入初始化创建站长账号。初始化只能做一次。</span>
+        <span>站长请打开 <code>index.html?setup=1</code>；在手机上可长按上方标题 1.2 秒（或连续点 5 下）进入初始化。初始化只能做一次。</span>
+      </div>
+      <div id="authStorageHint" class="auth-tip" hidden>
+        <b>这个浏览器不允许保存数据</b>
+        <span>可能是无痕/隐私模式，或者存储空间已满。现在可以登录并正常使用，但<b>刷新或关掉页面就会掉线</b>，账号也存不下来。请换普通窗口打开，或清理手机存储后重试。</span>
       </div>
       <form id="formLogin" autocomplete="off">
-        <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username"></div>
-        <div class="field"><label for="loginPass">密码</label><input id="loginPass" class="input" type="password" required autocomplete="current-password"></div>
+        <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next"></div>
+        <div class="field"><label for="loginPass">密码</label><input id="loginPass" class="input" type="password" required autocomplete="current-password" enterkeyhint="go"></div>
         <label class="switch"><input type="checkbox" id="loginRemember"><span>在这台设备上记住登录（7 天）</span></label>
         <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-user"/></svg>登录</button>
       </form>

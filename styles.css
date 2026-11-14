@@ -31,6 +31,8 @@ body {
 }
 button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
+/* 触屏上取消双击缩放的 300ms 等待：手机上「点一下没反应、要再点一下」多半是这个 */
+.btn, .link, .nav-item, .switch, .chip, button { touch-action: manipulation; }
 h1, h2, h3, h4, p { margin: 0; }
 h3 { font-size: 15px; font-weight: 650; letter-spacing: .2px; }
 .svg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
@@ -424,15 +426,24 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 body.auth-locked .app { display: none; }
 .auth-gate[hidden], .auth-pane[hidden], .auth-msg[hidden] { display: none !important; }
 .auth-gate {
-  position: fixed; inset: 0; z-index: 80; display: flex; align-items: center;
+  position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-start;
   justify-content: center; padding: 24px; overflow-y: auto;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  /* --kb 由 app.js 用 visualViewport 算出的键盘高度，保证按钮能滚到键盘上方 */
+  padding-bottom: calc(24px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px));
   background: radial-gradient(circle at 20% 0%, var(--gold-soft), transparent 55%), var(--bg);
 }
 .auth-panel {
   width: 100%; max-width: 440px; background: var(--card); padding: 28px;
   border: 1px solid var(--gold-line); border-radius: 18px; box-shadow: var(--shadow-lg);
+  /* 用 auto 外边距居中：空间够时垂直居中，不够时自动塌成 0，
+     顶部不会被 flex 居中推到视口外（手机横屏、窗口很矮时就是这个坑） */
+  margin: auto;
 }
-.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px;
+  /* 长按进初始化：屏蔽长按菜单与文字选中，否则 iOS 会先弹「拷贝/查询」并把计时器打断 */
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+}
 .auth-mark {
   width: 42px; height: 42px; border-radius: 12px; background: var(--gold-soft);
   color: var(--gold-deep); display: flex; align-items: center; justify-content: center; flex: none;
@@ -548,7 +559,16 @@ body.printing-label .auth-gate { display: none !important; }
   .cam-stage { aspect-ratio: 4 / 3; }
   .cam-actions .btn { flex: 1 1 auto; }
   .auth-panel { padding: 22px; }
-  .auth-gate { align-items: flex-start; padding: 16px; }
+  .auth-gate {
+    align-items: flex-start;
+    /* 保留键盘余量与刘海/底部安全区，别被简写成 padding: 16px 覆盖掉 */
+    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px
+             calc(16px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px));
+  }
+  /* iOS 对字号 <16px 的输入框会在聚焦瞬间自动放大整页，放大后固定定位的登录门错位、
+     按钮跑到屏幕外——这是「手机上点不到登录」最容易被忽略的一条。统一 16px 即可避免。 */
+  .input, select.input, .input-lg, .input-xl, .input-sm { font-size: 16px; }
+  .input { padding-top: 11px; padding-bottom: 11px; }
   .account-row { flex-wrap: wrap; }
   .ar-actions { width: 100%; justify-content: flex-start; }
   .user-chip { padding: 6px 9px; }
@@ -563,4 +583,20 @@ body.printing-label .auth-gate { display: none !important; }
   .lc-slot strong { font-size: 20px; }
   .lc-code strong { font-size: 17px; }
   .ls-code { font-size: 36px; }
+}
+
+/* 触屏设备一律 16px：iOS/Android 对 <16px 的输入框会在聚焦时放大整页。
+   用 pointer 而不是宽度判断，手机横屏（宽 >760px）也能命中。 */
+@media (hover: none), (pointer: coarse) {
+  .input, select.input, .input-lg, .input-xl, .input-sm { font-size: 16px; }
+  .input { padding-top: 11px; padding-bottom: 11px; }
+}
+/* 矮屏（手机横屏、半屏窗口）：压缩登录面板，保证标题和按钮都在可滚动范围内 */
+@media (max-height: 560px) {
+  .auth-gate { padding-top: 10px; padding-bottom: calc(10px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); }
+  .auth-panel { padding: 16px; }
+  .auth-brand { margin-bottom: 10px; }
+  .auth-head p { display: none; }
+  .auth-links { margin-top: 8px; }
+  .auth-note { display: none; }
 }

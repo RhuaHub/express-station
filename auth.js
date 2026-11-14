@@ -160,28 +160,55 @@
     var ses = sessionStorageLike || (typeof sessionStorage !== 'undefined' ? sessionStorage : memoryStorage());
     var db = read();
 
+    /* 手机上最常见的两个坑：无痕/隐私模式、以及存储配额满 —— setItem 会直接抛异常。
+       以前 save() 是裸调用，异常冒到 submit 处理器外面，表现就是「点了登录完全没反应」，
+       连错误提示都不出现。这里统一兜住：写不进去就降级成内存态，并让调用方拿到失败信号。 */
+    var degraded = false;
+    /* 存储写不进去时的「当前登录用户」，只在这一次页面生命周期内有效 */
+    var memSession = '';
+    /* 启动时先探一次存储能不能写：无痕模式/配额满时在这里就能知道，
+       好让界面直接说明「登录留不住」，而不是等用户输完密码看到「账号或密码不正确」。 */
+    try {
+      st.setItem(KEY + '.probe', '1');
+      st.removeItem(KEY + '.probe');
+    } catch (e) { degraded = true; }
+    function safeSet(store, k, v) {
+      try { store.setItem(k, v); return true; }
+      catch (e) { degraded = true; return false; }
+    }
+    function safeRemove(store, k) {
+      try { store.removeItem(k); return true; } catch (e) { return false; }
+    }
+
     function read() {
       try {
         var raw = st.getItem(KEY);
         return raw ? normalizeDB(JSON.parse(raw)) : emptyDB();
       } catch (e) { return emptyDB(); }
     }
-    function save() { st.setItem(KEY, JSON.stringify(db)); return true; }
+    function save() { return safeSet(st, KEY, JSON.stringify(db)); }
+    function saveFailed() {
+      return { ok: false, error: '改动没能写入本地存储（无痕/隐私模式或存储已满），刷新后会丢失。请关闭无痕模式或清理空间后重试。' };
+    }
     function readJSON(store, key) {
       try { return JSON.parse(store.getItem(key) || 'null'); } catch (e) { return null; }
     }
     function writeSession(userId, remember) {
-      ses.setItem(SESSION_KEY, JSON.stringify({ userId: userId, at: Date.now() }));
+      /* 存不进去时用内存会话兜住：当前这一屏照样能用，只是刷新/关页就掉线。
+         不这么做的话，无痕模式下会「登录成功 → 立刻弹回登录页」，看起来就是登不上。 */
+      memSession = userId;
+      var ok = safeSet(ses, SESSION_KEY, JSON.stringify({ userId: userId, at: Date.now() }));
       if (remember) {
-        st.setItem(REMEMBER_KEY, JSON.stringify({ userId: userId, until: Date.now() + 7 * 86400000 }));
-      } else st.removeItem(REMEMBER_KEY);
+        ok = safeSet(st, REMEMBER_KEY, JSON.stringify({ userId: userId, until: Date.now() + 7 * 86400000 })) && ok;
+      } else safeRemove(st, REMEMBER_KEY);
+      return ok;
     }
     function sessionUserId() {
       var s = readJSON(ses, SESSION_KEY);
       if (s && s.userId) return s.userId;
       var r = readJSON(st, REMEMBER_KEY);
       if (r && r.userId && r.until > Date.now()) return r.userId;
-      return '';
+      return memSession || '';
     }
     function findById(id) { return db.accounts.find(function (a) { return a.id === id; }) || null; }
     function findByUsername(u) {
@@ -199,7 +226,9 @@
         /* 只有「一个账号都没有」时才允许初始化；之后自助注册永久关闭 */
         canRegister: db.accounts.length === 0,
         lockSeconds: lock,
-        lockLeft: lock > 0 ? lock : 0
+        lockLeft: lock > 0 ? lock : 0,
+        /* 写不进本地存储时，登录只能维持当前页面 */
+        storageOk: !degraded
       };
     }
     function current() {
@@ -257,7 +286,10 @@
       var a = makeAccount({ username: username, name: input.name, password: input.password }, 'owner', '');
       db.accounts.push(a);
       clearLock();
-      save();
+      if (!save()) {
+        db.accounts.pop();
+        return { ok: false, error: '浏览器禁止写本地存储（无痕/隐私模式或存储已满），账号存不下来。请关掉无痕模式、清理空间后重试。' };
+      }
       writeSession(a.id, !!input.remember);
       return { ok: true, account: publicAccount(a) };
     }
@@ -281,9 +313,13 @@
       }
       clearLock();
       a.lastLoginAt = isoNow();
-      save();
-      writeSession(a.id, !!input.remember);
-      return { ok: true, account: publicAccount(a) };
+      var saved = save();
+      var sessOk = writeSession(a.id, !!input.remember);
+      /* 写不进去也让这一屏能用，但必须明确告诉用户：刷新就掉线 */
+      var warning = (!saved || !sessOk)
+        ? '这个浏览器不允许写本地存储（无痕/隐私模式、存储已满或被系统策略限制）。本次登录只在当前页面有效，刷新后会掉线，请换普通模式或清理空间后重试。'
+        : '';
+      return { ok: true, account: publicAccount(a), warning: warning };
     }
     /* 失败时把「还剩几次会锁」一起带回去，让用户知道后果 */
     function failResult(base) {
@@ -318,8 +354,9 @@
       try { st.removeItem(LOCK_KEY); } catch (e) { /* 忽略 */ }
     }
     function logout() {
-      ses.removeItem(SESSION_KEY);
-      st.removeItem(REMEMBER_KEY);
+      memSession = '';
+      safeRemove(ses, SESSION_KEY);
+      safeRemove(st, REMEMBER_KEY);
       return { ok: true };
     }
 
@@ -341,7 +378,7 @@
       var c = current();
       var a = makeAccount({ username: username, name: input.name, password: input.password }, role, c.name);
       db.accounts.push(a);
-      save();
+      if (!save()) { db.accounts.pop(); return saveFailed(); }
       return { ok: true, account: publicAccount(a) };
     }
     function updateSub(id, patch) {
@@ -367,7 +404,7 @@
         a.salt = randomHex(16);
         a.hash = hashPassword(patch.password, a.salt);
       }
-      save();
+      if (!save()) return saveFailed();
       return { ok: true, account: publicAccount(a) };
     }
     function removeSub(id) {
@@ -379,8 +416,9 @@
       if (a.role === 'owner' && db.accounts.filter(function (x) { return x.role === 'owner' && x.active; }).length <= 1) {
         return { ok: false, error: '至少保留一个站长账号' };
       }
+      var backup = db.accounts;
       db.accounts = db.accounts.filter(function (x) { return x.id !== id; });
-      save();
+      if (!save()) { db.accounts = backup; return saveFailed(); }
       return { ok: true, count: 1 };
     }
     /* 自己改密码必须验证旧密码；站长重置子账号密码走 updateSub */
@@ -394,7 +432,7 @@
       if (String(newPassword) !== String(confirm)) return { ok: false, error: '两次输入的新密码不一致' };
       a.salt = randomHex(16);
       a.hash = hashPassword(newPassword, a.salt);
-      save();
+      if (!save()) return saveFailed();
       return { ok: true };
     }
 

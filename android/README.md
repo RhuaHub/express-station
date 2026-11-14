@@ -21,7 +21,7 @@ bash android/build-apk.sh
 ```
 
 脚本按顺序做：同步网页资源 → `aapt2 compile/link` → `javac` → `d8` → 写入 `classes.dex` 与图标 → `zipalign` → `apksigner`。
-首次运行会自动生成 `android/debug.keystore`（已在 `.gitignore` 中排除）。产物：`android/dist/express-station-1.0.3.apk`。
+首次运行会自动生成 `android/debug.keystore`（已在 `.gitignore` 中排除）。产物：`android/dist/express-station-1.0.4.apk`。
 
 自定义工具链位置：
 

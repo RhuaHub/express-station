@@ -88,6 +88,23 @@ function connect(wsUrl) {
     cli = await connect(target.webSocketDebuggerUrl);
     await cli.send('Runtime.enable');
     await cli.send('Page.enable');
+    /* PRE_SCRIPT=文件路径：在页面脚本之前注入，用来模拟「一打开就没有可用存储」 */
+    if (process.env.PRE_SCRIPT) {
+      const pre = fs.readFileSync(process.env.PRE_SCRIPT, 'utf8');
+      await cli.send('Page.addScriptToEvaluateOnNewDocument', { source: pre });
+      await cli.send('Page.reload');
+      await sleep(1200);
+    }
+    /* MOBILE=1 时模拟一台 390×844 的手机（含触摸），用来复现移动端问题 */
+    if (process.env.MOBILE) {
+      await cli.send('Emulation.setDeviceMetricsOverride', {
+        width: Number(process.env.MOBILE_W || 390),
+        height: Number(process.env.MOBILE_H || 844),
+        deviceScaleFactor: 3, mobile: true
+      });
+      await cli.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+      await cli.send('Page.reload');
+    }
     /* 等页面脚本都加载完 */
     await sleep(1500);
     const expr = fs.readFileSync(exprFile, 'utf8');

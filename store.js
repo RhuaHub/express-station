@@ -130,6 +130,7 @@
     var db = read();
     var actorName = '';                 /* 当前登录账号，登录后由 app.js 注入 */
     var accountsProvider = null;        /* auth.js 的 snapshot / restore，让账号库随备份迁移 */
+    var degraded = false;               /* 本地存储写不进去（无痕模式 / 配额满） */
 
     function read() {
       try {
@@ -140,8 +141,11 @@
       }
     }
     function save() {
-      st.setItem(KEY, JSON.stringify(db));
-      return true;
+      /* 手机上无痕模式 / 存储满时 setItem 会抛异常。以前直接冒出去，会把调用它的
+         入库、出库、登录流程整条打断（表现就是「点了没反应」）。这里降级成内存态：
+         功能继续可用，但由界面提示「没存下来」。 */
+      try { st.setItem(KEY, JSON.stringify(db)); return true; }
+      catch (e) { degraded = true; return false; }
     }
     function log(type, summary, parcel, batchId) {
       db.logs.unshift({
@@ -702,6 +706,8 @@
       detachPhoto: detachPhoto,
       normalizePhotos: normalizePhotos,
       KEY: KEY,
+      /* 供界面判断「这次改动是否真的落盘」：写不进去就提示用户，别让人以为存好了 */
+      storageOk: function () { return !degraded; },
       getDB: function () { return db; },
       settings: settings,
       setActor: setActor,
