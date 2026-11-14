@@ -48,10 +48,12 @@ tools/                图标生成、无头浏览器探针等辅助脚本
 
 | 方案 | 需要什么 | 说明 |
 | --- | --- | --- |
-| **123 云盘** | 应用密码 + 一个 Cloudflare Worker | 免费 2TB、不限速；**新账号可能已无 WebDAV 权益** |
+| **123 云盘** | 应用密码 + 一个 Cloudflare Worker | 软件与代理免费；云盘侧要账号本身有 WebDAV 权益（老账号 / 连续续费的老会员），**新账号、新开通会员都不含** |
 | 坚果云 | 应用密码 + 同一个 Worker | 免费版就有 WebDAV，每月上传 1GB |
 | 自定义 / AList | AList 的 WebDAV 地址 | AList 自带 CORS，可直连 |
 | 同步文件夹 | 桌面版 Chrome / Edge | 用云盘客户端把目录同步上去 |
+
+> **“免费”的边界**：免费的是本项目和 Worker（Cloudflare 免费额度），不是 123 云盘的存储权益。123 侧的可用性取决于账号：2026-11-04 之前注册的老账号、以及权益连续有效的老会员，WebDAV 照旧、不额外花钱；新注册用户免费额度只有 20GB，新开通的会员也不再有 WebDAV。想要零成本方案，直接选坚果云（免费版含 WebDAV）。
 
 **为什么必须有个 Worker**：123 云盘与坚果云的 WebDAV 都不返回 `Access-Control-Allow-Origin`（实测连 OPTIONS 预检都直接 401），浏览器会拦掉上传。`deploy/webdav-proxy.js` 只做转发和补 CORS 头，不存任何账号密码，免费额度足够个人使用。
 
@@ -112,7 +114,7 @@ bash android/build-apk.sh          # 需要 JDK 17 + Android SDK build-tools/pla
 3. **回调地址是硬前提**：OAuth 需要公网 https 地址，Pages 未开启时（`rhuahub.github.io/express-station/` 返回 404）整条链跑不起来；安卓壳的页面来源是 `https://appassets.androidplatform.net`，无法在 123 后台登记，App 内也走不通；
 4. **与「不开放注册」冲突**：OAuth 登录天然允许任何 123 账号进入。若要接，必须做成白名单（站长生成一次性邀请码，登录后凭码绑定）。
 
-现状：登录走本机账号（站长初始化 + 后台加子账号），照片走 WebDAV 应用密码 —— 两项都免费且不依赖 Pages。
+现状：登录走本机账号（站长初始化 + 后台加子账号），照片走 WebDAV 应用密码 —— 两项都不依赖 Pages，也不需要付费；WebDAV 那侧的可用性取决于云盘账号自身权益。
 
 > 注：`open-api.123pan.com` 实测返回 `Access-Control-Allow-Origin: *`，`GET /api/v1/user/info`（Bearer token）可直接前端调用。哪天开通了权益包又想接，只需在 `deploy/webdav-proxy.js` 加一个 `/oauth/pan123` 端点存 secret，前端负责跳授权页与带 `state` 校验。
 
@@ -140,7 +142,7 @@ https://yun.123pan.com/auth?client_id=s23oy2xv…96soz
 - `POST https://open-api.123pan.com/api/v1/oauth2/access_token` 只接受 `application/x-www-form-urlencoded`；用 JSON 提交会一律报 `unsupported_grant_type`（这是踩过的坑，别误判成「端点不支持授权码模式」）。
 - 该端点带 `Access-Control-Allow-Origin: *`，浏览器能跨域直达；真正卡住的是 `client_secret`，不是 CORS。
 
-结论不变：不冒用第三方 `client_id`（拿不到 code，也违反平台规则），也不为一张照片存储付费开权益包。照片走 WebDAV 应用密码 + Worker 中转，免费且够用。
+结论不变：不冒用第三方 `client_id`（拿不到 code，也违反平台规则），也不为一张照片存储付费开权益包。照片走 WebDAV 应用密码 + Worker 中转，只要账号本身有 WebDAV 权益就不额外花钱，也够用。
 
 ## 测试
 
