@@ -49,8 +49,8 @@ echo "==> aapt2 compile / link"
   --java "$(W "$BUILD/gen")" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 11 \
-  --version-name 2.0.0 \
+  --version-code 12 \
+  --version-name 2.0.1 \
   "$(W "$BUILD/res.zip")"
 
 echo "==> javac"
@@ -84,7 +84,7 @@ if [ ! -f "$KS" ]; then
     -dname "CN=Station Assistant, OU=Rhua, O=Rhua, L=Beijing, ST=Beijing, C=CN" >/dev/null 2>&1
 fi
 
-APK="$DIST/station-assistant-2.0.0.apk"
+APK="$DIST/station-assistant-2.0.1.apk"
 echo "==> apksigner"
 "$BT/apksigner.bat" sign \
   --ks "$(W "$KS")" --ks-pass pass:station2024 --key-pass pass:station2024 \

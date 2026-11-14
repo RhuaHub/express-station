@@ -5,9 +5,64 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
 <meta name="theme-color" content="#b8860b">
 <title>驿站助手 · 入库出库查件统计</title>
-<link rel="manifest" href="manifest.webmanifest?v=2.0.0">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.0">
-<link rel="stylesheet" href="styles.css?v=2.0.0">
+<script>
+/* 启动兜底：安卓 WebView 上任何脚本异常都直接显示在页面上，避免白屏无从排查 */
+window.StationBoot = (function () {
+  var errs = [], painted = false;
+  function paint() {
+    var box = document.getElementById('bootError');
+    if (!box) return;
+    painted = true;
+    if (!errs.length) { box.hidden = true; return; }
+    box.hidden = false;
+    var pre = document.getElementById('bootErrorText');
+    if (pre) pre.textContent = errs.join('\n');
+  }
+  function report(text) {
+    var line = String(text || '未知错误');
+    if (errs.indexOf(line) >= 0) return;
+    errs.push(line);
+    if (errs.length > 12) errs.shift();
+    if (painted || document.readyState !== 'loading') paint();
+    if (window.StationNative && window.StationNative.logError) {
+      try { window.StationNative.logError(line); } catch (e) { }
+    }
+  }
+  window.addEventListener('error', function (e) {
+    report((e.message || '脚本错误') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || 0));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    report('未处理的异步错误：' + String((e.reason && e.reason.message) || e.reason || ''));
+  });
+  function bind() {
+    paint();
+    var c = document.getElementById('bootErrorCopy');
+    if (c) c.onclick = function () {
+      var t = errs.join('\n');
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t);
+        else {
+          var ta = document.createElement('textarea');
+          ta.value = t; document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); } catch (e2) { }
+          document.body.removeChild(ta);
+        }
+        c.textContent = '已复制';
+      } catch (e3) { c.textContent = '请长按上方文字复制'; }
+    };
+    var h = document.getElementById('bootErrorHide');
+    if (h) h.onclick = function () { var b = document.getElementById('bootError'); if (b) b.hidden = true; };
+    var r = document.getElementById('bootErrorReload');
+    if (r) r.onclick = function () { location.reload(); };
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+  return { report: report, errors: function () { return errs.slice(); } };
+})();
+</script>
+<link rel="manifest" href="manifest.webmanifest?v=2.0.1">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.1">
+<link rel="stylesheet" href="styles.css?v=2.0.1">
 </head>
 <body>
 
@@ -41,7 +96,7 @@
     <div class="auth-msg" id="authMsg" role="status"></div>
     <pre class="diag" id="authDiag" hidden></pre>
     <input type="file" id="authImportFile" accept="application/json,.json" hidden>
-    <div class="auth-foot">2.0.0 · 重建版 · 无短信 / 电话 / 群呼能力</div>
+    <div class="auth-foot">2.0.1 · 重建版 · 无短信 / 电话 / 群呼能力</div>
   </div>
 </div>
 
@@ -478,7 +533,7 @@
 
     <!-- 帮助 -->
     <section class="view" id="view-help" hidden>
-      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.0 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
+      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.1 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
       <div class="card"><div class="card-head"><h3>已实现的功能</h3></div><div id="helpFeatures" class="help-grid"></div></div>
       <div class="card"><div class="card-head"><h3>明确不做的功能</h3></div><div id="helpExcluded" class="help-grid"></div>
         <div class="muted">短信 / 电话 / 群呼属于通知类，按需求整块排除；其余需要服务端合作、实名资质或厂商 SDK 的能力，在纯静态本地版里无法真实实现，已在 README 中逐条写明替代方式。</div></div>
@@ -495,15 +550,36 @@
 <div id="printRoot" class="print-root"></div>
 <input type="file" id="globalFile" hidden>
 
-<script src="rules.js?v=2.0.0"></script>
-<script src="db.js?v=2.0.0"></script>
-<script src="auth.js?v=2.0.0"></script>
-<script src="media.js?v=2.0.0"></script>
-<script src="app.js?v=2.0.0"></script>
+<div class="boot-error" id="bootError" hidden>
+  <b>页面脚本出错（可继续使用，但请复制下面的信息反馈）</b>
+  <pre id="bootErrorText"></pre>
+  <div class="boot-error-foot">
+    <button type="button" class="btn btn-primary btn-sm" id="bootErrorCopy">复制诊断</button>
+    <button type="button" class="btn btn-ghost btn-sm" id="bootErrorReload">重新加载</button>
+    <button type="button" class="btn btn-ghost btn-sm" id="bootErrorHide">关闭</button>
+  </div>
+</div>
+
+<script src="rules.js?v=2.0.1"></script>
+<script src="db.js?v=2.0.1"></script>
+<script src="auth.js?v=2.0.1"></script>
+<script src="media.js?v=2.0.1"></script>
+<script src="app.js?v=2.0.1"></script>
 <script>
-if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
-  navigator.serviceWorker.register('sw.js?v=2.0.0').catch(function () {});
-}
+/* Android WebView 不支持 Service Worker；有些环境属性存在但 register 不可用，必须逐项判空 */
+(function () {
+  var ua = navigator.userAgent || '';
+  if (/;\s*wv\)/i.test(ua) || /ExpressStationApp\//.test(ua)) return;
+  if (location.protocol.indexOf('http') !== 0) return;
+  var sw = navigator.serviceWorker;
+  if (!sw || typeof sw.register !== 'function') return;
+  try {
+    var p = sw.register('sw.js?v=2.0.1');
+    if (p && typeof p.catch === 'function') p.catch(function () { });
+  } catch (e) {
+    if (window.StationBoot) window.StationBoot.report('Service Worker 注册失败：' + e.message);
+  }
+})();
 </script>
 </body>
 </html>

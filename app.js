@@ -120,23 +120,34 @@
     }
     $('authMsg').textContent = '';
   }
+  function reportBoot(where, e) {
+    if (window.StationBoot) window.StationBoot.report(where + '：' + (e && e.message ? e.message : String(e)));
+  }
   function enterApp() {
+    /* 安卓 WebView 上任何一个渲染函数抛错都不允许变成白屏/闪退 */
     $('authGate').hidden = true; $('app').hidden = false;
     var st = auth.status();
     $('topUser').textContent = st.user + (st.role === 'owner' ? ' · 站长' : st.role === 'viewer' ? ' · 只读' : '');
     $('topStation').textContent = store.settings().stationName || '快递驿站';
     store.setActor(st.user);
-    renderAll();
-    var h = (location.hash || '').replace('#', '');
-    if (h && $('view-' + h)) switchView(h);
-    bindIdle();
+    try { renderAll(); } catch (e) { reportBoot('渲染主界面失败', e); }
+    try {
+      var h = (location.hash || '').replace('#', '');
+      if (h && $('view-' + h)) switchView(h);
+      bindIdle();
+    } catch (e2) { reportBoot('界面绑定失败', e2); }
   }
   function doLogin() {
-    var pw = $('loginPw').value;
-    var r = auth.status().locked ? auth.unlock(pw) : auth.login($('loginName').value, pw);
-    $('authMsg').textContent = r.ok ? '' : r.error;
-    $('authMsg').className = 'auth-msg';
-    if (r.ok) { $('loginPw').value = ''; enterApp(); }
+    try {
+      var pw = $('loginPw').value;
+      var r = auth.status().locked ? auth.unlock(pw) : auth.login($('loginName').value, pw);
+      $('authMsg').textContent = r.ok ? '' : r.error;
+      $('authMsg').className = 'auth-msg';
+      if (r.ok) { $('loginPw').value = ''; enterApp(); }
+    } catch (e) {
+      reportBoot('登录失败', e);
+      $('authMsg').textContent = '登录出错：' + (e && e.message ? e.message : String(e));
+    }
   }
   function bindGate() {
     $('btnLogin').onclick = doLogin;
@@ -173,6 +184,9 @@
     $('btnDiag').onclick = function () {
       var d = auth.diag();
       d.storage = { db: DB.KEY, ok: store.storageOk() };
+      d.bootErrors = window.StationBoot ? window.StationBoot.errors() : [];
+      try { d.nativeLog = (window.StationNative && window.StationNative.crashLog) ? window.StationNative.crashLog() : ''; }
+      catch (e) { d.nativeLog = ''; }
       $('authDiag').hidden = false;
       $('authDiag').textContent = JSON.stringify(d, null, 2);
     };
@@ -1471,6 +1485,9 @@
       var d = auth.diag();
       d.storage = { db: DB.KEY, ok: store.storageOk(), parcels: store.listParcels({ status: 'all' }).length };
       d.media = Media.engines();
+      d.bootErrors = window.StationBoot ? window.StationBoot.errors() : [];
+      try { d.nativeLog = (window.StationNative && window.StationNative.crashLog) ? window.StationNative.crashLog() : ''; }
+      catch (e) { d.nativeLog = ''; }
       $('appDiag').hidden = false; $('appDiag').textContent = JSON.stringify(d, null, 2);
     });
     ['logKw', 'logAction'].forEach(function (id) { on(id, 'change', renderLogs); on(id, 'input', renderLogs); });
@@ -1502,11 +1519,17 @@
   }
 
   /* ---------------- 启动 ---------------- */
-  bindGate();
-  bind();
-  if (auth.status().logged) enterApp(); else showGate();
+  try {
+    bindGate();
+    bind();
+    if (auth.status().logged) enterApp(); else showGate();
+  } catch (e) {
+    reportBoot('启动失败', e);
+    try { showGate(); } catch (e2) { }
+  }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.0'
+    rules: R, media: Media, version: '2.0.1',
+    bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

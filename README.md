@@ -1,4 +1,4 @@
-# 驿站助手（重建版 2.0.0）
+# 驿站助手（重建版 2.0.1）
 
 对照 `570665.apk`（`com.touchez.mossp.ezhelper`，2021 年版「驿站助手」）**从零重建**的快递驿站管理系统。纯静态、零依赖、零后端：台账存浏览器 localStorage，照片存 IndexedDB，不上传任何服务器。
 
@@ -82,7 +82,7 @@ node tools/serve.js 8765      # 打开 http://127.0.0.1:8765/index.html
 
 ### 安卓
 ```bash
-bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.0.apk
+bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.1.apk
 ```
 需要 JDK 17 与 Android SDK build-tools / platform。APK 用 `https://appassets.androidplatform.net/` 映射到 assets，保证摄像头、localStorage、IndexedDB 都运行在安全上下文里；首次使用需允许相机权限。
 
@@ -96,7 +96,7 @@ bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.0.apk
 4. **公司识别**：`圆通=^(YT|8\d{11,})` 这类正则可在「设置 → 快递公司管理」编辑，从上往下匹配，手动选择优先。
 5. **拍照识别**：Chrome / 多数安卓 WebView 支持本机条码识别；iOS Safari 等不支持时页面会明示，照片仍按时间 / 识别串命名，手输单号照常出入库，不会假装识别成功。
 6. **权限**：站长全权；操作员默认可用业务页但不能改设置与账号；只读角色仅查件 / 台账 / 统计 / 打印 / 流水。可逐项调整。
-7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.0`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
+7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.1`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
 
 ---
 
@@ -123,4 +123,18 @@ node --check app.js           # 语法检查
 - 语音录入依赖浏览器 `SpeechRecognition`，语音播报依赖 `speechSynthesis`，不支持时自动跳过。
 - 本机识别率取决于面单清晰度与浏览器能力；模糊、反光、手写单需手输。
 
-**版本**：2.0.0 · SW `station-rebuild-v1` · 安卓 versionCode 11。
+---
+
+## 八、2.0.1 · 安卓 WebView 稳定性修复
+
+针对「安卓版登录崩溃」做的加固（2.0.0 及之前的 APK 请直接覆盖安装）：
+
+- **可见错误**：页面顶部新增红色错误条，任何脚本异常都会显示并可「复制诊断」，不再白屏；登录门与主界面的「自检」会带上 `bootErrors` 和原生侧 `nativeLog`。
+- **启动兜底**：`bind()` / `renderAll()` / `doLogin()` 全部包了异常捕获，单个渲染函数出错不会让整个 App 卡死。
+- **Service Worker**：Android WebView 直接跳过注册；浏览器侧逐项判空并捕获同步异常，避免属性存在但 `register` 不可用时抛 `TypeError`。
+- **老 WebView 兼容**：去掉 `Array.prototype.findIndex`（Chromium < 45 没有），改成本机循环；`BarcodeDetector.getSupportedFormats()` 加保护。
+- **原生壳**：始终重新 `loadUrl`（不再 `restoreState` 导致重建后白屏）；JS 对话框、相机授权、资源拦截、销毁 WebView 全部加异常兜底；原生崩溃与 JS console 错误写入 `Android/data/com.rhua.expressstation/files/crash/station-errors.txt`。
+
+若仍出现闪退：打开 App 后点登录门「自检」，把红色错误条或自检里的 `nativeLog` 发回；也可以直接取上述 crash 目录下的日志文件。
+
+**版本**：2.0.1 · SW `station-rebuild-v2` · 安卓 versionCode 12。

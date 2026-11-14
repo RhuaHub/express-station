@@ -139,11 +139,14 @@
 
   /* ---------- 浏览器原生识别（条码 / 文字） ---------- */
   function engines() {
-    var BD = global.BarcodeDetector, TD = global.TextDetector;
-    return {
-      barcode: !!BD, text: !!TD, any: !!(BD || TD),
-      formats: BD && BD.getSupportedFormats ? BD.getSupportedFormats() : Promise.resolve([])
-    };
+    /* 部分 WebView 里这些属性本身就会抛 SecurityError，或 getSupportedFormats 不可用 */
+    var BD = null, TD = null;
+    try { BD = global.BarcodeDetector; TD = global.TextDetector; } catch (e) { }
+    var formats = Promise.resolve([]);
+    if (BD && typeof BD.getSupportedFormats === 'function') {
+      try { formats = BD.getSupportedFormats() || formats; } catch (e2) { }
+    }
+    return { barcode: !!BD, text: !!TD, any: !!(BD || TD), formats: formats };
   }
   function canvasOf(blob) {
     return new Promise(function (resolve, reject) {

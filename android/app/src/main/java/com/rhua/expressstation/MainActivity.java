@@ -27,9 +27,12 @@ import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -58,6 +61,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        installCrashHandler();
 
         FrameLayout root = new FrameLayout(this);
         root.setLayoutParams(new ViewGroup.LayoutParams(
@@ -104,11 +108,60 @@ public class MainActivity extends Activity {
             }
         });
 
-        if (saved != null) {
-            web.restoreState(saved);
-        } else {
-            web.loadUrl(START_URL);
-        }
+        /* 始终重新加载。restoreState 在深色模式、字体变化等 Activity 重建场景下
+           会恢复出空白页，且重新注入的 StationNative 可能失效，看起来像「登录崩溃」。 */
+        web.loadUrl(START_URL);
+    }
+
+    /* ---------- 崩溃日志：白屏 / 闪退时至少留得下证据 ---------- */
+
+    private static final Object LOG_LOCK = new Object();
+
+    private File crashDir() {
+        File d = new File(getExternalFilesDir(null), "crash");
+        if (!d.exists()) d.mkdirs();
+        return d;
+    }
+
+    private void appendCrash(String line) {
+        try {
+            synchronized (LOG_LOCK) {
+                File f = new File(crashDir(), "station-errors.txt");
+                FileOutputStream os = new FileOutputStream(f, true);
+                String when = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.CHINA)
+                        .format(new java.util.Date());
+                os.write((when + " " + line + "\n").getBytes("UTF-8"));
+                os.close();
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler old = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override public void uncaughtException(Thread t, Throwable e) {
+                try {
+                    StringWriter sw = new StringWriter();
+                    e.printStackTrace(new PrintWriter(sw));
+                    appendCrash("FATAL thread=" + t.getName() + "\n" + sw.toString());
+                } catch (Exception ignored) { }
+                if (old != null) old.uncaughtException(t, e);
+            }
+        });
+    }
+
+    private String readCrashLog() {
+        try {
+            File f = new File(crashDir(), "station-errors.txt");
+            if (!f.exists()) return "";
+            byte[] b = new byte[(int) Math.min(8000, f.length())];
+            FileInputStream in = new FileInputStream(f);
+            int n = in.read(b);
+            in.close();
+            if (n <= 0) return "";
+            String s = new String(b, 0, n, "UTF-8");
+            return s.length() > 4000 ? s.substring(s.length() - 4000) : s;
+        } catch (Exception e) { return ""; }
     }
 
     /* ---------- 资源映射：https 域 -> assets ---------- */
@@ -141,20 +194,21 @@ public class MainActivity extends Activity {
     private class Client extends WebViewClient {
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
-            Uri u = req.getUrl();
-            if (u == null || !HOST.equals(u.getHost())) return null;
-            String path = u.getPath();
-            if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
-            if (path.startsWith("/")) path = path.substring(1);
-            if (path.contains("..")) return deny(403);
-
+            String path = "";
             try {
+                Uri u = req == null ? null : req.getUrl();
+                if (u == null || !HOST.equals(u.getHost())) return null;
+                path = u.getPath();
+                if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
+                if (path.startsWith("/")) path = path.substring(1);
+                if (path.contains("..")) return deny(403);
+
                 InputStream in = getAssets().open(path);
                 Map<String, String> headers = new HashMap<>();
                 headers.put("Cache-Control", "no-cache");
-                WebResourceResponse r = new WebResourceResponse(mimeOf(path), "UTF-8", 200, "OK", headers, in);
-                return r;
+                return new WebResourceResponse(mimeOf(path), "UTF-8", 200, "OK", headers, in);
             } catch (Exception e) {
+                appendCrash("资源拦截失败 " + path + " : " + e);
                 return deny(404);
             }
         }
@@ -199,10 +253,12 @@ public class MainActivity extends Activity {
                     boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                             || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
                     if (granted) {
-                        request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                        try { request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE}); }
+                        catch (Exception e) { appendCrash("grant camera " + e); }
                     } else {
                         pendingPermission = request;
-                        requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
+                        try { requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM); }
+                        catch (Exception e) { pendingPermission = null; appendCrash("request camera " + e); }
                     }
                 }
             });
@@ -251,37 +307,53 @@ public class MainActivity extends Activity {
            删除包裹、移除照片等二次确认将永远无法通过 */
         @Override
         public boolean onJsAlert(WebView view, String url, String message, final android.webkit.JsResult result) {
-            new android.app.AlertDialog.Builder(MainActivity.this)
-                    .setMessage(message)
-                    .setPositiveButton("好", new android.content.DialogInterface.OnClickListener() {
-                        @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
-                    })
-                    .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
-                        @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
-                    })
-                    .show();
+            /* Activity 正在结束 / 窗口 token 失效时，直接弹对话框会让整个 App 闪退 */
+            try {
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setMessage(message)
+                        .setPositiveButton("好", new android.content.DialogInterface.OnClickListener() {
+                            @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
+                        })
+                        .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
+                            @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
+                        })
+                        .show();
+            } catch (Exception e) {
+                appendCrash("onJsAlert " + e);
+                try { result.confirm(); } catch (Exception ignored) { }
+            }
             return true;
         }
 
         @Override
         public boolean onJsConfirm(WebView view, String url, String message, final android.webkit.JsResult result) {
-            new android.app.AlertDialog.Builder(MainActivity.this)
-                    .setMessage(message)
-                    .setPositiveButton("确定", new android.content.DialogInterface.OnClickListener() {
-                        @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
-                    })
-                    .setNegativeButton("取消", new android.content.DialogInterface.OnClickListener() {
-                        @Override public void onClick(android.content.DialogInterface d, int w) { result.cancel(); }
-                    })
-                    .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
-                        @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
-                    })
-                    .show();
+            try {
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setMessage(message)
+                        .setPositiveButton("确定", new android.content.DialogInterface.OnClickListener() {
+                            @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
+                        })
+                        .setNegativeButton("取消", new android.content.DialogInterface.OnClickListener() {
+                            @Override public void onClick(android.content.DialogInterface d, int w) { result.cancel(); }
+                        })
+                        .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
+                            @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
+                        })
+                        .show();
+            } catch (Exception e) {
+                appendCrash("onJsConfirm " + e);
+                try { result.cancel(); } catch (Exception ignored) { }
+            }
             return true;
         }
 
         @Override
         public boolean onConsoleMessage(ConsoleMessage m) {
+            if (m != null && m.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                String line = "JS console " + m.message() + " @ " + m.sourceId() + ":" + m.lineNumber();
+                android.util.Log.e("StationJS", line);
+                appendCrash(line);
+            }
             return true;
         }
     }
@@ -292,11 +364,13 @@ public class MainActivity extends Activity {
         if (code == REQ_CAMERA_PERM) {
             boolean ok = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
             if (pendingPermission != null) {
-                if (ok) pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
-                else {
-                    pendingPermission.deny();
-                    toast("没有相机权限，可用「从相册选择」替代");
-                }
+                try {
+                    if (ok) pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    else {
+                        pendingPermission.deny();
+                        toast("没有相机权限，可用「从相册选择」替代");
+                    }
+                } catch (Exception e) { appendCrash("camera result " + e); }
                 pendingPermission = null;
             }
         }
@@ -384,14 +458,32 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void toastMsg(final String msg) {
-            runOnUiThread(new Runnable() {
-                @Override public void run() { toast(msg); }
-            });
+            toast(msg);
+        }
+
+        /** 自检面板里直接显示原生侧记录到的 JS 错误 / 崩溃堆栈 */
+        @JavascriptInterface
+        public String crashLog() {
+            return readCrashLog();
+        }
+
+        /** 页面把启动异常同步写到原生日志，避免只闪一下就消失 */
+        @JavascriptInterface
+        public void logError(final String msg) {
+            appendCrash("JS " + String.valueOf(msg));
         }
     }
 
     private void toast(String msg) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+        final String text = String.valueOf(msg);
+        try {
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    try { Toast.makeText(MainActivity.this, text, Toast.LENGTH_SHORT).show(); }
+                    catch (Exception e) { appendCrash("toast " + e); }
+                }
+            });
+        } catch (Exception e) { appendCrash("toast post " + e); }
     }
 
     /* ---------- 生命周期 ---------- */
@@ -420,8 +512,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (web != null) {
-            web.loadUrl("about:blank");
-            web.destroy();
+            try {
+                web.loadUrl("about:blank");
+                web.destroy();
+            } catch (Exception e) { appendCrash("destroy webview " + e); }
             web = null;
         }
         super.onDestroy();

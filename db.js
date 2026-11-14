@@ -29,6 +29,12 @@
     };
   }
 
+  /* 老 Android WebView（Chromium < 45）没有 Array.prototype.findIndex */
+  function indexWhere(arr, fn) {
+    for (var i = 0; i < arr.length; i++) { if (fn(arr[i], i)) return i; }
+    return -1;
+  }
+
   function defaultDB() {
     var s = {};
     Object.keys(R.DEFAULT_SETTINGS).forEach(function (k) { s[k] = R.DEFAULT_SETTINGS[k]; });
@@ -265,7 +271,7 @@
       return { ok: true, customer: c, replaced: !!input.id };
     }
     function removeCustomer(id) {
-      var i = db.customers.findIndex(function (c) { return c.id === id; });
+      var i = indexWhere(db.customers, function (c) { return c.id === id; });
       if (i < 0) return { ok: false, error: '客户不存在' };
       var c = db.customers.splice(i, 1)[0];
       log('customer', '删除客户 ' + (c.name || c.tail), id);
@@ -304,7 +310,7 @@
       return { ok: true, intercept: it };
     }
     function removeIntercept(id) {
-      var i = db.intercepts.findIndex(function (x) { return x.id === id; });
+      var i = indexWhere(db.intercepts, function (x) { return x.id === id; });
       if (i < 0) return { ok: false, error: '记录不存在' };
       var it = db.intercepts.splice(i, 1)[0];
       log('intercept', '移除入库拦截 ' + it.no, id);
@@ -434,7 +440,7 @@
     }
 
     function removeParcel(id) {
-      var i = db.parcels.findIndex(function (p) { return p.id === id; });
+      var i = indexWhere(db.parcels, function (p) { return p.id === id; });
       if (i < 0) return { ok: false, error: '包裹不存在' };
       var p = db.parcels.splice(i, 1)[0];
       log('delete', '删除记录 ' + p.trackingNo, p.id);
@@ -543,7 +549,7 @@
           if (na && nb && na !== nb) return na - nb;
           return new Date(a.inAt) - new Date(b.inAt);
         });
-      var idx = list.findIndex(function (p) { return p.id === startId; });
+      var idx = indexWhere(list, function (p) { return p.id === startId; });
       if (idx < 0) return { ok: false, error: '起始包裹不在库' };
       var baseRaw = str(list[idx][kind === 'goods' ? 'goodsNo' : 'serial']);
       var m = baseRaw.match(/(\d+)$/);
@@ -575,7 +581,7 @@
       return { ok: true, company: c };
     }
     function removeCompany(id) {
-      var i = db.companies.findIndex(function (c) { return c.id === id; });
+      var i = indexWhere(db.companies, function (c) { return c.id === id; });
       if (i < 0) return { ok: false, error: '公司不存在' };
       var c = db.companies.splice(i, 1)[0];
       log('company', '删除快递公司 ' + c.name, id);
@@ -624,7 +630,7 @@
       return { ok: true, collection: c };
     }
     function removeCollection(id) {
-      var i = db.collections.findIndex(function (x) { return x.id === id; });
+      var i = indexWhere(db.collections, function (x) { return x.id === id; });
       if (i < 0) return { ok: false, error: '任务不存在' };
       var c = db.collections.splice(i, 1)[0];
       log('collection', '删除收件任务 ' + c.no, id);
