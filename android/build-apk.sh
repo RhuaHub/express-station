@@ -60,8 +60,8 @@ echo "==> aapt2 link"
   --java "$(W "$BUILD/gen")" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 2 \
-  --version-name 1.0.1 \
+  --version-code 3 \
+  --version-name 1.0.2 \
   "$(W "$BUILD/res.zip")"
 
 # ---- 3. 编译 Java ----
@@ -100,7 +100,7 @@ if [ ! -f "$KS" ]; then
     -dname "CN=Express Station, OU=Rhua, O=Rhua, L=Beijing, ST=Beijing, C=CN" >/dev/null 2>&1
 fi
 
-APK="$DIST/express-station-1.0.1.apk"
+APK="$DIST/express-station-1.0.2.apk"
 echo "==> apksigner"
 "$BT/apksigner.bat" sign \
   --ks "$(W "$KS")" --ks-pass pass:station2024 --key-pass pass:station2024 \

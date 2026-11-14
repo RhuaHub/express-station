@@ -43,9 +43,10 @@
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function defaults() {
     return {
-      mode: 'webdav',
+      mode: 'github',
       dirName: 'express-station',
       webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '', user: '', pass: '', proxyKey: '' },
+      github: { repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null },
       maxSide: 1600,
       quality: 0.82,
       requireProof: true
@@ -66,7 +67,7 @@
       var raw = storage().getItem(CFG_KEY);
       if (raw) {
         var p = JSON.parse(raw);
-        c.mode = ['local', 'webdav', 'browser'].indexOf(p.mode) >= 0 ? p.mode : c.mode;
+        c.mode = ['local', 'webdav', 'browser', 'github'].indexOf(p.mode) >= 0 ? p.mode : c.mode;
         c.dirName = String(p.dirName || c.dirName).replace(/[\\/:*?"<>|]/g, '-').trim() || c.dirName;
         c.webdav = {
           provider: PROVIDER_KEYS.indexOf(p.webdav && p.webdav.provider) >= 0
@@ -80,6 +81,14 @@
           pass: String((p.webdav && p.webdav.pass) || ''),
           proxyKey: String((p.webdav && p.webdav.proxyKey) || '')
         };
+        c.github = {
+          repo: String((p.github && p.github.repo) || '').trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, ''),
+          /* 留空表示跟随「GitHub 同步」里的仓库与分支 */
+          branch: String((p.github && p.github.branch) || '').trim(),
+          dir: String((p.github && p.github.dir) || 'photos').trim().replace(/^\/+|\/+$/g, '') || 'photos',
+          allowPublic: !!(p.github && p.github.allowPublic),
+          isPublic: p.github && typeof p.github.isPublic === 'boolean' ? p.github.isPublic : null
+        };
         c.maxSide = Math.max(600, Math.min(4000, Number(p.maxSide) || c.maxSide));
         c.quality = Math.max(0.4, Math.min(1, Number(p.quality) || c.quality));
         c.requireProof = p.requireProof !== false;
@@ -90,6 +99,7 @@
   function saveConfig(patch) {
     var c = Object.assign(config(), patch || {});
     if (patch && patch.webdav) c.webdav = Object.assign(config().webdav, patch.webdav);
+    if (patch && patch.github) c.github = Object.assign(config().github, patch.github);
     storage().setItem(CFG_KEY, JSON.stringify(c));
     return config();
   }
@@ -251,6 +261,91 @@
     }
   }
 
+  /* ---------- GitHub 仓库直存：照片随项目一起进 repo ----------
+     复用「GitHub 同步」里的 token / 仓库 / 分支，照片落到 {dir}/入库照片|出库凭证/年-月/*.jpg。
+     公开仓库默认拦截：面单上有收件人手机号与地址，不能跟着代码一起公开。 */
+  var GH_API = 'https://api.github.com';
+  function ghFromSync() {
+    var s = (global.StationSync && typeof global.StationSync.config === 'function') ? global.StationSync.config() : {};
+    return { token: String(s.token || ''), repo: String(s.repo || ''), branch: String(s.branch || 'main') };
+  }
+  function ghSettings() {
+    var g = config().github;
+    var sync = ghFromSync();
+    return {
+      token: sync.token,
+      /* 留空则跟随同步配置，少填一项 */
+      repo: String(g.repo || sync.repo || '').replace(/^\/+|\/+$/g, ''),
+      branch: String(g.branch || sync.branch || 'main'),
+      dir: String(g.dir || 'photos').replace(/^\/+|\/+$/g, ''),
+      allowPublic: !!g.allowPublic,
+      isPublic: g.isPublic
+    };
+  }
+  function ghReady(t) { return !!(t.token && /^[^/\s]+\/[^/\s]+$/.test(t.repo)); }
+  function ghPath(t, rel) { return (t.dir ? t.dir + '/' : '') + rel; }
+  function ghHeaders(t, extra) {
+    return Object.assign({
+      'Authorization': 'Bearer ' + t.token,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json'
+    }, extra || {});
+  }
+  function ghError(status) {
+    if (status === 401) return 'token 无效或已过期（401）';
+    if (status === 403) return '没有权限或触发限流（403），token 需要 Contents 读写权限';
+    if (status === 404) return '仓库或分支不存在（404），也可能是 token 无权访问该私有仓库';
+    if (status === 422) return '分支不可用或文件已存在（422）';
+    return 'GitHub 返回 HTTP ' + status;
+  }
+  async function ghRepoInfo(t) {
+    var res = await fetch(GH_API + '/repos/' + t.repo, { headers: ghHeaders(t) });
+    if (!res.ok) throw new Error(ghError(res.status));
+    return res.json();
+  }
+  async function ghIsPublic(t) {
+    if (typeof t.isPublic === 'boolean') return t.isPublic;
+    var info = await ghRepoInfo(t);
+    var pub = !info.private;
+    saveConfig({ github: { isPublic: pub } });
+    return pub;
+  }
+  function blobToBase64(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(String(fr.result).split(',')[1] || ''); };
+      fr.onerror = function () { reject(new Error('图片编码失败')); };
+      fr.readAsDataURL(blob);
+    });
+  }
+  async function githubPut(rel, blob) {
+    var t = ghSettings();
+    if (!t.token) throw new Error('没填 token：先在「GitHub 同步」里填一个带 Contents 读写权限的 PAT');
+    if (!/^[^/\s]+\/[^/\s]+$/.test(t.repo)) throw new Error('没填仓库：在下面填 owner/repo，或先配置「GitHub 同步」');
+    if (await ghIsPublic(t) && !t.allowPublic) {
+      throw new Error('该仓库是公开的，面单照片会对外可见（含手机号与地址）· 换私有仓库，或勾选「允许写入公开仓库」');
+    }
+    var path = ghPath(t, rel);
+    var b64 = await blobToBase64(blob);
+    var res = await fetch(GH_API + '/repos/' + t.repo + '/contents/' + path.split('/').map(encodeURIComponent).join('/'), {
+      method: 'PUT',
+      headers: ghHeaders(t),
+      body: JSON.stringify({ message: 'photos: ' + path.split('/').pop(), content: b64, branch: t.branch })
+    });
+    if (!res.ok) throw new Error(ghError(res.status));
+    return path;
+  }
+  async function githubGet(path) {
+    var t = ghSettings();
+    if (!t.token) throw new Error('读取仓库照片需要 token（在「GitHub 同步」里填）');
+    var url = GH_API + '/repos/' + t.repo + '/contents/' + path.split('/').map(encodeURIComponent).join('/') +
+      '?ref=' + encodeURIComponent(t.branch);
+    var res = await fetch(url, { headers: ghHeaders(t, { 'Accept': 'application/vnd.github.raw' }) });
+    if (!res.ok) throw new Error('GitHub 读取失败：' + ghError(res.status));
+    return URL.createObjectURL(await res.blob());
+  }
+
   /* ---------- 压缩与文件名 ---------- */
   function compress(file, maxSide, quality) {
     return new Promise(function (resolve, reject) {
@@ -345,6 +440,14 @@
         return safeFallback(blob, rel, 'WebDAV 上传失败，已暂存浏览器：' + (e.message || e));
       }
     }
+    if (c.mode === 'github') {
+      try {
+        var path = await githubPut(rel, blob);
+        return { ok: true, ref: 'github:' + path, mode: 'github', size: blob.size, name: name, warning: '' };
+      } catch (e) {
+        return safeFallback(blob, rel, '写入 GitHub 失败，已暂存浏览器：' + (e.message || e));
+      }
+    }
     return safeFallback(blob, rel, '');
   }
 
@@ -373,12 +476,36 @@
       if (!res.ok) throw new Error('WebDAV 读取失败 HTTP ' + res.status);
       return URL.createObjectURL(await res.blob());
     }
+    if (String(ref).indexOf('github:') === 0) {
+      var ghRel = String(ref).slice(7);
+      return await githubGet(ghRel);
+    }
     throw new Error('无法识别的图片引用');
   }
 
   async function test() {
     var c = config();
     if (c.mode === 'browser') return { ok: true, message: '当前为浏览器暂存模式，图片不会写入云盘' };
+    if (c.mode === 'github') {
+      var t = ghSettings();
+      if (!t.token) return { ok: false, error: '请先在「GitHub 同步」里填 Personal Access Token（需 Contents 读写权限）' };
+      if (!/^[^/\s]+\/[^/\s]+$/.test(t.repo)) return { ok: false, error: '请填仓库，格式 owner/repo' };
+      try {
+        var repo = await ghRepoInfo(t);
+        saveConfig({ github: { isPublic: !repo.private } });
+        var br = await fetch(GH_API + '/repos/' + t.repo + '/branches/' + encodeURIComponent(t.branch), { headers: ghHeaders(t) });
+        if (!br.ok) return { ok: false, error: '分支不可用：' + ghError(br.status) };
+        if (!repo.private && !t.allowPublic) {
+          return { ok: false, error: '这个仓库是公开的：照片会对外可见（面单含手机号/地址）。换私有仓库，或勾选「允许写入公开仓库」' };
+        }
+        return {
+          ok: true,
+          message: '可写：' + t.repo + ' @ ' + t.branch + ' · ' + (repo.private ? '私有仓库' : '公开仓库') + ' · 目录 ' + t.dir + '/'
+        };
+      } catch (e) {
+        return { ok: false, error: '连不上 GitHub：' + (e.message || e) };
+      }
+    }
     if (c.mode === 'local') {
       if (!isLocalSupported()) return { ok: false, error: '此浏览器不支持文件夹授权，请改用 WebDAV 模式' };
       if (!dirHandleRecord || !dirHandleRecord.handle) return { ok: false, error: '请先选择云盘同步文件夹' };
@@ -423,6 +550,12 @@
   function status() {
     var c = config();
     if (c.mode === 'browser') return '浏览器暂存模式 · 图片不写入云盘';
+    if (c.mode === 'github') {
+      var t = ghSettings();
+      if (!ghReady(t)) return 'GitHub 未配置（缺 token 或仓库）· 照片暂存浏览器';
+      var vis = typeof t.isPublic === 'boolean' ? (t.isPublic ? '公开仓库·会被拦' : '私有仓库') : '未校验';
+      return 'GitHub ' + t.repo + ' · ' + t.dir + '/ · ' + vis;
+    }
     if (c.mode === 'webdav') {
       var p = provider(c.webdav);
       var base = endpoint(c.webdav);
@@ -450,7 +583,16 @@
     },
     endpoint: function (patch) {
       return endpoint(Object.assign(config().webdav, patch || {}));
-    }
+    },
+    /* 供设置页与测试用的 GitHub 目标解析 */
+    githubTarget: function () {
+      var t = ghSettings();
+      return {
+        repo: t.repo, branch: t.branch, dir: t.dir, ready: ghReady(t),
+        allowPublic: t.allowPublic, isPublic: t.isPublic
+      };
+    },
+    githubPath: function (rel) { return ghPath(ghSettings(), rel || '入库照片/2026-01/RK-x.jpg'); }
   };
   global.StationPhotos = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

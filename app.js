@@ -255,7 +255,10 @@
   }
   function togglePhotoBoxes() {
     var m = $('phMode').value;
+    $('phGithubBox').hidden = m !== 'github';
     $('phWebdavBox').hidden = m !== 'webdav';
+    $('phProviderTipBox').hidden = m !== 'webdav';
+    $('phWebdavTipBox').hidden = m !== 'webdav';
     $('phLocalBox').hidden = m !== 'local';
   }
   function currentProvider() {
@@ -305,6 +308,10 @@
     $('phUser').value = c.webdav.user;
     $('phPass').value = c.webdav.pass;
     $('phProxyKey').value = c.webdav.proxyKey;
+    $('ghRepo').value = c.github.repo;
+    $('ghBranch').value = c.github.branch;
+    $('ghDir').value = c.github.dir;
+    $('ghAllowPublic').checked = !!c.github.allowPublic;
     $('phMax').value = c.maxSide;
     $('phQuality').value = c.quality;
     $('phRequireProof').checked = c.requireProof !== false;
@@ -324,6 +331,12 @@
         pass: $('phPass').value,
         proxyKey: $('phProxyKey').value.trim()
       },
+      github: {
+        repo: $('ghRepo').value.trim(),
+        branch: $('ghBranch').value.trim(),
+        dir: $('ghDir').value.trim() || 'photos',
+        allowPublic: $('ghAllowPublic').checked
+      },
       maxSide: Number($('phMax').value),
       quality: Number($('phQuality').value),
       requireProof: $('phRequireProof').checked
@@ -336,7 +349,7 @@
     releaseUrls(viewerUrls);
     $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal" style="width:min(700px,100%)">' +
       '<h3>' + esc(p.trackingNo) + ' · 照片 ' + p.photos.length + ' 张</h3>' +
-      '<p>图片保存在阿里云盘。移除只删台账里的引用，云盘文件本身保留。</p>' +
+      '<p>照片按设置存到 GitHub 仓库或云盘。移除只删台账里的引用，文件本身保留。</p>' +
       '<div class="viewer-grid" id="viewerGrid"></div>' +
       '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button></div></div></div>';
     var root = $('modalRoot');
@@ -1343,6 +1356,17 @@
     ['phBase', 'phProxyBase'].forEach(function (id) {
       $(id).addEventListener('input', function () { refreshProviderUI(false); });
     });
+    $('btnGhFromSync').onclick = function () {
+      var s = (typeof StationSync !== 'undefined' && StationSync) ? StationSync.config() : null;
+      if (!s || !s.repo) { toast('「GitHub 同步」里还没填仓库，先在下面填 token 和 owner/repo', 'err'); return; }
+      $('ghRepo').value = s.repo;
+      $('ghBranch').value = s.branch || 'main';
+      if (!$('ghDir').value.trim()) $('ghDir').value = 'photos';
+      $('phMode').value = 'github';
+      togglePhotoBoxes();
+      savePhotoForm();
+      toast('已取用 ' + s.repo + ' @ ' + (s.branch || 'main') + '，点「测试连接」确认能写');
+    };
     $('btnPhPick').onclick = async function () {
       var r = await photos.pickDirectory();
       renderPhotoStatus();

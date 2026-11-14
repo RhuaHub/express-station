@@ -7,11 +7,13 @@ const api = require('../store.js');
 
 const root = path.join(__dirname, '..');
 let passed = 0;
+const asyncChecks = [];
 function check(name, fn) {
   fn();
   passed++;
   console.log('  ok  ' + name);
 }
+function checkAsync(name, fn) { asyncChecks.push({ name: name, fn: fn }); }
 
 console.log('数据层');
 const storage = api.memoryStorage();
@@ -516,8 +518,9 @@ check('photos.js 可加载且导出完整接口', () => {
   ['config', 'saveConfig', 'init', 'pickDirectory', 'put', 'getUrl', 'test', 'status', 'buildRel'].forEach(function (k) {
     assert.strictEqual(typeof p[k], 'function', '缺少接口 ' + k);
   });
-  assert.strictEqual(p.config().mode, 'webdav');
-  assert.strictEqual(p.config().webdav.provider, 'nutstore', '默认云盘服务应为坚果云（免费版就含 WebDAV）');
+  assert.strictEqual(p.config().mode, 'github', '默认写入方式应为 GitHub 仓库（照片随项目走）');
+  assert.strictEqual(p.config().github.dir, 'photos', 'GitHub 照片目录默认 photos/');
+  assert.strictEqual(p.config().webdav.provider, 'nutstore', '云盘服务默认应为坚果云（免费版就含 WebDAV）');
   assert.strictEqual(p.config().requireProof, true, '出库凭证默认应为必拍');
   assert.strictEqual(p.saveConfig({ requireProof: false }).requireProof, false);
   p.saveConfig({ requireProof: true });
@@ -705,6 +708,48 @@ check('安卓壳：APK 已构建且资源路径正确', () => {
   });
 });
 
+check('GitHub 仓库直存：目标解析、路径拼接与公开仓库保护', () => {
+  const p = require('../photos.js');
+  const ph = fs.readFileSync(path.join(root, 'photos.js'), 'utf8');
+
+  p.saveConfig({ github: { repo: '', branch: '', dir: 'photos', allowPublic: false } });
+  let t = p.githubTarget();
+  assert.strictEqual(t.dir, 'photos');
+  assert.strictEqual(t.allowPublic, false, '公开仓库默认必须拦截');
+  assert.strictEqual(p.githubPath('入库照片/2026-11/RK-1.jpg'), 'photos/入库照片/2026-11/RK-1.jpg');
+
+  // 仓库/分支留空时跟随「GitHub 同步」
+  const prev = global.StationSync;
+  global.StationSync = { config: () => ({ token: 'ghp_dummy', repo: 'RhuaHub/express-station', branch: 'main' }) };
+  t = p.githubTarget();
+  assert.strictEqual(t.repo, 'RhuaHub/express-station', '仓库留空应跟随同步配置');
+  assert.strictEqual(t.branch, 'main');
+  assert.strictEqual(t.ready, true, '有 token + 仓库即为就绪');
+
+  // 显式填写优先，并规整 URL / .git / 斜杠
+  p.saveConfig({ github: { repo: 'https://github.com/foo/bar.git', branch: 'dev', dir: '/photos-archive/' } });
+  t = p.githubTarget();
+  assert.strictEqual(t.repo, 'foo/bar');
+  assert.strictEqual(t.branch, 'dev');
+  assert.strictEqual(t.dir, 'photos-archive', '目录要去掉首尾斜杠');
+  if (prev === undefined) delete global.StationSync; else global.StationSync = prev;
+
+  // 公开仓库要显式放行，且报错文案要点明隐私风险
+  assert.ok(/该仓库是公开的/.test(ph), '缺少公开仓库拦截');
+  assert.ok(/面单照片会对外可见|含手机号/.test(ph), '拦截文案应说明隐私风险');
+  p.saveConfig({ github: { repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null } });
+});
+
+check('设置页含 GitHub 直存入口与公开仓库闸门', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['id="phGithubBox"', 'id="ghRepo"', 'id="ghBranch"', 'id="ghDir"', 'id="ghAllowPublic"',
+    'id="btnGhFromSync"', 'value="github"', 'photos/'].forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/\$\('phGithubBox'\)\.hidden/.test(app), '未控制 GitHub 区块显隐');
+  assert.ok(/\$\('btnGhFromSync'\)\.onclick/.test(app), '未绑定「用同步里的仓库」');
+  assert.ok(/github:\s*\{/.test(app), '保存表单未带 github 配置');
+});
+
 check('123 云盘 WebDAV 权益变化有兜底出口', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   ['id="btnUseNutstore"', 'id="btnUseLocal"', 'id="btnUseBrowser"', '2026-11-04', 'WebDAV 授权管理']
@@ -718,4 +763,45 @@ check('123 云盘 WebDAV 权益变化有兜底出口', () => {
   assert.ok(/\|\| 'nutstore'/.test(app), '设置页回填默认云盘服务应为坚果云');
 });
 
-console.log('\n全部通过：' + passed + ' 项');
+checkAsync('GitHub 直存：测试连接能区分公开与私有仓库', async () => {
+  const p = require('../photos.js');
+  const realFetch = global.fetch;
+  const stub = (isPrivate) => async (url) => {
+    const u = String(url);
+    if (u.indexOf('/branches/') > 0) return new Response('{}', { status: 200 });
+    return new Response(JSON.stringify({ private: isPrivate }), { status: 200 });
+  };
+  const prevSync = global.StationSync;
+  global.StationSync = { config: () => ({ token: 'stub-token-not-real', repo: 'me/pub', branch: 'main' }) };
+  p.saveConfig({ mode: 'github', github: { repo: 'me/pub', branch: 'main', dir: 'photos', allowPublic: false, isPublic: null } });
+
+  global.fetch = stub(false);
+  let r = await p.test();
+  assert.strictEqual(r.ok, false, '公开仓库必须被拒');
+  assert.ok(/公开/.test(r.error), '提示应点明公开仓库：' + r.error);
+  assert.strictEqual(p.config().github.isPublic, true, '应记住仓库可见性');
+  assert.ok(/公开/.test(p.status()), '状态栏应标出公开仓库');
+
+  p.saveConfig({ github: { allowPublic: true } });
+  r = await p.test();
+  assert.strictEqual(r.ok, true, '显式放行后应通过：' + r.error);
+
+  p.saveConfig({ github: { allowPublic: false, isPublic: null } });
+  global.fetch = stub(true);
+  r = await p.test();
+  assert.strictEqual(r.ok, true, '私有仓库应通过：' + r.error);
+  assert.ok(/私有仓库/.test(r.message), '应回报私有仓库：' + r.message);
+
+  global.fetch = realFetch;
+  if (prevSync === undefined) delete global.StationSync; else global.StationSync = prevSync;
+  p.saveConfig({ mode: 'github', github: { repo: '', branch: '', dir: 'photos', allowPublic: false, isPublic: null } });
+});
+
+(async () => {
+  for (const c of asyncChecks) {
+    await c.fn();
+    passed++;
+    console.log('  ok  ' + c.name);
+  }
+  console.log('\n全部通过：' + passed + ' 项');
+})();

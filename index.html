@@ -478,19 +478,38 @@
       <section class="view" id="view-settings">
         <div class="card">
           <div class="card-head"><h3>图片存储 · 云盘</h3><span class="muted" id="photoStatus"></span></div>
-          <p class="hint"><b>推荐坚果云 WebDAV + Cloudflare Worker</b>：免费版就带 WebDAV，不用 NAS / Docker，一个应用密码即可（每月上传 1GB，存出库凭证够用）。出库凭证单独归档到 <b>express-station/出库凭证/年-月/</b>，入库照片放到 <b>express-station/入库照片/年-月/</b>，云盘里一眼可分。坚果云与 123 云盘的 WebDAV 都没有 CORS 头，浏览器无法直连，需要 <b>deploy/webdav-proxy.js</b> 做一次中转；AList 自带 CORS，可直连。凭据只填在这里和自己的 Worker / AList 后台，绝不写进公开仓库。</p>
+          <p class="hint"><b>推荐 GitHub 仓库直存</b>：照片直接提交进项目仓库的 <b>photos/</b> 目录，不用云盘、不用 Worker、不用额外账号，一次配好 token 就完事。出库凭证归档到 <b>photos/出库凭证/年-月/</b>，入库照片放到 <b>photos/入库照片/年-月/</b>。仓库必须是<b>私有</b>——面单上有收件人手机号和地址，公开仓库会被直接拦住。也可以用云盘 WebDAV（坚果云 / 123 云盘，需 <b>deploy/webdav-proxy.js</b> 中转补 CORS）或本机同步目录。凭据只填在这里，绝不写进公开仓库。</p>
           <div class="field-row">
             <div class="field">
               <label for="phMode">写入方式</label>
               <select id="phMode" class="input">
-                <option value="webdav">云盘 WebDAV（坚果云 / 123 云盘，推荐）</option>
+                <option value="github">GitHub 仓库（项目内 photos/，推荐）</option>
+                <option value="webdav">云盘 WebDAV（坚果云 / 123 云盘）</option>
                 <option value="local">云盘客户端同步文件夹</option>
                 <option value="browser">仅暂存浏览器（不写入云盘）</option>
               </select>
             </div>
-            <div class="field"><label for="phDir">云盘内目录名</label><input id="phDir" class="input" placeholder="express-station"></div>
+            <div class="field"><label for="phDir">云盘内目录名（WebDAV / 本机文件夹用）</label><input id="phDir" class="input" placeholder="express-station"></div>
           </div>
-          <div id="phWebdavBox" class="ph-box">
+          <div id="phGithubBox" class="ph-box" hidden>
+            <div class="field-row">
+              <div class="field"><label for="ghRepo">仓库（owner/repo，留空则跟随 GitHub 同步）</label><input id="ghRepo" class="input" placeholder="RhuaHub/express-station" autocomplete="off"></div>
+              <div class="field"><label for="ghBranch">分支（留空跟随同步）</label><input id="ghBranch" class="input" placeholder="main" autocomplete="off"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="ghDir">仓库内目录</label><input id="ghDir" class="input" placeholder="photos"></div>
+              <div class="field" style="display:flex;align-items:flex-end">
+                <button class="btn btn-outline btn-sm" id="btnGhFromSync" type="button">用「GitHub 同步」里的仓库</button>
+              </div>
+            </div>
+            <label class="switch"><input type="checkbox" id="ghAllowPublic"><span>允许写入公开仓库：<b>默认关闭</b>。面单照片含收件人手机号与地址，公开后任何人可见，别为了省事关掉这道闸</span></label>
+            <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
+              token 复用上方「GitHub 同步」里的 <b>Personal Access Token</b>（Contents 读写即可），不需要再填一份。照片会按
+              <b>入库照片/出库凭证 + 年-月</b> 提交到 <b>photos/</b> 下，<b>每张照片一次 commit</b>；仓库有 1GB 软上限，单张压缩后约 150–250KB，
+              自己按件量估一下。读取照片也走 API，所以私有仓库在任何设备上都能直接看。
+            </p>
+          </div>
+          <div id="phWebdavBox" class="ph-box" hidden>
             <div class="field-row">
               <div class="field">
                 <label for="phProvider">云盘服务</label>
@@ -511,12 +530,12 @@
               <div class="field"><label for="phPass">应用密码 / WebDAV 密码</label><input id="phPass" class="input" type="password" autocomplete="off"></div>
             </div>
           </div>
-          <div class="ph-box nut-tip">
+          <div id="phProviderTipBox" class="ph-box nut-tip" hidden>
             <b id="phProviderTitle">用坚果云：三步就够</b>
             <p id="phProviderHint"></p>
             <p class="muted" id="phProviderRoute"></p>
           </div>
-          <div class="ph-box">
+          <div id="phWebdavTipBox" class="ph-box" hidden>
             <b>选了 123 云盘，却看不到「WebDAV 授权管理」？</b>
             <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
               123 云盘自 <b>2026-11-04</b> 起调整权益：<b>新注册账号、新开通的会员不再包含 WebDAV</b>（同步 / 备份 / 云桌面 / 离线下载 同样被移除），老会员只要资格连续有效才保留。所以后台可能只剩「会员中心 → 工具中心」，没有「第三方挂载 → WebDAV 授权管理」这一项。这不是配置问题，换三条路都行：
@@ -625,7 +644,8 @@
             <div><h4>账号与权限</h4><p>首次打开注册站长账号，之后在「账号管理」里给店员开子账号。站长可改设置、导入备份、管账号；操作员可入库出库与改台账；只读访客只能查件和看板。每条流水都记录操作人，可在流水页按姓名搜索。账号随 JSON 全量备份 / GitHub 同步迁移，换设备打开后点登录页「导入备份恢复」即可。</p></div>
             <div><h4>数据在哪</h4><p>台账与账号都保存在浏览器 localStorage，无需服务器。开启 GitHub 同步后，台账与账号库会一起写入指定仓库的 JSON 文件；<b>仓库必须是私有</b>，里面含账号密码哈希与收件人后四位。Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
-            <div><h4>照片存云盘：坚果云（推荐）</h4><p>免费版就含 WebDAV，不用会员。网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用密码（只显示一次）；入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间。坚果云不返回 CORS 头，直连 dav.jianguoyun.com 会被浏览器拦，所以要把 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker，把 Worker 根地址填进「CORS 代理地址」，上游保持默认 <b>https://dav.jianguoyun.com/dav</b>；账号填注册邮箱，密码填应用密码。免费版每月上传 1GB / 下载 3GB，照片量大就把「图片最长边」设为 1200。</p></div>
+            <div><h4>照片存进 GitHub 仓库（默认）</h4><p>最省事的一条路：照片直接提交进项目仓库的 <b>photos/</b> 目录，不用云盘、不用 Worker、不用第二个账号。配置只要两处：先在下方「GitHub 同步」填 <b>Personal Access Token</b>（Contents 读写即可）和 <b>owner/repo</b>，再在「图片存储」把写入方式选 GitHub，点「用同步里的仓库」+「测试连接」。照片按 <b>photos/入库照片/年-月/</b>（RK- 前缀）与 <b>photos/出库凭证/年-月/</b>（CK- 前缀）提交，<b>每张照片一次 commit</b>。<b>仓库必须是私有</b>：面单上有收件人手机号与地址，公开仓库默认被拦下，要写公开仓库得手动勾「允许写入公开仓库」。仓库有 1GB 软上限，单张压缩后约 150–250KB，按一天 100 件算约每月 600MB，件量大就把「图片最长边」降到 1200 或定期清理旧月份目录。</p></div>
+            <div><h4>照片存云盘：坚果云</h4><p>免费版就含 WebDAV，不用会员。网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用密码（只显示一次）；入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间。坚果云不返回 CORS 头，直连 dav.jianguoyun.com 会被浏览器拦，所以要把 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker，把 Worker 根地址填进「CORS 代理地址」，上游保持默认 <b>https://dav.jianguoyun.com/dav</b>；账号填注册邮箱，密码填应用密码。免费版每月上传 1GB / 下载 3GB，照片量大就把「图片最长边」设为 1200。</p></div>
             <div><h4>照片存云盘：123 云盘（需账号仍保留 WebDAV 权益）</h4><p>123 自 <b>2026-11-04</b> 起，新注册账号与新开通会员都不再含 WebDAV，只有老账号、或会员权益连续有效的老会员才看得到入口。有入口就走：网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制<b>应用密码</b>。Worker 路由 <b>/pan123</b>，上游保持默认 <b>https://webdav.123pan.cn/webdav</b>，账号填手机号/邮箱；若后台给的是专属域名，在 Worker 里设环境变量 UPSTREAM_PAN123 覆盖。看不到这个入口就别耗时间，直接选坚果云。</p></div>
             <div><h4>照片存云盘：自定义 / AList</h4><p>用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList 挂其它网盘，开启 WebDAV 后把 <b>https://你的域名/dav</b> 填进上游地址。AList 自带 CORS 头，可以直连、不必填代理；但必须是 https，内网 http 地址会被 Pages 拦截，可用 Cloudflare Tunnel / Nginx 反代。Worker 的 <b>/webdav</b> 路由配合环境变量 UPSTREAM_CUSTOM 也能代理无 CORS 的自建服务。</p></div>
             <div><h4>安全提醒</h4><p>手机号只保留后四位。云盘应用密码只存在本机浏览器、随请求头透传给自己的 Worker，Worker 代码里不写任何账号密码；第三方网盘 token 只填 AList 后台。本机 <b>deploy/.env</b> 与 <b>deploy/data/</b> 已被 .gitignore 排除，绝不提交到公开仓库。建议在 Worker 里配置 ALLOWED_ORIGINS / PROXY_KEY，避免地址泄露后被他人借用额度。</p></div>
