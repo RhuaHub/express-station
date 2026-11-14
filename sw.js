@@ -2,13 +2,14 @@
    只缓存本站 GET 静态资源，绝不拦截云盘上传、GitHub 同步等跨域请求。 */
 'use strict';
 
-var VERSION = 'station-shell-v9';
-var BUILD = '1.0.8';
+var VERSION = 'station-shell-v10';
+var BUILD = '1.1.0';
 var SHELL = [
   './',
   './index.html',
   './styles.css?v=' + BUILD,
   './app.js?v=' + BUILD,
+  './assistant.js?v=' + BUILD,
   './store.js?v=' + BUILD,
   './auth.js?v=' + BUILD,
   './photos.js?v=' + BUILD,

@@ -12,6 +12,7 @@
   var photos = window.StationPhotos;
   var camera = window.StationCamera;
   var recognize = window.StationRecognize;
+  var assistant = window.StationAssistant;
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (v) {
     return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
@@ -26,6 +27,8 @@
     inventory: ['在库台账', '所有包裹的记录、修改与检索'],
     analytics: ['统计看板', '流转、滞留与货架占用'],
     logs: ['操作流水', '每一步都留痕，误操作可撤销'],
+    batch: ['批量处理', '粘贴单号批量入库 / 批量出库，逐行校验'],
+    customers: ['客户管理', '按尾号归档、重点客户与入库拦截名单'],
     accounts: ['账号管理', '子账号、角色权限与密码'],
     settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
   };
@@ -35,7 +38,9 @@
     scan: { status: 'idle', message: '', candidates: [], fileName: '', engine: '',
       photoIndex: -1, busy: false, autoTried: false, userClosed: false, pickIntent: false },
     /* 入库照片还在识别条码时，提交必须等它完成，否则照片会漏存 */
-    inOcrPending: null };
+    inOcrPending: null,
+    /* 仿驿站助手：批量处理预览结果、刚批量入库的件（用于连续打印标签） */
+    batchInRows: [], batchOut: null, lastBatchParcels: [], anaRange: 'today' };
   var syncTimer = null;
   var inPreviewUrls = [];
   var proofPreviewUrls = [];
@@ -100,15 +105,9 @@
   function printLabelDialog(p) {
     $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal label-modal">' +
       '<h3>取件标签</h3><p>用普通打印机打在标签纸或 A4 上，贴到面单；也可以直接抄下取件码。</p>' +
-      '<div class="label-sheet" id="labelSheet">' +
-      '<div class="ls-station">' + esc(store.settings().stationName) + '</div>' +
-      '<div class="ls-caption">取件码 / 货号</div>' +
-      '<div class="ls-code">' + esc(p.pickupCode || '—') + '</div>' +
-      '<div class="ls-slot">货架位 <b>' + esc(p.slot || '—') + '</b></div>' +
-      '<div class="ls-row"><span>收件人 ' + esc(p.recipient || '—') + '</span><span>尾号 ' + esc(p.phoneTail || '—') + '</span></div>' +
-      '<div class="ls-row"><span>' + esc(p.carrier) + '</span><span>' + esc(store.fmtTime(p.inAt)) + '</span></div>' +
-      '<div class="ls-no">' + esc(p.trackingNo) + '</div>' +
-      '</div>' +
+      (assistant && assistant.labelHTML
+        ? assistant.labelHTML(p, store.settings()).replace('class="label-sheet"', 'class="label-sheet" id="labelSheet"')
+        : '<div class="label-sheet" id="labelSheet">' + esc(p.pickupCode || '—') + '</div>') +
       '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button>' +
       '<button class="btn btn-outline" data-act="copy">复制取件码</button>' +
       '<button class="btn btn-primary" data-act="print"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' +
@@ -1118,6 +1117,9 @@
       else setTimeout(function () { $('outSearch').focus(); }, 120);
     }
     if (name === 'lookup') setTimeout(function () { $('lookupKey').focus(); }, 120);
+    if (name === 'batch') renderBatch();
+    if (name === 'customers') renderCustomers();
+    if (name === 'analytics') renderRangeStats();
   }
 
   /* ---------- 渲染：公共 ---------- */
@@ -1245,6 +1247,7 @@
     $('inCount').value = '1';
     if (!keepMeta) { $('inCarrier').selectedIndex = 0; $('inZone').selectedIndex = 0; }
     $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
+    $('inCarrier').dataset.manual = '';
     $('inPickupCode').dataset.manual = '';
     refreshCodePreview(true);
     $('inTracking').focus();
@@ -1383,11 +1386,14 @@
     $('invCount').textContent = '共 ' + rows.length + ' 条记录' + (rows.length > shown.length ? '，已显示 ' + shown.length + ' 条' : '');
     $('invMore').hidden = rows.length <= shown.length;
     $('invBody').innerHTML = shown.length ? shown.map(function (p) {
-      var tag = p.status === 'out' ? '<span class="tag tag-out">已出库</span>'
+      var tag = p.status === 'out'
+        ? '<span class="tag ' + (p.outType === 'refund' ? 'tag-danger' : 'tag-out') + '">' +
+          (p.outType === 'refund' ? '已退件' : '已出库') + '</span>'
         : '<span class="tag ' + (p.overdueLevel === 'danger' ? 'tag-danger' : p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal') + '">' +
           (p.overdueLevel === 'normal' ? '正常' : '滞留') + '</span>';
       return '<tr>' +
         '<td data-label="取件码"><span class="code-chip">' + esc(p.pickupCode || '—') + '</span>' +
+          ((p.goodsNo || p.serialNo) ? '<div class="td-sub">货号 ' + esc(p.goodsNo || '—') + ' · 编号 ' + esc(p.serialNo || '—') + '</div>' : '') +
           (p.batchId ? '<div class="td-sub">' + esc(p.batchId) + '</div>' : '') + '</td>' +
         '<td data-label="运单号" class="td-no">' + esc(p.trackingNo) +
           '<div class="td-sub">×' + p.count + (p.note ? ' · ' + esc(p.note) : '') + '</div>' +
@@ -1400,6 +1406,7 @@
         '<td data-label="停留">' + p.stayDays + ' 天</td>' +
         '<td data-label="状态">' + tag + '</td>' +
         '<td data-label="操作" class="td-actions"><div class="row-actions">' +
+        (p.status === 'in' ? '<button class="icon-btn" data-perm="write" data-undo-in="' + esc(p.id) + '" title="撤销入库"><svg class="ic"><use href="#i-refresh"/></svg></button>' : '') +
         '<button class="icon-btn" data-perm="write" data-edit="' + esc(p.id) + '" title="修改"><svg class="ic"><use href="#i-edit"/></svg></button>' +
         '<button class="icon-btn danger" data-perm="write" data-del="' + esc(p.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
         '</div></td></tr>';
@@ -1463,6 +1470,15 @@
     $('setShelves').value = s.shelvesPerZone;
     $('setLevels').value = s.levelsPerShelf;
     $('setCodeMode').value = s.codeMode;
+    $('setAddress').value = s.stationAddress || '';
+    $('setStationPhone').value = s.stationPhone || '';
+    $('setGoodsMode').value = s.goodsNoMode;
+    $('setSerialStart').value = (store.getDB().counters && store.getDB().counters.serial) || s.serialStart || 1;
+    $('setCarrierRules').value = s.carrierRules || '';
+    $('setBlocked').value = s.blocked || '';
+    $('setBlockEnabled').checked = !!s.blockEnabled;
+    $('setVoiceEnabled').checked = !!s.voiceEnabled;
+    $('setScanAutoOut').checked = s.scanAutoOut !== false;
     var c = sync.config();
     $('syncToken').value = c.token;
     $('syncRepo').value = c.repo;
@@ -1486,9 +1502,377 @@
     renderInventory();
     renderAnalytics();
     renderLogs();
+    renderBatch();
+    renderCustomers();
+    renderRangeStats();
     if (auth.can('owner')) renderAccounts();
     renderSyncState();
     renderPhotoStatus();
+  }
+
+  /* ---------- 仿驿站助手：批量处理、客户管理、时间段统计 ---------- */
+  function speakIf(text) {
+    if (assistant && store.settings().voiceEnabled) assistant.speak(text, true);
+  }
+  function csvQuote(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }
+
+  function parseInText() {
+    return assistant && assistant.parseBatch ? assistant.parseBatch($('batchInText').value)
+      : { rows: [], errors: ['业务规则模块未加载'] };
+  }
+  function batchInHTML(parsed) {
+    var html = '<div class="br-line">解析到 <b>' + parsed.rows.length + '</b> 行' +
+      (parsed.errors.length ? '，<span class="err">' + parsed.errors.length + ' 行需修正</span>' : '') + '</div>';
+    if (parsed.rows.length) {
+      html += '<table class="mini-table"><thead><tr><th>运单号</th><th>公司</th><th>收件人</th><th>尾号</th></tr></thead><tbody>' +
+        parsed.rows.slice(0, 8).map(function (r) {
+          return '<tr><td>' + esc(r.trackingNo) + '</td><td>' + esc(r.carrier || '自动识别') +
+            '</td><td>' + esc(r.recipient || '—') + '</td><td>' + esc(r.phoneTail || '—') + '</td></tr>';
+        }).join('') + '</tbody></table>' +
+        (parsed.rows.length > 8 ? '<div class="br-line">仅预览前 8 行</div>' : '');
+    }
+    if (parsed.errors.length) {
+      html += '<div class="br-err">' + parsed.errors.slice(0, 8).map(esc).join('<br>') + '</div>';
+    }
+    if (state.batchInReport) {
+      var rep = state.batchInReport;
+      html += '<div class="br-ok">实际入库 <b>' + rep.added.length + '</b> 件' +
+        (rep.failed.length ? '，失败 ' + rep.failed.length + ' 件（失败行已留在输入框）' : '') + '</div>';
+      if (rep.failed.length) {
+        html += '<div class="br-err">' + rep.failed.slice(0, 10).map(function (f) {
+          return esc(f.trackingNo) + '：' + esc(f.error);
+        }).join('<br>') + '</div>';
+      }
+    }
+    return html;
+  }
+  function renderBatch() {
+    var parsed = parseInText();
+    state.batchInRows = parsed.rows;
+    $('batchInResult').innerHTML = batchInHTML(parsed);
+    var text = $('batchOutText').value;
+    var m = text.trim() ? store.findTokens(text) : { matched: [], missing: [], ambiguous: [] };
+    state.batchOut = m;
+    var oh = '<div class="br-line">匹配到 <b>' + m.matched.length + '</b> 件在库' +
+      (m.missing.length ? '，<span class="err">' + m.missing.length + ' 个码没找到</span>' : '') +
+      (m.ambiguous.length ? '，<span class="err">' + m.ambiguous.length + ' 个码对应多件</span>' : '') + '</div>';
+    if (m.matched.length) {
+      oh += '<table class="mini-table"><thead><tr><th>输入码</th><th>运单号</th><th>货号</th><th>货架位</th></tr></thead><tbody>' +
+        m.matched.slice(0, 20).map(function (x) {
+          return '<tr><td>' + esc(x.token) + '</td><td>' + esc(x.parcel.trackingNo) + '</td><td>' +
+            esc(x.parcel.goodsNo || '—') + '</td><td>' + esc(x.parcel.slot) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    if (m.missing.length) oh += '<div class="br-err">未找到：' + m.missing.slice(0, 20).map(esc).join('、') + '</div>';
+    if (m.ambiguous.length) {
+      oh += '<div class="br-err">多件候选：' + m.ambiguous.map(function (a) {
+        return esc(a.token) + '（' + a.parcels.length + ' 件）';
+      }).join('、') + '，请改用精确单号</div>';
+    }
+    $('batchOutResult').innerHTML = oh;
+    $('btnBatchLabels').disabled = !(state.lastBatchParcels && state.lastBatchParcels.length);
+  }
+  /* 批量打印货号标签：普通打印机 / A4，不依赖蓝牙控件 */
+  function printBatchLabels() {
+    var list = state.lastBatchParcels || [];
+    if (!list.length || !assistant) return;
+    var sheets = list.map(function (p) { return assistant.labelHTML(p, store.settings()); }).join('');
+    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal label-modal">' +
+      '<h3>批量货号标签（' + list.length + ' 张）</h3>' +
+      '<p>普通打印机打在标签纸或 A4 上即可，不依赖蓝牙打印控件。</p>' +
+      '<div class="label-batch">' + sheets + '</div>' +
+      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button>' +
+      '<button class="btn btn-primary" data-act="print"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div></div></div>';
+    var root = $('modalRoot');
+    root.querySelector('[data-act="close"]').onclick = closeModal;
+    root.querySelector('[data-act="print"]').onclick = function () {
+      document.body.classList.add('printing-label');
+      window.addEventListener('afterprint', function h() {
+        document.body.classList.remove('printing-label');
+        window.removeEventListener('afterprint', h);
+      });
+      window.print();
+    };
+    root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) closeModal(); };
+  }
+
+  function renderCustomers() {
+    var rows = store.customers({ keyword: $('cusKeyword').value, tag: $('cusTag').value });
+    $('cusCount').textContent = '共 ' + rows.length + ' 位客户';
+    $('cusBody').innerHTML = rows.length ? rows.map(function (c) {
+      var label = assistant ? assistant.tagLabel(c.tag) : c.tag;
+      var cls = c.tag === 'block' ? 'tag-danger' : (c.tag === 'vip' ? 'tag-warn' : 'tag-normal');
+      return '<tr><td data-label="客户">' + esc(c.name || '未填姓名') + '</td>' +
+        '<td data-label="手机">' + esc(c.phone || '—') +
+        '<div class="td-sub">尾号 ' + esc(c.phoneTail || '—') + '</div></td>' +
+        '<td data-label="标记"><span class="tag ' + cls + '">' + esc(label) + '</span></td>' +
+        '<td data-label="累计">' + c.total + '</td><td data-label="在库">' + c.inStock + '</td>' +
+        '<td data-label="备注">' + esc(c.note || '—') + '</td>' +
+        '<td data-label="操作" class="td-actions"><div class="row-actions">' +
+        '<button class="icon-btn" data-perm="manage" data-cus-edit="' + esc(c.id) + '" title="编辑"><svg class="ic"><use href="#i-edit"/></svg></button>' +
+        '<button class="icon-btn danger" data-perm="manage" data-cus-del="' + esc(c.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
+        '</div></td></tr>';
+    }).join('') : '<tr><td colspan="7">' + emptyHTML('还没有客户档案：入库填了手机尾号会自动归档') + '</td></tr>';
+  }
+  function customerDialog(c) {
+    return new Promise(function (resolve) {
+      c = c || {};
+      var tags = [['normal', '普通'], ['vip', '重点客户'], ['block', '黑名单']].map(function (t) {
+        return '<option value="' + t[0] + '"' + ((c.tag || 'normal') === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
+      }).join('');
+      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
+        '<h3>' + (c.id ? '修改客户资料' : '新增客户') + '</h3>' +
+        '<p>手机号只保存在本机浏览器，用于核对与归档，不会发短信或拨号。</p>' +
+        '<div class="field-row"><div class="field"><label>姓名</label><input class="input" id="cdName" value="' + esc(c.name || '') + '"></div>' +
+        '<div class="field"><label>手机后四位</label><input class="input" id="cdTail" inputmode="numeric" maxlength="4" value="' + esc(c.phoneTail || '') + '"></div></div>' +
+        '<div class="field"><label>完整手机号（选填，仅本机）</label><input class="input" id="cdPhone" inputmode="tel" value="' + esc(c.phone || '') + '"></div>' +
+        '<div class="field"><label>标记</label><select class="input" id="cdTag">' + tags + '</select></div>' +
+        '<div class="field"><label>备注</label><input class="input" id="cdNote" value="' + esc(c.note || '') + '"></div>' +
+        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
+        '<button class="btn btn-primary" data-act="ok">保存</button></div></div></div>';
+      var root = $('modalRoot');
+      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
+      root.querySelector('[data-act="ok"]').onclick = function () {
+        var phone = $('cdPhone').value.trim();
+        var tail = $('cdTail').value.replace(/\D/g, '').slice(-4) || phone.replace(/\D/g, '').slice(-4);
+        var patch = { id: c.id || '', key: c.key || '', name: $('cdName').value.trim(),
+          phone: phone, phoneTail: tail, tag: $('cdTag').value, note: $('cdNote').value.trim() };
+        if (!patch.name && !tail) { toast('姓名和手机尾号至少填一个', 'err'); return; }
+        closeModal(); resolve(patch);
+      };
+      root.querySelector('.modal-mask').onclick = function (e) {
+        if (e.target === this) { closeModal(); resolve(null); }
+      };
+    });
+  }
+
+  function currentRangeData() {
+    if (state.anaRange === 'custom') {
+      var f = new Date($('anaFrom').value + 'T00:00:00').getTime();
+      var t = new Date($('anaTo').value + 'T23:59:59').getTime();
+      return store.statsRange(null, f, t);
+    }
+    return store.statsRange(state.anaRange || 'today');
+  }
+  function renderRangeStats() {
+    var d = currentRangeData();
+    state.anaData = d;
+    var avg = d.avgStayHours ? (d.avgStayHours < 24
+      ? d.avgStayHours.toFixed(1) + ' 小时' : (d.avgStayHours / 24).toFixed(1) + ' 天') : '—';
+    $('anaRangeSummary').innerHTML = [
+      ['入库', d.inCount], ['取件出库', d.pickupCount], ['退件出库', d.refundCount],
+      ['撤销入库', d.undoInCount], ['平均取件', avg]
+    ].map(function (x) {
+      return '<div class="stat-chip"><span>' + x[0] + '</span><b>' + esc(x[1]) + '</b></div>';
+    }).join('');
+    $('anaRangeHint').textContent = '共 ' + d.details.length + ' 条流转记录' +
+      (d.details.length > 100 ? '，明细只显示最近 100 条' : '');
+    $('anaDetailBody').innerHTML = d.details.length ? d.details.slice(0, 100).map(function (r) {
+      return '<tr><td>' + esc(store.fmtTime(r.at)) + '</td><td>' + esc(r.type) + '</td><td>' +
+        esc(r.trackingNo) + '</td><td>' + esc(r.carrier) + '</td><td>' +
+        esc(r.operator || '—') + '</td><td>' + esc(r.extra || '—') + '</td></tr>';
+    }).join('') : '<tr><td colspan="6">' + emptyHTML('该时间段没有流转记录') + '</td></tr>';
+  }
+
+  /* 新增交互集中在这里绑定，避免动到原有事件委托 */
+  function bindAssistant() {
+    /* 单号前缀自动带出快递公司；手动选过就不覆盖，下一件再恢复自动 */
+    $('inCarrier').addEventListener('change', function () { this.dataset.manual = '1'; });
+    $('inTracking').addEventListener('input', function () {
+      var no = this.value.trim();
+      if (!assistant || no.length < 4 || $('inCarrier').dataset.manual === '1') return;
+      var name = assistant.detectCarrier(no, store.settings().carrierRules);
+      if (!name) return;
+      var sel = $('inCarrier');
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === name) { sel.selectedIndex = i; break; }
+      }
+    });
+    /* 出库类型：退件时显示原因、改按钮文案，且不强制拍凭证 */
+    $('outType').addEventListener('change', function () {
+      var refund = this.value === 'refund';
+      $('refundReasonBox').hidden = !refund;
+      $('btnCheckout').innerHTML = refund
+        ? '<svg class="ic"><use href="#i-check"/></svg>确认退件出库'
+        : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
+    });
+    $('batchOutType').addEventListener('change', function () {
+      $('batchRefundReason').disabled = this.value !== 'refund';
+    });
+    $('batchRefundReason').disabled = true;
+
+    /* 扫码枪连出：回车即出库，多件候选不自动出库 */
+    $('scanOutInput').addEventListener('keydown', async function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      var token = this.value.trim();
+      this.value = '';
+      if (!token || !guard('write')) return;
+      if (!store.settings().scanAutoOut) {
+        $('outSearch').value = token; state.outKeyword = token; renderOutbound();
+        $('scanOutState').textContent = '扫码连出已关闭，已把 ' + token + ' 填入搜索框';
+        return;
+      }
+      var rows = store.lookup(token, 'in');
+      if (!rows.length) {
+        toast('没找到在库件：' + token, 'err');
+        $('scanOutState').textContent = '未找到：' + token;
+        return;
+      }
+      var k = token.toUpperCase();
+      var exact = rows.filter(function (p) {
+        return [p.pickupCode, p.goodsNo, p.serialNo, p.trackingNo].map(function (x) {
+          return String(x || '').toUpperCase();
+        }).indexOf(k) >= 0 || p.phoneTail === token;
+      });
+      var pick = exact.length === 1 ? exact[0] : (rows.length === 1 ? rows[0] : null);
+      if (!pick) {
+        toast('匹配到多件，请用取件码或完整单号', 'err');
+        $('outSearch').value = token; state.outKeyword = token; renderOutbound();
+        $('scanOutState').textContent = '多件候选：' + token + '，已列在下方，请点选';
+        return;
+      }
+      var outType = $('outType').value === 'refund' ? 'refund' : 'pickup';
+      var reason = outType === 'refund' ? $('refundReason').value : '';
+      if (outType === 'refund') {
+        var ok = await confirmDialog('确认退件？',
+          pick.trackingNo + ' 将按「' + reason + '」退件出库，不发送任何通知。', '确认退件', true);
+        if (!ok) return;
+      }
+      var r = store.checkout([pick.id], '扫码连出', [], { outType: outType, refundReason: reason });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      afterWrite((outType === 'refund' ? '退件出库 ' : '扫码出库 ') + pick.trackingNo);
+      speakIf((outType === 'refund' ? '退件' : '取件') + '出库，货号 ' + (pick.goodsNo || pick.pickupCode || ''));
+      $('scanOutState').textContent = '已' + (outType === 'refund' ? '退件' : '出库') + ' ' +
+        pick.trackingNo + ' · 货号 ' + (pick.goodsNo || '—') + '，继续扫下一件';
+    });
+
+    /* 批量入库 / 批量出库 */
+    $('btnBatchInPreview').onclick = function () { state.batchInReport = null; renderBatch(); };
+    $('btnBatchInFile').onclick = function () { $('batchInFile').click(); };
+    $('batchInFile').addEventListener('change', function () {
+      var f = this.files && this.files[0];
+      this.value = '';
+      if (!f) return;
+      var fr = new FileReader();
+      fr.onload = function () {
+        $('batchInText').value = String(fr.result || '').replace(/^\ufeff/, '');
+        state.batchInReport = null;
+        renderBatch();
+        toast('已读入 ' + f.name);
+      };
+      fr.readAsText(f, 'utf-8');
+    });
+    $('btnBatchInAdd').onclick = async function () {
+      if (!guard('write')) return;
+      var parsed = parseInText();
+      if (!parsed.rows.length) { toast('没有可入库的单号', 'err'); return; }
+      var ok = await confirmDialog('批量入库 ' + parsed.rows.length + ' 件？',
+        '逐行校验：重复单号、命中拦截名单、货位冲突会单独列出，不影响其它行。', '确认入库');
+      if (!ok) return;
+      var r = store.batchAdd(parsed.rows);
+      state.lastBatchParcels = r.added;
+      state.batchInReport = r;
+      /* 失败的单号留在输入框，改完可以直接重试 */
+      $('batchInText').value = r.failed.map(function (f) { return f.trackingNo; }).join('\n');
+      renderBatch();
+      afterWrite('批量入库 ' + r.added.length + ' 件' + (r.failed.length ? '，失败 ' + r.failed.length + ' 件' : ''));
+      speakIf('批量入库 ' + r.added.length + ' 件');
+    };
+    $('btnBatchLabels').onclick = printBatchLabels;
+    $('btnBatchOutPreview').onclick = function () { renderBatch(); };
+    $('btnBatchOut').onclick = async function () {
+      if (!guard('write')) return;
+      var m = store.findTokens($('batchOutText').value);
+      state.batchOut = m;
+      if (!m.matched.length) { toast('没有匹配到在库件', 'err'); renderBatch(); return; }
+      if (m.ambiguous.length) {
+        toast('有 ' + m.ambiguous.length + ' 个码对应多件，请改用精确单号', 'err');
+        renderBatch(); return;
+      }
+      var outType = $('batchOutType').value === 'refund' ? 'refund' : 'pickup';
+      var reason = outType === 'refund' ? $('batchRefundReason').value : '';
+      var ok = await confirmDialog('批量' + (outType === 'refund' ? '退件' : '取件') +
+        '出库 ' + m.matched.length + ' 件？',
+        '共用一个批次，可整批撤销；不发送短信或电话通知。', '确认出库');
+      if (!ok) return;
+      var r = store.checkout(m.matched.map(function (x) { return x.parcel.id; }), '批量出库', [],
+        { merge: true, outType: outType, refundReason: reason });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      $('batchOutText').value = m.missing.join('\n');
+      afterWrite('批量' + (outType === 'refund' ? '退件' : '取件') + '出库 ' + r.count + ' 件 · ' + r.batchId);
+      speakIf('批量出库 ' + r.count + ' 件');
+      renderBatch();
+    };
+
+    /* 客户管理 */
+    $('cusKeyword').addEventListener('input', renderCustomers);
+    $('cusTag').addEventListener('change', renderCustomers);
+    $('btnCusAdd').onclick = async function () {
+      if (!guard('manage')) return;
+      var patch = await customerDialog(null);
+      if (!patch) return;
+      var r = store.saveCustomer(patch);
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      afterWrite('客户已保存');
+    };
+    $('btnCusExport').onclick = function () {
+      downloadFile('客户名单-' + dateStamp() + '.csv', store.exportCSV('customers'), 'text/csv;charset=utf-8');
+      toast('客户名单已导出');
+    };
+    $('cusBody').addEventListener('click', async function (e) {
+      var ed = e.target.closest('[data-cus-edit]');
+      var del = e.target.closest('[data-cus-del]');
+      if (!ed && !del) return;
+      if (!guard('manage')) return;
+      var id = ed ? ed.dataset.cusEdit : del.dataset.cusDel;
+      var c = store.customers().find(function (x) { return x.id === id; });
+      if (!c) return;
+      if (ed) {
+        var patch = await customerDialog(c);
+        if (!patch) return;
+        /* 尾号改了等于换了一个客户键：先移除旧档案，避免留下重复条目 */
+        if (c.phoneTail && patch.phoneTail !== c.phoneTail) store.removeCustomer(c.id);
+        var r = store.saveCustomer(patch);
+        if (!r.ok) { toast(r.error, 'err'); return; }
+        afterWrite('客户资料已更新');
+      } else {
+        var ok = await confirmDialog('删除客户档案？', '只删除本机客户资料，包裹台账不受影响。', '确认删除', true);
+        if (!ok) return;
+        store.removeCustomer(c.id);
+        afterWrite('客户档案已删除');
+      }
+    });
+
+    /* 时间段业务统计 */
+    $('anaRange').addEventListener('change', function () {
+      state.anaRange = this.value;
+      renderRangeStats();
+    });
+    $('btnAnaCustom').onclick = function () {
+      if (!$('anaFrom').value || !$('anaTo').value) { toast('请先选开始和结束日期', 'err'); return; }
+      state.anaRange = 'custom';
+      renderRangeStats();
+    };
+    $('btnAnaExport').onclick = function () {
+      var d = state.anaData || currentRangeData();
+      var rows = [['时间', '类型', '运单号', '公司', '操作人', '货号 / 取件人 / 原因']];
+      d.details.forEach(function (r) {
+        rows.push([store.fmtTime(r.at), r.type, r.trackingNo, r.carrier, r.operator, r.extra]);
+      });
+      downloadFile('业务统计明细-' + dateStamp() + '.csv',
+        '\ufeff' + rows.map(function (r) { return r.map(csvQuote).join(','); }).join('\r\n'),
+        'text/csv;charset=utf-8');
+      toast('统计明细已导出');
+    };
+
+    /* 设置：连续编号重设 */
+    $('btnSerialStart').onclick = function () {
+      if (!guard('manage')) return;
+      var n = Number($('setSerialStart').value) || 1;
+      store.setSerialStart(n);
+      toast('下一个连续编号已设为 ' + n);
+    };
   }
 
   /* ---------- 事件绑定 ---------- */
@@ -1608,10 +1992,19 @@
       state.lastParcel = res.parcel;
       $('lastIn').hidden = false;
       $('lastIn').innerHTML = '<div class="li-ok">已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>' +
+        (res.parcel.goodsNo ? ' · 货号 <strong>' + esc(res.parcel.goodsNo) + '</strong>' : '') +
+        (res.parcel.serialNo ? ' · 编号 ' + esc(res.parcel.serialNo) : '') +
         (pr.items.length ? '，照片 ' + pr.items.length + ' 张' : '') + '，继续扫下一件</div>' +
+        (res.carrierGuessed ? '<div class="li-tip">按单号前缀自动识别为 ' + esc(res.carrierGuessed) + '</div>' : '') +
+        (res.sameCustomer ? '<div class="li-tip">同一尾号还有 ' + res.sameCustomer + ' 件在库，建议放同一货架</div>' : '') +
         (res.parcel.pickupCode ? '<div class="code-hero"><span>取件码</span><strong>' + esc(res.parcel.pickupCode) + '</strong>' +
           '<button type="button" class="btn btn-ghost btn-sm" data-copy-code="' + esc(res.parcel.pickupCode) + '"><svg class="ic"><use href="#i-copy"/></svg>复制</button>' +
           '<button type="button" class="btn btn-outline btn-sm" data-print-label="1"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' : '');
+      /* 本地 TTS 只念货号/货位，不联网、不发短信、不拨号 */
+      if (assistant && store.settings().voiceEnabled) {
+        assistant.speak('货号 ' + (res.parcel.goodsNo || '无') + '，货架位 ' + res.parcel.slot +
+          '，取件码 ' + (res.parcel.pickupCode || '无'), true);
+      }
       clearInForm(true);
       clearFiles('in');
       afterWrite('入库成功 · ' + res.parcel.slot);
@@ -1715,7 +2108,19 @@
       if (pv) { openPhotoViewer(pv.dataset.photos); return; }
       var ed = e.target.closest('[data-edit]');
       var del = e.target.closest('[data-del]');
-      if ((ed || del) && !guard('write')) return;
+      var undo = e.target.closest('[data-undo-in]');
+      if ((ed || del || undo) && !guard('write')) return;
+      if (undo) {
+        var up = store.getDB().parcels.find(function (x) { return x.id === undo.dataset.undoIn; });
+        if (!up) return;
+        var uok = await confirmDialog('撤销入库？',
+          '将移除 ' + up.trackingNo + ' 的入库记录，并单独记一条「撤销入库」流水（和直接删除记录区分开）。',
+          '确认撤销', true);
+        if (!uok) return;
+        store.removeParcel(up.id, { undo: true });
+        afterWrite('已撤销入库 · ' + up.trackingNo);
+        return;
+      }
       if (ed) {
         var p = store.getDB().parcels.find(function (x) { return x.id === ed.dataset.edit; });
         if (!p) return;
@@ -1839,8 +2244,15 @@
         stationName: $('setName').value.trim(), operator: $('setOperator').value.trim(),
         warnDays: warn, dangerDays: danger, carriers: carriers, zones: zones,
         shelvesPerZone: Number($('setShelves').value), levelsPerShelf: Number($('setLevels').value),
-        codeMode: $('setCodeMode').value
+        codeMode: $('setCodeMode').value,
+        stationAddress: $('setAddress').value.trim(), stationPhone: $('setStationPhone').value.trim(),
+        goodsNoMode: $('setGoodsMode').value, serialStart: Number($('setSerialStart').value) || 1,
+        carrierRules: $('setCarrierRules').value.trim(),
+        blocked: $('setBlocked').value.trim(), blockEnabled: $('setBlockEnabled').checked,
+        voiceEnabled: $('setVoiceEnabled').checked, scanAutoOut: $('setScanAutoOut').checked
       });
+      /* 「下一个连续编号」保存即生效，免得改了设置却还从旧流水继续编 */
+      store.setSerialStart(Number($('setSerialStart').value) || 1);
       afterWrite('设置已保存');
     });
 
@@ -1936,6 +2348,7 @@
         if (!auth.current()) showGate('login');
       }
     };
+    bindAssistant();
   }
 
   /* 出库留证：开启「必须拍凭证」且尚未拍照时，自动调起摄像头，拍完继续出库 */
@@ -1958,22 +2371,35 @@
     var ids = Object.keys(state.selected);
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
     var usedScan = state.scan.photoIndex >= 0;
-    if (!(await ensureProof())) return;
+    var outType = $('outType').value === 'refund' ? 'refund' : 'pickup';
+    var reason = outType === 'refund' ? $('refundReason').value : '';
+    if (outType === 'refund') {
+      var ok = await confirmDialog('确认退件出库 ' + ids.length + ' 件？',
+        '退件原因：' + reason + '。退件会记入台账与统计，可整批撤销，不发送任何通知。', '确认退件', true);
+      if (!ok) return;
+    } else if (!(await ensureProof())) return;
     var btn = $('btnCheckout');
     btn.disabled = true;
-    var pr = await savePhotos(state.proofFiles, 'pickup');
-    var r = store.checkout(ids, $('pickupBy').value, pr.items);
+    /* 退件不强制拍取件凭证；拍了照样留证 */
+    var pr = state.proofFiles.length ? await savePhotos(state.proofFiles, 'pickup')
+      : { items: [], warnings: [], failed: 0 };
+    var r = store.checkout(ids, $('pickupBy').value, pr.items,
+      { outType: outType, refundReason: reason });
     btn.disabled = false;
     if (!r.ok) { toast(r.error, 'err'); renderOutbound(); return; }
     state.selected = {};
     $('pickupBy').value = '';
     $('outSearch').value = ''; state.outKeyword = '';
     clearFiles('proof');
-    afterWrite((r.merged ? '合并出库 ' : '已出库 ') + r.count + ' 件 · 批次 ' + r.batchId +
+    afterWrite((outType === 'refund' ? '退件出库 ' : (r.merged ? '合并出库 ' : '已出库 ')) +
+      r.count + ' 件 · 批次 ' + r.batchId + (reason ? ' · ' + reason : '') +
       (pr.items.length ? ' · 共用凭证 ' + pr.items.length + ' 张' : ''));
     reportPhotoResult(pr);
-    /* 连着取件：这次是拍照取件出的库，确认后自动开下一张；手输出库不打扰 */
-    if (usedScan && photos.config().autoCapture && camera && camera.supported() &&
+    if (assistant && store.settings().voiceEnabled) {
+      assistant.speak((outType === 'refund' ? '退件出库 ' : '取件出库 ') + r.count + ' 件', true);
+    }
+    /* 连着取件：只有普通取件 + 拍照取件才自动开下一张；退件不打扰 */
+    if (outType !== 'refund' && usedScan && photos.config().autoCapture && camera && camera.supported() &&
       !state.scan.userClosed && auth.can('write')) {
       setTimeout(function () {
         if (state.view === 'outbound' && !state.scan.busy) capturePickup(true);

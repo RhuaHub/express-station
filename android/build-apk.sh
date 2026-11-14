@@ -41,7 +41,7 @@ mkdir -p "$BUILD/gen" "$BUILD/classes" "$BUILD/dex" "$BUILD/assets" "$DIST"
 # 注意：aapt2 在 Windows 下会把子目录写成反斜杠路径，AssetManager 将无法读取，
 # 因此 assets 只放根级文件，图标改由 jar 以正斜杠补入（见步骤 5）。
 echo "==> 同步网页资源"
-for f in index.html styles.css app.js store.js auth.js photos.js camera.js recognize.js sync.js manifest.webmanifest; do
+for f in index.html styles.css app.js assistant.js store.js auth.js photos.js camera.js recognize.js sync.js manifest.webmanifest; do
   cp "$ROOT/$f" "$BUILD/assets/$f"
 done
 mkdir -p "$BUILD/stage/assets/icons"
@@ -61,7 +61,7 @@ echo "==> aapt2 link"
   --min-sdk-version 21 \
   --target-sdk-version 34 \
   --version-code 7 \
-  --version-name 1.0.8 \
+  --version-name 1.1.0 \
   "$(W "$BUILD/res.zip")"
 
 # ---- 3. 编译 Java ----
@@ -100,7 +100,7 @@ if [ ! -f "$KS" ]; then
     -dname "CN=Express Station, OU=Rhua, O=Rhua, L=Beijing, ST=Beijing, C=CN" >/dev/null 2>&1
 fi
 
-APK="$DIST/express-station-1.0.8.apk"
+APK="$DIST/express-station-1.1.0.apk"
 echo "==> apksigner"
 "$BT/apksigner.bat" sign \
   --ks "$(W "$KS")" --ks-pass pass:station2024 --key-pass pass:station2024 \

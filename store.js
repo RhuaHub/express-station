@@ -3,6 +3,13 @@
   'use strict';
 
   var KEY = 'express-station.db.v1';
+  /* 业务规则层：浏览器里由 index.html 先加载 assistant.js；Node 测试里直接 require。
+     缺失时也不让数据层崩掉——下面的调用都做了兜底。 */
+  var A = global.StationAssistant ||
+    (typeof require === 'function' ? require('./assistant.js') : null);
+  function callA(name, fallback) {
+    return A && typeof A[name] === 'function' ? A[name] : fallback;
+  }
 
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function uid(prefix) {
@@ -34,12 +41,26 @@
       shelvesPerZone: 8,
       levelsPerShelf: 4,
       operator: '值班员',
-      codeMode: 'slot'
+      codeMode: 'slot',
+      /* 仿驿站助手：站点信息（只用于打印标签）、编号/货号、公司识别、客户与拦截、本地语音 */
+      stationAddress: '',
+      stationPhone: '',
+      goodsNoMode: 'slot',
+      serialStart: 1,
+      carrierRules: '圆通=YT|8,韵达=YD|43|46|31,申通=ST|77|66,中通=ZT|75|78|73,' +
+        '极兔=JT,顺丰=SF,京东=JD|JDX,邮政=YZ|EMS|EA|EB|9,德邦=DB|DBK|DPK,菜鸟=CN|PDD,百世=BS|BT',
+      blocked: '',
+      blockEnabled: false,
+      voiceEnabled: false,
+      scanAutoOut: true
     };
   }
 
   function defaultDB() {
-    return { version: 2, settings: defaultSettings(), parcels: [], logs: [], createdAt: isoNow() };
+    return {
+      version: 3, settings: defaultSettings(), parcels: [], logs: [],
+      customers: [], counters: { serial: 1 }, createdAt: isoNow()
+    };
   }
 
   /* 货架位 A-01-2 → A012，作为「报码即知货位」的默认取件码 */
@@ -76,7 +97,17 @@
       shelvesPerZone: Math.max(1, Math.min(99, Number(s.shelvesPerZone) || base.settings.shelvesPerZone)),
       levelsPerShelf: Math.max(1, Math.min(99, Number(s.levelsPerShelf) || base.settings.levelsPerShelf)),
       operator: str(s.operator) || base.settings.operator,
-      codeMode: ['slot', 'daily', 'off'].indexOf(s.codeMode) >= 0 ? s.codeMode : base.settings.codeMode
+      codeMode: ['slot', 'daily', 'off'].indexOf(s.codeMode) >= 0 ? s.codeMode : base.settings.codeMode,
+      stationAddress: str(s.stationAddress),
+      stationPhone: str(s.stationPhone),
+      goodsNoMode: ['slot', 'date', 'phone', 'serial', 'off'].indexOf(s.goodsNoMode) >= 0
+        ? s.goodsNoMode : base.settings.goodsNoMode,
+      serialStart: Math.max(1, Number(s.serialStart) || 1),
+      carrierRules: str(s.carrierRules) || base.settings.carrierRules,
+      blocked: str(s.blocked),
+      blockEnabled: !!s.blockEnabled,
+      voiceEnabled: !!s.voiceEnabled,
+      scanAutoOut: s.scanAutoOut !== false
     };
     base.parcels = (Array.isArray(raw.parcels) ? raw.parcels : []).map(function (p) {
       return {
@@ -97,6 +128,13 @@
         pickupBy: str(p.pickupBy),
         operatorIn: str(p.operatorIn),
         operatorOut: str(p.operatorOut),
+        /* 驿站助手式扩展：连续编号、货号、出库类型、退件原因、客户关联 */
+        serialNo: str(p.serialNo),
+        goodsNo: str(p.goodsNo).toUpperCase(),
+        outType: p.outType === 'refund' ? 'refund' : 'pickup',
+        refundReason: str(p.refundReason),
+        customerId: str(p.customerId),
+        phoneFull: str(p.phoneFull),
         photos: normalizePhotos(p.photos)
       };
     });
@@ -112,6 +150,26 @@
         actor: str(l.actor)
       };
     });
+    base.customers = (Array.isArray(raw.customers) ? raw.customers : []).map(function (c) {
+      return {
+        id: str(c.id) || uid('c'),
+        key: str(c.key) || (tail4(c.phoneTail) || str(c.name)),
+        phoneTail: tail4(c.phoneTail),
+        phone: str(c.phone),
+        name: str(c.name),
+        tag: ['normal', 'vip', 'block'].indexOf(c.tag) >= 0 ? c.tag : 'normal',
+        note: str(c.note),
+        total: Math.max(0, Number(c.total) || 0),
+        createdAt: c.createdAt || isoNow(),
+        updatedAt: c.updatedAt || c.createdAt || isoNow()
+      };
+    });
+    var serial = Math.max(base.settings.serialStart, Number(raw.counters && raw.counters.serial) || 1);
+    base.parcels.forEach(function (p) {
+      var n = Number(p.serialNo);
+      if (n >= serial) serial = n + 1;
+    });
+    base.counters = { serial: serial };
     base.createdAt = raw.createdAt || base.createdAt;
     return base;
   }
@@ -284,42 +342,85 @@
 
     function addParcel(input) {
       input = input || {};
+      var s = db.settings;
       var trackingNo = str(input.trackingNo);
       if (!trackingNo) return { ok: false, error: '运单号不能为空' };
+      var tail = tail4(input.phoneTail || input.phoneFull);
+      /* 入库拦截：名单里的单号 / 尾号，以及被标记为黑名单的客户 */
+      if (s.blockEnabled) {
+        var blockedBy = A && A.isBlocked ? A.isBlocked(s.blocked, trackingNo, tail) : '';
+        if (!blockedBy && tail && db.customers.some(function (c) {
+          return c.phoneTail === tail && c.tag === 'block';
+        })) blockedBy = tail;
+        if (blockedBy) return { ok: false, error: '该件命中入库拦截（' + blockedBy + '），请先到客户管理解除', blocked: true };
+      }
       var dup = db.parcels.find(function (p) {
         return p.status === 'in' && p.trackingNo.toUpperCase() === trackingNo.toUpperCase();
       });
       if (dup) return { ok: false, error: '该运单号已在库：' + dup.slot, parcel: dup };
-      var slot = str(input.slot).toUpperCase() || suggestSlot(input.zone || db.settings.zones[0]);
+      var slot = str(input.slot).toUpperCase() || suggestSlot(input.zone || s.zones[0]);
       if (!slotAvailable(slot)) return { ok: false, error: '货架位 ' + slot + ' 已被占用' };
       var wanted = str(input.pickupCode).toUpperCase();
       var code = (wanted && !codeTaken(wanted)) ? wanted : pickupCodeFor(slot, Date.now(), '');
-      if (db.settings.codeMode === 'off') code = '';
+      if (s.codeMode === 'off') code = '';
+      /* 单号前缀自动带出快递公司；手选的公司优先 */
+      var carrier = str(input.carrier);
+      var guessed = '';
+      if (!carrier || carrier === '其他') {
+        guessed = A && A.detectCarrier ? A.detectCarrier(trackingNo, s.carrierRules) : '';
+        if (guessed) carrier = guessed;
+      }
+      carrier = carrier || '其他';
+      var serial = Math.max(1, Number(db.counters && db.counters.serial) || s.serialStart || 1);
+      var serialNo = str(input.serialNo) || (A ? A.serialText(serial, 4) : String(serial));
+      var goodsNo = str(input.goodsNo).toUpperCase() || (A ? A.goodsNo(s.goodsNoMode, {
+        slot: slot, carrier: carrier, phoneTail: tail, serial: serial, date: Date.now()
+      }) : '');
+      if (db.counters) db.counters.serial = serial + 1;
+      /* 同客户多件：给界面一个「建议放一起」的提示，不强制改货位 */
+      var sameCustomer = tail ? db.parcels.filter(function (p) {
+        return p.status === 'in' && p.phoneTail === tail;
+      }).length : 0;
+      var customerId = '';
+      if (tail || str(input.recipient)) {
+        var merged = A && A.mergeCustomer ? A.mergeCustomer(db.customers, {
+          phoneTail: tail, phone: str(input.phoneFull), name: str(input.recipient),
+          tag: input.customerTag, note: input.customerNote, bump: true
+        }, isoNow()) : null;
+        if (merged) { db.customers = merged.list; customerId = merged.customer.id; }
+      }
       var p = {
         id: uid('p'),
         pickupCode: code,
         batchId: '',
         trackingNo: trackingNo,
-        carrier: str(input.carrier) || '其他',
+        carrier: carrier,
         recipient: str(input.recipient),
-        phoneTail: tail4(input.phoneTail),
+        phoneTail: tail,
+        phoneFull: str(input.phoneFull),
         slot: slot,
         note: str(input.note),
         count: Math.max(1, Number(input.count) || 1),
+        serialNo: serialNo,
+        goodsNo: goodsNo,
+        customerId: customerId,
+        outType: 'pickup',
+        refundReason: '',
         status: 'in',
         inAt: isoNow(),
         outAt: null,
         pickupBy: '',
-        operatorIn: str(input.operator) || actorName || db.settings.operator,
+        operatorIn: str(input.operator) || actorName || s.operator,
         operatorOut: '',
         photos: normalizePhotos(input.photos)
       };
       db.parcels.unshift(p);
-      log('in', '入库 ' + p.trackingNo + (p.pickupCode ? ' · 取件码 ' + p.pickupCode : '') +
+      log('in', '入库 ' + p.trackingNo + (p.serialNo ? ' · 编号 ' + p.serialNo : '') +
+        (p.goodsNo ? ' · 货号 ' + p.goodsNo : '') + (p.pickupCode ? ' · 取件码 ' + p.pickupCode : '') +
         ' → ' + p.slot + (p.recipient ? ' / ' + p.recipient : '') +
         (p.photos.length ? ' · 含 ' + p.photos.length + ' 张照片' : ''), p);
       save();
-      return { ok: true, parcel: p };
+      return { ok: true, parcel: p, carrierGuessed: guessed, sameCustomer: sameCustomer };
     }
 
     function updateParcel(id, patch) {
@@ -351,9 +452,12 @@
         if (code && codeTaken(code, id)) return { ok: false, error: '取件码 ' + code + ' 已被在库件占用' };
         p.pickupCode = code || (db.settings.codeMode === 'off' ? '' : pickupCodeFor(p.slot, Date.now(), id));
       }
-      ['carrier', 'recipient', 'note', 'pickupBy'].forEach(function (k) {
+      ['carrier', 'recipient', 'note', 'pickupBy', 'refundReason', 'phoneFull',
+        'customerId', 'serialNo'].forEach(function (k) {
         if (patch[k] !== undefined) p[k] = str(patch[k]);
       });
+      if (patch.goodsNo !== undefined) p.goodsNo = str(patch.goodsNo).toUpperCase();
+      if (patch.outType !== undefined) p.outType = patch.outType === 'refund' ? 'refund' : 'pickup';
       if (patch.phoneTail !== undefined) p.phoneTail = tail4(patch.phoneTail);
       if (patch.count !== undefined) p.count = Math.max(1, Number(patch.count) || 1);
       log('edit', '修改 ' + p.trackingNo + ' 的资料', p);
@@ -361,14 +465,16 @@
       return { ok: true, parcel: p };
     }
 
-    function removeParcel(id) {
+    function removeParcel(id, opts) {
       var idx = db.parcels.findIndex(function (x) { return x.id === id; });
       if (idx < 0) return { ok: false, error: '包裹不存在' };
       var p = db.parcels[idx];
+      var undo = !!(opts && opts.undo) && p.status === 'in';
       db.parcels.splice(idx, 1);
-      log('delete', '删除记录 ' + p.trackingNo, p);
+      log(undo ? 'undoIn' : 'delete', (undo ? '撤销入库 ' : '删除记录 ') + p.trackingNo +
+        (undo ? ' · 编号 ' + (p.serialNo || '—') : ''), p);
       save();
-      return { ok: true, parcel: p };
+      return { ok: true, parcel: p, undone: undo };
     }
 
     /* 一次取件 = 一个批次。多件即「合并出库」：共用一张凭证、可整批撤销 */
@@ -388,12 +494,16 @@
       var proof = normalizePhotos(photos).map(function (ph) { ph.kind = 'pickup'; return ph; });
       var batchId = nextBatchId();
       var merged = opts && opts.merge !== undefined ? !!opts.merge : picked.length > 1;
+      var outType = opts && opts.outType === 'refund' ? 'refund' : 'pickup';
+      var reason = str(opts && opts.refundReason);
       picked.forEach(function (p) {
         p.status = 'out';
         p.outAt = at;
         p.pickupBy = who;
         p.operatorOut = operator;
         p.batchId = batchId;
+        p.outType = outType;
+        p.refundReason = outType === 'refund' ? reason : '';
       });
       /* 同一批凭证挂到每一件（只共享引用，不重复上传文件），任一件都能翻到留证 */
       if (proof.length) picked.forEach(function (p) {
@@ -401,11 +511,14 @@
           return Object.assign({}, ph, { id: uid('ph') });
         }));
       });
-      log('out', (merged ? '合并出库 ' : '出库 ') + picked.length + ' 件 · 批次 ' + batchId +
+      log('out', (outType === 'refund' ? '退件出库 ' : (merged ? '合并出库 ' : '出库 ')) +
+        picked.length + ' 件 · 批次 ' + batchId +
+        (outType === 'refund' && reason ? ' · 原因 ' + reason : '') +
         '：' + picked.map(function (p) { return p.trackingNo; }).join('、') +
         (proof.length ? ' · 共用 ' + proof.length + ' 张取件凭证' : ''), picked[0], batchId);
       save();
-      return { ok: true, count: picked.length, parcels: picked, batchId: batchId, merged: merged };
+      return { ok: true, count: picked.length, parcels: picked, batchId: batchId,
+        merged: merged, outType: outType, refundReason: reason };
     }
 
     function attachPhoto(parcelId, photos) {
@@ -485,8 +598,8 @@
         if (filter.overdueMin !== undefined && filter.overdueMin !== '' && p.stayDays < Number(filter.overdueMin)) return false;
         if (filter.overdueLevel && p.overdueLevel !== filter.overdueLevel) return false;
         if (kw) {
-          var hay = [p.trackingNo, p.recipient, p.phoneTail, p.slot, p.carrier, p.note,
-            p.pickupCode, p.batchId].join(' ').toLowerCase();
+          var hay = [p.trackingNo, p.recipient, p.phoneTail, p.phoneFull, p.slot, p.carrier, p.note,
+            p.pickupCode, p.batchId, p.serialNo, p.goodsNo, p.refundReason].join(' ').toLowerCase();
           if (hay.indexOf(kw) === -1) return false;
         }
         return true;
@@ -515,6 +628,8 @@
         var slot = str(p.slot).toLowerCase();
         var s = 0;
         if (str(p.pickupCode).toLowerCase() === kw) s += 130;
+        if (str(p.goodsNo).toLowerCase() === kw) s += 128;
+        if (str(p.serialNo).toLowerCase() === kw) s += 126;
         if (p.batchId && p.batchId.toLowerCase() === kw) s += 110;
         if (digits.length >= 4 && tail === digits) s += 100;
         if (no === kw) s += 90;
@@ -542,11 +657,79 @@
       });
     }
 
+    /* ---------- 仿驿站助手：客户档案、批量处理、时间段统计 ---------- */
+    function customers(filter) {
+      filter = filter || {};
+      var kw = str(filter.keyword).toLowerCase();
+      return db.customers.filter(function (c) {
+        if (filter.tag && c.tag !== filter.tag) return false;
+        if (kw && [c.name, c.phone, c.phoneTail, c.note, c.key].join(' ').toLowerCase().indexOf(kw) === -1) return false;
+        return true;
+      }).map(function (c) {
+        return Object.assign({}, c, {
+          inStock: db.parcels.filter(function (p) {
+            return p.status === 'in' && p.phoneTail && p.phoneTail === c.phoneTail;
+          }).length
+        });
+      }).sort(function (a, b) { return String(b.updatedAt).localeCompare(String(a.updatedAt)); });
+    }
+    function saveCustomer(input) {
+      if (!A || !A.mergeCustomer) return { ok: false, error: '业务规则模块未加载' };
+      var res = A.mergeCustomer(db.customers, input || {}, isoNow());
+      db.customers = res.list;
+      log('edit', '维护客户资料 ' + (res.customer.name || res.customer.phoneTail));
+      save();
+      return { ok: true, customer: res.customer };
+    }
+    function removeCustomer(id) {
+      var idx = db.customers.findIndex(function (c) { return c.id === id; });
+      if (idx < 0) return { ok: false, error: '客户不存在' };
+      var c = db.customers.splice(idx, 1)[0];
+      log('edit', '删除客户资料 ' + (c.name || c.phoneTail));
+      save();
+      return { ok: true, customer: c };
+    }
+    /* 批量入库：逐行独立校验，一行失败不影响其它行；统一在末尾写一次盘 */
+    function batchAdd(rows) {
+      var out = { ok: true, added: [], failed: [] };
+      (Array.isArray(rows) ? rows : []).forEach(function (row) {
+        var r = addParcel(row || {});
+        if (r.ok) out.added.push(r.parcel);
+        else out.failed.push({ trackingNo: (row && row.trackingNo) || '', error: r.error });
+      });
+      log('import', '批量入库 ' + out.added.length + ' 件，失败 ' + out.failed.length + ' 件');
+      save();
+      return out;
+    }
+    /* 批量出库：把粘贴的取件码 / 单号 / 货号 / 编号 / 尾号映射到在库件 */
+    function findTokens(text) {
+      var tokens = A && A.parseTokens ? A.parseTokens(text) : [];
+      var res = A && A.matchTokens ? A.matchTokens(tokens, listParcels({ status: 'in' }))
+        : { matched: [], missing: tokens.slice(), ambiguous: [] };
+      return Object.assign({ tokens: tokens }, res);
+    }
+    function statsRange(preset, from, to) {
+      var range = { from: Number(from) || 0, to: Number(to) || Date.now() + 86400000 };
+      if (preset) {
+        range = A && A.rangePreset ? A.rangePreset(preset)
+          : { from: 0, to: Date.now() + 86400000 };
+      }
+      var data = A && A.summarize ? A.summarize(db.parcels, db.logs, range) : { details: [] };
+      return Object.assign({ from: range.from, to: range.to }, data);
+    }
+    function setSerialStart(n) {
+      var v = Math.max(1, Number(n) || 1);
+      db.counters.serial = v;
+      log('settings', '编号起始改为 ' + v);
+      save();
+      return v;
+    }
+
     function stats() {
       var now = Date.now();
       var today = dayKey();
       var s = db.settings;
-      var todayIn = 0, todayOut = 0, inStock = 0, warn = 0, danger = 0;
+      var todayIn = 0, todayOut = 0, todayRefund = 0, inStock = 0, warn = 0, danger = 0;
       var byCarrier = {}, byZone = {}, stayHours = [], overdueBuckets = { '0-2': 0, '3-6': 0, '7+': 0 };
       var last7 = [];
       for (var i = 6; i >= 0; i--) {
@@ -561,7 +744,7 @@
         if (dayIndex[inDay] !== undefined) last7[dayIndex[inDay]].in++;
         if (p.outAt) {
           var outDay = dayKey(p.outAt);
-          if (outDay === today) todayOut++;
+          if (outDay === today) { todayOut++; if (p.outType === 'refund') todayRefund++; }
           if (dayIndex[outDay] !== undefined) last7[dayIndex[outDay]].out++;
           var h = (new Date(p.outAt).getTime() - new Date(p.inAt).getTime()) / 3600000;
           if (h >= 0 && h < 24 * 365) stayHours.push(h);
@@ -579,7 +762,7 @@
       });
       var capacity = s.zones.length * s.shelvesPerZone * s.levelsPerShelf;
       return {
-        todayIn: todayIn, todayOut: todayOut, inStock: inStock,
+        todayIn: todayIn, todayOut: todayOut, todayRefund: todayRefund, inStock: inStock,
         warn: warn, danger: danger, capacity: capacity,
         avgStayHours: stayHours.length ? stayHours.reduce(function (a, b) { return a + b; }, 0) / stayHours.length : 0,
         last7: last7,
@@ -590,7 +773,7 @@
     }
 
     function exportJSON() {
-      var out = { app: 'express-station', version: 2, exportedAt: isoNow(), data: db };
+      var out = { app: 'express-station', version: 3, exportedAt: isoNow(), data: db };
       if (accountsProvider) {
         try { out.accounts = accountsProvider.snapshot(); } catch (e) { /* 账号库不可用时仍可导出台账 */ }
       }
@@ -615,6 +798,9 @@
         incoming.parcels.forEach(function (p) {
           if (!seen[p.id]) { db.parcels.push(p); seen[p.id] = true; added++; }
         });
+        var cSeen = {};
+        db.customers.forEach(function (c) { cSeen[c.id] = true; });
+        incoming.customers.forEach(function (c) { if (!cSeen[c.id]) db.customers.push(c); });
         var logSeen = {};
         db.logs.forEach(function (l) { logSeen[l.id] = true; });
         incoming.logs.forEach(function (l) { if (!logSeen[l.id]) db.logs.push(l); });
@@ -640,11 +826,21 @@
         db.logs.forEach(function (l) {
           rows.push([fmtTime(l.at), logTypeName(l.type), l.actor || '', l.summary, l.trackingNo, l.batchId]);
         });
+      } else if (kind === 'customers') {
+        rows.push(['客户', '手机', '后四位', '标记', '累计件数', '在库件数', '备注', '更新时间']);
+        customers().forEach(function (c) {
+          rows.push([c.name, c.phone, c.phoneTail, A && A.tagLabel ? A.tagLabel(c.tag) : c.tag,
+            c.total, c.inStock, c.note, fmtTime(c.updatedAt)]);
+        });
       } else {
-        rows.push(['取件码', '运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数', '状态', '入库时间', '出库时间', '取件人', '照片数', '出库批次', '备注']);
+        rows.push(['取件码', '编号', '货号', '运单号', '快递公司', '收件人', '手机后四位', '货架位', '件数',
+          '状态', '出库类型', '退件原因', '入库时间', '出库时间', '取件人', '照片数', '出库批次', '备注']);
         listParcels({ status: kind === 'instock' ? 'in' : undefined, sortBy: 'inAt' }).forEach(function (p) {
-          rows.push([p.pickupCode, p.trackingNo, p.carrier, p.recipient, p.phoneTail, p.slot, p.count,
-            p.status === 'in' ? '在库' : '已出库', fmtTime(p.inAt), p.outAt ? fmtTime(p.outAt) : '', p.pickupBy,
+          rows.push([p.pickupCode, p.serialNo, p.goodsNo, p.trackingNo, p.carrier, p.recipient,
+            p.phoneTail, p.slot, p.count,
+            p.status === 'in' ? '在库' : (p.outType === 'refund' ? '已退件' : '已出库'),
+            p.status === 'out' ? (p.outType === 'refund' ? '退件' : '取件') : '',
+            p.refundReason, fmtTime(p.inAt), p.outAt ? fmtTime(p.outAt) : '', p.pickupBy,
             (p.photos || []).length, p.batchId, p.note]);
         });
       }
@@ -657,7 +853,7 @@
       return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
     function logTypeName(t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', undoIn: '撤销入库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
     }
 
     function clearAll() {
@@ -754,6 +950,13 @@
       exportJSON: exportJSON,
       importJSON: importJSON,
       exportCSV: exportCSV,
+      customers: customers,
+      saveCustomer: saveCustomer,
+      removeCustomer: removeCustomer,
+      batchAdd: batchAdd,
+      findTokens: findTokens,
+      statsRange: statsRange,
+      setSerialStart: setSerialStart,
       fmtTime: fmtTime,
       logTypeName: logTypeName,
       daysSince: daysSince,
@@ -778,7 +981,7 @@
       return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
     },
     logTypeName: function (t) {
-      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
+      return { in: '入库', out: '出库', edit: '修改', delete: '删除', restore: '撤销出库', undoIn: '撤销入库', settings: '设置', import: '导入', clear: '清空', photo: '照片', login: '登录', logout: '退出', account: '账号' }[t] || t;
     }
   };
   global.StationStore = api;

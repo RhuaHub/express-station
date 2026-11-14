@@ -699,7 +699,7 @@ check('安卓壳：APK 已构建且资源路径正确', () => {
   assert.ok(buf.length > 50000, 'APK 体积异常：' + buf.length);
   const text = buf.toString('latin1');
   ['AndroidManifest.xml', 'classes.dex', 'resources.arsc', 'META-INF/', 'assets/index.html',
-    'assets/app.js', 'assets/store.js', 'assets/auth.js', 'assets/photos.js', 'assets/camera.js',
+    'assets/app.js', 'assets/assistant.js', 'assets/store.js', 'assets/auth.js', 'assets/photos.js', 'assets/camera.js',
     'assets/styles.css', 'assets/icons/icon-192.png'].forEach(function (needle) {
     assert.ok(text.indexOf(needle) >= 0, 'APK 内缺少 ' + needle);
   });
@@ -710,7 +710,7 @@ check('安卓壳：APK 已构建且资源路径正确', () => {
   listed.trim().split(/\s+/).forEach(function (f) {
     assert.ok(fs.existsSync(path.join(root, f)), '打包脚本同步了不存在的文件：' + f);
   });
-  ['index.html', 'styles.css', 'app.js', 'store.js', 'auth.js', 'photos.js', 'camera.js', 'sync.js'].forEach(function (f) {
+  ['index.html', 'styles.css', 'app.js', 'assistant.js', 'store.js', 'auth.js', 'photos.js', 'camera.js', 'sync.js'].forEach(function (f) {
     assert.ok(listed.indexOf(f) >= 0, '打包脚本漏掉网页文件：' + f);
   });
 });
@@ -1175,24 +1175,152 @@ check('入库条码：降级路径不阻塞入库，且不会覆盖已有单号'
   assert.ok(/运单号已填，未覆盖/.test(app), '应说明已有单号不会被覆盖');
 });
 
-check('1.0.8 版本清单：脚本、SW、安卓资源与 APK 同步', () => {
+check('1.1.0 版本清单：脚本、SW、安卓资源与 APK 同步', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  assert.ok(!/\?v=1\.0\.7/.test(html), '页面还有旧版本号，手机会一直跑旧 JS');
-  assert.ok((html.match(/\?v=1\.0\.8/g) || []).length >= 8, '资源版本号数量不足');
+  assert.ok(!/\?v=1\.0\.8/.test(html), '页面还有旧版本号，手机会一直跑旧 JS');
+  assert.ok((html.match(/\?v=1\.1\.0/g) || []).length >= 8, '资源版本号数量不足');
+  assert.ok(/<script src="assistant\.js\?v=1\.1\.0"><\/script>/.test(html), '业务规则模块未引入');
   const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
-  assert.ok(/BUILD\s*=\s*'1\.0\.8'/.test(sw) && /station-shell-v9/.test(sw));
-  assert.ok(/\.\/recognize\.js\?v=' \+ BUILD/.test(sw), 'SW 预缓存清单漏了识别模块');
+  assert.ok(/BUILD\s*=\s*'1\.1\.0'/.test(sw) && /station-shell-v10/.test(sw));
+  assert.ok(/\.\/assistant\.js\?v=' \+ BUILD/.test(sw), 'SW 预缓存清单漏了业务规则模块');
   const sh = fs.readFileSync(path.join(root, 'android/build-apk.sh'), 'utf8');
   const listed = (sh.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
-  assert.ok(listed.includes('recognize.js'), '打包脚本漏掉 recognize.js');
-  assert.ok(/--version-name 1\.0\.8/.test(sh) && /express-station-1\.0\.8\.apk/.test(sh));
+  assert.ok(listed.includes('assistant.js'), '打包脚本漏掉 assistant.js');
+  assert.ok(/--version-name 1\.1\.0/.test(sh) && /express-station-1\.1\.0\.apk/.test(sh));
   const mf = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
-  assert.ok(/versionCode="9"/.test(mf) && /versionName="1\.0\.8"/.test(mf));
+  assert.ok(/versionCode="10"/.test(mf) && /versionName="1\.1\.0"/.test(mf));
   const dist = path.join(root, 'android/dist');
-  const apks = fs.readdirSync(dist).filter(f => /^express-station-1\.0\.8\.apk$/.test(f));
-  assert.ok(apks.length, '1.0.8 APK 未构建');
+  const apks = fs.readdirSync(dist).filter(f => /^express-station-1\.1\.0\.apk$/.test(f));
+  assert.ok(apks.length, '1.1.0 APK 未构建');
   const bin = fs.readFileSync(path.join(dist, apks[0])).toString('latin1');
-  assert.ok(bin.includes('assets/recognize.js'), 'APK 里没有打包识别模块');
+  assert.ok(bin.includes('assets/assistant.js'), 'APK 里没有打包业务规则模块');
+});
+
+console.log('仿驿站助手功能（不含短信 / 电话通知）');
+const AST = require('../assistant.js');
+
+check('业务规则：公司前缀识别、编号与货号生成', () => {
+  assert.strictEqual(AST.detectCarrier('YT100001', AST.DEFAULT_RULES), '圆通');
+  assert.strictEqual(AST.detectCarrier('7788123456', '申通=77,圆通=YT'), '申通');
+  assert.strictEqual(AST.detectCarrier('xyz', AST.DEFAULT_RULES), '');
+  assert.strictEqual(AST.goodsNo('slot', { slot: 'A-01-2' }), 'A012');
+  assert.strictEqual(AST.goodsNo('date', {
+    carrier: '圆通', serial: 7, date: new Date(2026, 10, 14).getTime()
+  }), '1114YT007');
+  assert.strictEqual(AST.goodsNo('phone', { phoneTail: '3456', serial: 7 }), '3456-007');
+  assert.strictEqual(AST.goodsNo('off', { slot: 'A-01-1' }), '');
+  assert.strictEqual(AST.serialText(7, 4), '0007');
+});
+
+check('业务规则：批量文本解析、码匹配、拦截与客户归并', () => {
+  const b = AST.parseBatch('YT100001\n7788123456,申通,张三,3456,易碎\n# 注释\nYT100001');
+  assert.strictEqual(b.rows.length, 2);
+  assert.strictEqual(b.rows[1].carrier, '申通');
+  assert.strictEqual(b.rows[1].phoneTail, '3456');
+  assert.ok(b.errors.some(e => /重复/.test(e)));
+  assert.deepStrictEqual(AST.parseTokens('A012\nYT100001\nA012'), ['A012', 'YT100001']);
+  const m = AST.matchTokens(['A012', 'NOPE'], [
+    { pickupCode: 'A012', trackingNo: 'YT1', goodsNo: 'A012', serialNo: '0001', phoneTail: '3456' }
+  ]);
+  assert.strictEqual(m.matched.length, 1);
+  assert.deepStrictEqual(m.missing, ['NOPE']);
+  assert.strictEqual(AST.isBlocked('YT999,3456', 'YT999123', '1111'), 'YT999');
+  assert.strictEqual(AST.isBlocked('YT999,3456', 'ZZ1111', '3456'), '3456');
+  assert.strictEqual(AST.isBlocked('', 'YT123456', '3456'), '');
+  const c1 = AST.mergeCustomer([], { phoneTail: '3456', name: '张三', phone: '13800123456', bump: true }, 't1');
+  assert.strictEqual(c1.customer.total, 1);
+  const c2 = AST.mergeCustomer(c1.list, { phoneTail: '3456', name: '张三', tag: 'block', bump: true }, 't2');
+  assert.strictEqual(c2.list.length, 1, '同尾号应归并到同一条客户档案');
+  assert.strictEqual(c2.customer.tag, 'block');
+  assert.strictEqual(c2.customer.total, 2);
+});
+
+check('业务规则：时间段汇总与标签转义', () => {
+  const at = new Date().toISOString();
+  const s = AST.summarize([
+    { inAt: at, outAt: at, status: 'out', outType: 'refund', refundReason: '拒收',
+      trackingNo: 'YT1', carrier: '圆通', operatorIn: 'a', operatorOut: 'b', goodsNo: 'A012', note: '' }
+  ], [{ at: at, type: 'undoIn' }], { from: 0, to: Date.now() + 86400000 });
+  assert.strictEqual(s.refundCount, 1);
+  assert.strictEqual(s.pickupCount, 0);
+  assert.strictEqual(s.undoInCount, 1);
+  assert.strictEqual(s.details.length, 2);
+  const h = AST.labelHTML({ trackingNo: '<img src=x>', goodsNo: 'A012' }, { stationName: '<b>站</b>' });
+  assert.ok(!h.includes('<img'), '标签必须转义运单号');
+  assert.ok(h.includes('&lt;b&gt;'), '标签必须转义驿站名');
+});
+
+check('数据层：公司自动识别、编号货号、客户归档与入库拦截', () => {
+  const s3 = api.createStore(api.memoryStorage());
+  s3.updateSettings({ blockEnabled: true, blocked: 'BAD999', goodsNoMode: 'date' });
+  const a = s3.addParcel({ trackingNo: 'YT200001', phoneTail: '13800123456', recipient: '张三' }).parcel;
+  assert.strictEqual(a.carrier, '圆通');
+  assert.ok(a.serialNo && a.goodsNo, '新件应带连续编号与货号');
+  assert.strictEqual(s3.customers().length, 1, '入库应自动归档客户');
+  const blocked = s3.addParcel({ trackingNo: 'BAD9990001' });
+  assert.strictEqual(blocked.ok, false);
+  assert.ok(/拦截/.test(blocked.error));
+  const same = s3.addParcel({ trackingNo: 'YT200002', phoneTail: '3456' });
+  assert.strictEqual(same.sameCustomer, 1, '应提示同尾号已有在库件');
+  s3.saveCustomer({ phoneTail: '3456', name: '张三', tag: 'block' });
+  assert.strictEqual(s3.addParcel({ trackingNo: 'ZZ888888', phoneTail: '3456' }).ok, false,
+    '黑名单客户应被拦截');
+  globalThis.__s3 = s3;
+});
+
+check('数据层：退件出库、撤销入库、时间段统计与备份迁移', () => {
+  const s3 = globalThis.__s3;
+  const rows = s3.listParcels({ status: 'in' });
+  const r = s3.checkout([rows[0].id], '快递员', [], { outType: 'refund', refundReason: '拒收' });
+  assert.strictEqual(r.outType, 'refund');
+  assert.strictEqual(s3.getDB().parcels.find(x => x.id === rows[0].id).refundReason, '拒收');
+  assert.ok(s3.exportCSV('all').includes('退件原因') && s3.exportCSV('all').includes('拒收'));
+  assert.strictEqual(s3.removeParcel(rows[1].id, { undo: true }).undone, true);
+  assert.ok(s3.listLogs({ type: 'undoIn' }).length > 0);
+  const st = s3.statsRange('today');
+  assert.ok(st.refundCount >= 1 && Array.isArray(st.details));
+  const text = s3.exportJSON();
+  const fresh = api.createStore(api.memoryStorage());
+  fresh.importJSON(text, 'replace');
+  assert.strictEqual(fresh.customers().length, s3.customers().length, '备份要带上客户档案');
+  assert.ok(fresh.getDB().counters.serial >= 2, '备份要带上编号计数');
+  delete globalThis.__s3;
+});
+
+check('数据层：批量入库逐行校验、按货号批量出库', () => {
+  const s4 = api.createStore(api.memoryStorage());
+  const parsed = AST.parseBatch('YT300001\nYT300002,圆通,李四,5678\nYT300001');
+  const r = s4.batchAdd(parsed.rows);
+  assert.strictEqual(r.added.length, 2);
+  assert.strictEqual(r.failed.length, 0);
+  const first = r.added[0];
+  const m = s4.findTokens(first.goodsNo + '\n' + first.pickupCode + '\nNO-SUCH');
+  assert.strictEqual(m.matched.length, 1);
+  assert.deepStrictEqual(m.missing, ['NO-SUCH']);
+  const out = s4.checkout(m.matched.map(x => x.parcel.id), '批量', [], { merge: true });
+  assert.strictEqual(out.ok, true);
+  assert.strictEqual(s4.listParcels({ status: 'in' }).length, 1);
+});
+
+check('页面：批量处理、客户管理、扫码连出、退件与新设置项齐全', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  ['view-batch', 'view-customers', 'batchInText', 'batchOutText', 'scanOutInput', 'outType',
+    'refundReason', 'cusBody', 'anaRange', 'setGoodsMode', 'setCarrierRules', 'setBlocked',
+    'setVoiceEnabled', 'setScanAutoOut', 'btnSerialStart'].forEach(function (id) {
+    assert.ok(html.includes('id="' + id + '"'), '页面缺少 ' + id);
+  });
+  const js = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/store\.batchAdd\(/.test(js) && /store\.findTokens\(/.test(js));
+  assert.ok(/outType: outType/.test(js), '出库未把类型传给数据层');
+  assert.ok(/\.tag === 'refund'|outType === 'refund'/.test(js), '退件状态未在界面区分');
+});
+
+check('排除通知：业务代码里没有短信 / 电话 / 群呼能力', () => {
+  ['app.js', 'store.js', 'assistant.js', 'index.html'].forEach(function (f) {
+    const t = fs.readFileSync(path.join(root, f), 'utf8');
+    assert.ok(!/SEND_SMS|CALL_PHONE|sendSms|dial\(|tel:|sms:/.test(t), f + ' 里出现了通知 / 拨号代码');
+    assert.ok(!/群呼|语音通知模板|短信模板/.test(t), f + ' 里出现了通知能力');
+  });
 });
 
 (async () => {
