@@ -1,862 +1,509 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#B8860B">
-<title>快递驿站 · 入库出库管理</title>
-<link rel="manifest" href="manifest.webmanifest">
-<meta name="description" content="本地优先的快递驿站入库、出库、查件与台账系统，支持取件码、合并出库与拍照留证。">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="快递驿站">
-<meta name="mobile-web-app-capable" content="yes">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=1.1.0">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#b8860b">
+<title>驿站助手 · 入库出库查件统计</title>
+<link rel="manifest" href="manifest.webmanifest?v=2.0.0">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.0">
+<link rel="stylesheet" href="styles.css?v=2.0.0">
 </head>
-<body class="auth-locked">
+<body>
 
-<svg class="svg-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-  <symbol id="i-dash" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
-  <symbol id="i-in" viewBox="0 0 24 24"><path d="M12 3v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
-  <symbol id="i-out" viewBox="0 0 24 24"><path d="M12 15V4"/><path d="m7.5 8.5 4.5-4.5 4.5 4.5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
-  <symbol id="i-box" viewBox="0 0 24 24"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5"/><path d="M12 12v9"/></symbol>
-  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M2 20h20"/></symbol>
-  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></symbol>
-  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></symbol>
-  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="m4 12 5.5 5.5L20 7"/></symbol>
-  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10.5 5 5 5-5"/><path d="M4 20h16"/></symbol>
-  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4"/><path d="m7 8.5 5-5 5 5"/><path d="M4 20h16"/></symbol>
-  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 6h16M9 6V4h6v2M6 6l1 15h10l1-15"/><path d="M10 10v7M14 10v7"/></symbol>
-  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></symbol>
-  <symbol id="i-close" viewBox="0 0 24 24"><path d="M5 5l14 14M19 5 5 19"/></symbol>
-  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z"/><path d="M12 9v5M12 17.5h.01"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 4v7h-7"/></symbol>
-  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .6-8A6 6 0 0 0 6 9.5 4.3 4.3 0 0 0 7 18z"/></symbol>
-  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><circle cx="12" cy="13" r="3.5"/></symbol>
-  <symbol id="i-find" viewBox="0 0 24 24"><path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z"/><path d="M3 7.5 12 12l9-4.5"/><path d="M12 12v9"/><circle cx="17.5" cy="16.5" r="3.5"/><path d="m20.2 19.3 2.3 2.3"/></symbol>
-  <symbol id="i-shutter" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.2"/></symbol>
-  <symbol id="i-switch-cam" viewBox="0 0 24 24"><path d="M3 8h4l1.5-2h7L17 8h4v11H3z"/><path d="M9 12.5a3.5 3.5 0 0 0 6 2.2"/><path d="M15 11.5a3.5 3.5 0 0 0-6-2.2"/><path d="m14 9.5 1 1.8 1.8-1M10 14.5l-1-1.8-1.8 1"/></symbol>
-  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
-  <symbol id="i-ticket" viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M12 6v2M12 11v2M12 16v2"/></symbol>
-  <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 15h12v6H6z"/></symbol>
-  <symbol id="i-merge" viewBox="0 0 24 24"><path d="M4 5h5a4 4 0 0 1 4 4v6a4 4 0 0 0 4 4h3"/><path d="M4 19h5a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4h3"/><path d="m17 16 3 3-3 3"/></symbol>
-  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
-  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M17.5 14.5a6.5 6.5 0 0 1 4 5.5"/></symbol>
-  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2"/></symbol>
-  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M15 8l4 4-4 4M19 12H9"/></symbol>
-</svg>
-
-<!-- 登录 / 注册门：未登录时业务界面整体隐藏 -->
-<div id="authGate" class="auth-gate">
+<!-- ============ 登录门 ============ -->
+<div class="auth-gate" id="authGate">
   <div class="auth-panel">
-    <div class="auth-brand">
-      <div class="auth-mark"><svg class="ic"><use href="#i-box"/></svg></div>
-      <div><strong id="authStationName">我的快递驿站</strong><span>查件 · 入库 · 出库</span></div>
+    <div class="auth-brand"><div class="brand-mark">驿</div><div><h1>驿站助手</h1><p>本地优先 · 入库 / 出库 / 查件 / 统计</p></div></div>
+
+    <div id="authSetup" hidden>
+      <div class="auth-head"><h2>初始化本站</h2><p>创建站长账号。子账号只能由站长在后台添加，不开放注册。</p></div>
+      <label>站长账号<input class="input" id="setupName" autocomplete="username" placeholder="例如 joey"></label>
+      <label>密码（至少 6 位）<input class="input" id="setupPw" type="password" autocomplete="new-password"></label>
+      <label>确认密码<input class="input" id="setupPw2" type="password" autocomplete="new-password"></label>
+      <button class="btn btn-primary btn-block" id="btnSetup">创建站长账号</button>
+      <div class="auth-links"><button type="button" class="link" id="btnSetupImport">从备份导入（已有数据）</button></div>
     </div>
 
-    <div id="authSetup" class="auth-pane" hidden>
-      <div class="auth-head"><h2>站点初始化</h2><p>只有<b>首次部署</b>（本机还没有任何账号）时才会出现这一步。创建站长账号后，此入口立即失效，之后所有账号都由站长在「账号管理」里添加。</p></div>
-      <form id="formRegister" autocomplete="off">
-        <div class="field"><label for="regName">你的姓名 / 称呼</label><input id="regName" class="input" placeholder="如：李站长" required autocomplete="off"></div>
-        <div class="field"><label for="regUser">登录账号</label><input id="regUser" class="input" placeholder="2–32 位字母、数字、_ . -" required autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>
-        <div class="field-row">
-          <div class="field"><label for="regPass">密码（至少 6 位）</label><input id="regPass" class="input" type="password" required autocomplete="new-password"></div>
-          <div class="field"><label for="regConfirm">确认密码</label><input id="regConfirm" class="input" type="password" required autocomplete="new-password"></div>
-        </div>
-        <label class="switch"><input type="checkbox" id="regRemember" checked><span>在这台设备上记住登录（7 天）</span></label>
-        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-lock"/></svg>创建站长账号并进入</button>
-      </form>
+    <div id="authLogin" hidden>
+      <div class="auth-head"><h2 id="authLoginTitle">登录</h2><p>数据只存在本机浏览器，换设备请用备份导入。</p></div>
+      <label>账号<input class="input" id="loginName" autocomplete="username"></label>
+      <label>密码<input class="input" id="loginPw" type="password" autocomplete="current-password"></label>
+      <button class="btn btn-primary btn-block" id="btnLogin">登录</button>
+      <div class="auth-links"><button type="button" class="link" id="btnDiag">自检</button><button type="button" class="link" id="btnClearLock">清除登录限制</button></div>
     </div>
 
-    <div id="authLogin" class="auth-pane">
-      <div class="auth-head"><h2>登录驿站</h2><p>请用站长或店员账号登录，所有操作都会记下操作人。</p></div>
-      <div id="authBootHint" class="auth-tip" hidden>
-        <b>这个网址下还没有账号</b>
-        <span>账号库只存在当前浏览器的 localStorage 里，并且<b>按网址隔离</b>：换个域名、换个浏览器、换了无痕模式，都会看到「0 个账号」。两种情况二选一 —— 老站已有数据就<b>导入备份</b>；第一次在这台设备上部署就直接<b>初始化</b>。</span>
-        <div class="auth-tip-actions">
-          <button class="btn btn-primary btn-sm" id="btnGoSetup" type="button">初始化本站（创建站长账号）</button>
-          <button class="btn btn-outline btn-sm" id="btnBootImport" type="button">从备份导入</button>
-        </div>
-        <span class="auth-tip-fine">初始化只能做一次；建好站长账号后，这个按钮和注册入口都会永久消失，之后新账号只能在「账号管理」里添加。</span>
-      </div>
-      <div id="authStorageHint" class="auth-tip" hidden>
-        <b>这个浏览器不允许保存数据</b>
-        <span id="authStorageWhy">账号库读不到，也存不下来。常见原因：<b>Safari 开了「阻止所有 Cookie」</b>、<b>微信/QQ/微博的内置浏览器</b>、无痕模式、存储已满。请点上面的地址栏复制网址，用<b>系统浏览器</b>（Safari / Chrome）重新打开；Safari 需到「设置 → Safari → 阻止所有 Cookie」关掉。</span>
-      </div>
-      <form id="formLogin" autocomplete="off">
-        <div class="field"><label for="loginUser">登录账号</label><input id="loginUser" class="input" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next"></div>
-        <div class="field"><label for="loginPass">密码</label><input id="loginPass" class="input" type="password" required autocomplete="current-password" enterkeyhint="go"></div>
-        <label class="switch"><input type="checkbox" id="loginRemember"><span>在这台设备上记住登录（7 天）</span></label>
-        <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-user"/></svg>登录</button>
-      </form>
-      <div class="auth-links">
-        <button class="link" id="btnAuthImport">已有备份？导入恢复账号与数据</button>
-      </div>
-      <p class="auth-tip">本站<b>不开放自助注册</b>。需要新账号请找站长，在「账号管理 → 新增子账号」里开通。</p>
+    <div id="authBootHint" class="auth-note" hidden>
+      本机还没有账号。<button type="button" class="btn btn-primary btn-sm" id="btnGoSetup">初始化本站（创建站长账号）</button>
+      <button type="button" class="btn btn-outline btn-sm" id="btnBootImport">从备份导入</button>
     </div>
-
-    <div id="authMsg" class="auth-msg" hidden></div>
-    <div class="auth-links" style="margin-top:10px">
-      <button class="link" id="btnAuthDiag" type="button">登录不了？点这里自检</button>
-    </div>
-    <pre id="authDiag" class="auth-diag" hidden></pre>
-    <div class="auth-note"><svg class="ic"><use href="#i-warn"/></svg><span>这是纯静态站点，账号保存在本机浏览器，密码只存加盐哈希、不上传服务器。连续输错密码会临时锁定本设备。换设备请用 JSON 全量备份或 GitHub 私有仓库同步迁移账号库；账号库丢失又无备份时，只能重新初始化站点。</span></div>
+    <div class="auth-note" id="authStorageHint" hidden>浏览器禁用了本地存储，本次会话的数据只保存在内存里，刷新会丢失。</div>
+    <div class="auth-msg" id="authMsg" role="status"></div>
+    <pre class="diag" id="authDiag" hidden></pre>
+    <input type="file" id="authImportFile" accept="application/json,.json" hidden>
+    <div class="auth-foot">2.0.0 · 重建版 · 无短信 / 电话 / 群呼能力</div>
   </div>
 </div>
-<input type="file" id="authImportFile" accept="application/json,.json" hidden>
-<input type="file" id="acImportFile" accept="application/json,.json" hidden>
 
-<div class="app">
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark"><svg class="ic"><use href="#i-box"/></svg></div>
-      <div class="brand-text">
-        <strong id="brandName">我的快递驿站</strong>
-        <span>查件 · 入库 · 出库</span>
-      </div>
+<!-- ============ 主应用 ============ -->
+<div class="app" id="app" hidden>
+  <header class="topbar">
+    <button class="menu-btn" id="btnMenu" aria-label="菜单">☰</button>
+    <div class="top-title"><b id="topStation">快递驿站</b><span id="topSub">工作台</span></div>
+    <div class="top-right">
+      <span class="chip" id="topUser">—</span>
+      <button class="icon-btn" id="btnLock" title="锁屏">🔒</button>
+      <button class="icon-btn" id="btnLogout" title="退出">⏻</button>
     </div>
-    <nav class="nav" id="nav">
-      <button class="nav-item active" data-view="dash"><svg class="ic"><use href="#i-dash"/></svg><span>工作台</span></button>
-      <button class="nav-item" data-view="lookup"><svg class="ic"><use href="#i-find"/></svg><span>查件</span></button>
-      <button class="nav-item" data-view="inbound"><svg class="ic"><use href="#i-in"/></svg><span>入库登记</span></button>
-      <button class="nav-item" data-view="outbound"><svg class="ic"><use href="#i-out"/></svg><span>取件出库</span></button>
-      <button class="nav-item" data-view="inventory"><svg class="ic"><use href="#i-box"/></svg><span>在库台账</span></button>
-      <button class="nav-item" data-view="analytics"><svg class="ic"><use href="#i-chart"/></svg><span>统计看板</span></button>
-      <button class="nav-item" data-view="logs"><svg class="ic"><use href="#i-list"/></svg><span>操作流水</span></button>
-      <button class="nav-item" data-view="batch"><svg class="ic"><use href="#i-merge"/></svg><span>批量处理</span></button>
-      <button class="nav-item" data-perm="manage" data-view="customers"><svg class="ic"><use href="#i-users"/></svg><span>客户管理</span></button>
-      <button class="nav-item" data-perm="owner" data-view="accounts"><svg class="ic"><use href="#i-users"/></svg><span>账号管理</span></button>
-      <button class="nav-item" data-perm="manage" data-view="settings"><svg class="ic"><use href="#i-gear"/></svg><span>设置与数据</span></button>
+  </header>
+
+  <aside class="sidebar" id="sidebar">
+    <nav>
+      <div class="nav-group">日常</div>
+      <button class="nav-item" data-view="dash"><i>▦</i><span>工作台</span></button>
+      <button class="nav-item" data-perm="inbound" data-view="inbound"><i>▤</i><span>入库</span></button>
+      <button class="nav-item" data-perm="outbound" data-view="outbound"><i>↥</i><span>出库</span></button>
+      <button class="nav-item" data-perm="query" data-view="query"><i>⌕</i><span>查件</span></button>
+      <button class="nav-item" data-perm="inventory" data-view="inventory"><i>▣</i><span>库存台账</span></button>
+      <button class="nav-item" data-perm="collections" data-view="collections"><i>✉</i><span>收件任务</span></button>
+      <div class="nav-group">管理</div>
+      <button class="nav-item" data-perm="customers" data-view="customers"><i>☻</i><span>客户管理</span></button>
+      <button class="nav-item" data-perm="stats" data-view="stats"><i>◫</i><span>业务统计</span></button>
+      <button class="nav-item" data-perm="print" data-view="print"><i>⎙</i><span>货号标签</span></button>
+      <button class="nav-item" data-perm="sync" data-view="sync"><i>⇅</i><span>同步记录</span></button>
+      <div class="nav-group">系统</div>
+      <button class="nav-item" data-perm="settings" data-view="settings"><i>⚙</i><span>设置</span></button>
+      <button class="nav-item" data-perm="accounts" data-view="accounts"><i>♙</i><span>子账号</span></button>
+      <button class="nav-item" data-perm="logs" data-view="logs"><i>≡</i><span>操作流水</span></button>
+      <button class="nav-item" data-view="help"><i>?</i><span>帮助 / 关于</span></button>
     </nav>
-    <div class="side-foot">
-      <div class="store-badge"><span class="dot"></span><span id="storeMode">数据存于本机浏览器</span></div>
-      <div class="side-tip">扫码枪可直接录入，回车即提交</div>
-    </div>
+    <div class="side-foot">数据存本机 · 记得定期备份</div>
   </aside>
+  <div class="side-shade" id="sideShade"></div>
 
-  <div class="main">
-    <header class="topbar">
-      <div class="topbar-title">
-        <h1 id="pageTitle">工作台</h1>
-        <p id="pageSub">今天也要把包裹安排明白</p>
+  <main class="main" id="main">
+
+    <!-- 工作台 -->
+    <section class="view" id="view-dash">
+      <div class="page-head"><div><h2>工作台</h2><p id="dashDate"></p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" data-go="inbound">快速入库</button>
+          <button class="btn btn-primary btn-sm" data-go="outbound">取件出库</button></div></div>
+      <div class="kpi-grid" id="dashKpi"></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>在库天数分布</h3><span class="muted" id="dashStockTotal"></span></div><div id="dashStock"></div></div>
+        <div class="card"><div class="card-head"><h3>最近操作</h3><button class="link" data-go="logs">全部流水</button></div><div id="dashLogs" class="mini-logs"></div></div>
       </div>
-      <div class="topbar-right">
-        <div class="today" id="todayText"></div>
-        <button class="btn btn-ghost btn-sm" data-perm="write" id="btnQuickIn"><svg class="ic"><use href="#i-plus"/></svg>快速入库</button>
-        <button class="user-chip" id="btnUserMenu" title="当前登录账号"><svg class="ic"><use href="#i-user"/></svg><span id="userChip">未登录</span></button>
-        <button class="btn btn-ghost btn-sm" id="btnLogout" title="退出登录"><svg class="ic"><use href="#i-logout"/></svg>退出</button>
+      <div class="card"><div class="card-head"><h3>快捷操作</h3></div><div class="quick-grid" id="dashQuick"></div></div>
+    </section>
+
+    <!-- 入库 -->
+    <section class="view" id="view-inbound" hidden>
+      <div class="page-head"><div><h2>入库</h2><p>手动 / 极速 / 批量 / 扫码枪，四种录法</p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" id="btnUndoLastIn">撤销本次入库</button>
+          <button class="btn btn-ghost btn-sm" id="btnInBatchNum">批量改编号</button></div></div>
+      <div class="tabs" id="inTabs">
+        <button class="tab on" data-tab="manual">手动入库</button>
+        <button class="tab" data-tab="quick">极速入库</button>
+        <button class="tab" data-tab="batch">批量导入</button>
+        <button class="tab" data-tab="scan">扫码枪连录</button>
       </div>
-    </header>
 
-    <div class="content">
+      <div class="tab-pane" id="inPane-manual">
+        <form id="formIn" class="card">
+          <div class="form-grid">
+            <label class="wide">运单号 / 条码 <span class="req">*</span>
+              <div class="input-row"><input class="input mono" id="inNo" required autocomplete="off" placeholder="扫码或手输，例如 YT9000012345">
+                <button type="button" class="btn btn-outline btn-sm" id="btnInScan">拍照识别</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btnInVoice">语音</button></div></label>
+            <label>快递公司<select class="input" id="inCarrier"></select></label>
+            <label>收件人<input class="input" id="inRecipient" autocomplete="off"></label>
+            <label>联系电话 / 后四位<input class="input mono" id="inPhone" inputmode="tel" autocomplete="off" placeholder="完整号码或后四位"></label>
+            <label>货架号<select class="input" id="inSlot"></select></label>
+            <label>编号<input class="input mono" id="inSerial" placeholder="留空自动生成"></label>
+            <label>货号<input class="input mono" id="inGoods" placeholder="留空自动生成"></label>
+            <label>快递标签<select class="input" id="inLabel"></select></label>
+            <label>件数<input class="input" id="inCount" type="number" min="1" value="1"></label>
+            <label class="wide">备注<input class="input" id="inNote" maxlength="120" placeholder="选填，最多 120 字"></label>
+          </div>
+          <div class="photo-picker">
+            <input type="file" id="inPhotos" accept="image/*" multiple hidden>
+            <button type="button" class="btn btn-outline btn-sm" id="btnInCamera">打开摄像头</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnInAlbum">从相册选图</button>
+            <span class="muted" id="inPhotoState"></span>
+          </div>
+          <div class="ocr-state" id="inOcrState" hidden></div>
+          <div class="photo-preview" id="inPhotoPreview"></div>
+          <div class="form-foot"><span class="muted" id="inCarrierHint"></span>
+            <button type="submit" class="btn btn-primary" data-perm="inbound">确认入库（Enter）</button></div>
+        </form>
+        <div class="card" id="lastInCard" hidden><div class="card-head"><h3>本次入库</h3></div><div id="lastIn"></div></div>
+      </div>
 
-      <!-- 工作台 -->
-      <section class="view active" id="view-dash">
-        <div class="hero">
-          <div>
-            <div class="hero-kicker">今日概览</div>
-            <h2 id="heroTitle">包裹流转一目了然</h2>
-            <p id="heroDesc">入库、取件、滞留件都在这里汇总。</p>
-          </div>
-          <div class="hero-actions">
-            <button class="btn btn-primary" data-goto="lookup"><svg class="ic"><use href="#i-find"/></svg>查件</button>
-            <button class="btn btn-outline" data-goto="inbound"><svg class="ic"><use href="#i-in"/></svg>登记入库</button>
-            <button class="btn btn-outline" data-goto="outbound"><svg class="ic"><use href="#i-out"/></svg>办理取件</button>
-          </div>
-        </div>
-        <div class="card quick-lookup">
-          <div class="ql-label"><svg class="ic"><use href="#i-find"/></svg><span>快速查件</span></div>
-          <div class="ql-row">
-            <input id="quickLookup" class="input" placeholder="取件码 / 手机后四位 / 运单号 / 收件人，扫码枪可直接扫" autocomplete="off">
-            <button class="btn btn-primary btn-sm" id="btnQuickLookup">查件</button>
-          </div>
-        </div>
-        <div class="kpi-grid" id="dashKpi"></div>
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>近 7 日流转</h3><span class="muted" id="trendHint">入库 / 出库</span></div>
-            <div id="dashTrend" class="chart-box"></div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h3>滞留提醒</h3><button class="link" data-goto="inventory">查看全部</button></div>
-            <div id="dashOverdue" class="list-box"></div>
-          </div>
-        </div>
+      <div class="tab-pane" id="inPane-quick" hidden>
         <div class="card">
-          <div class="card-head"><h3>最近入库</h3><button class="link" data-goto="inbound">继续录入</button></div>
-          <div id="dashRecent" class="list-box"></div>
+          <div class="card-head"><h3>极速入库</h3><span class="muted">扫单号 → 回车自动入库，只补手机尾号</span></div>
+          <div class="input-row"><input class="input mono input-lg" id="quickNo" placeholder="扫描快递条码后回车" autocomplete="off">
+            <input class="input mono input-lg" id="quickTail" inputmode="numeric" maxlength="4" placeholder="尾号（选填）" autocomplete="off"></div>
+          <div class="quick-hint" id="quickHint">连续扫描无需点按钮；未识别到号码的件可在下面「补录号码」。</div>
+          <div class="row-actions"><button class="btn btn-outline btn-sm" id="btnQuickSupplement">补录号码</button>
+            <button class="btn btn-ghost btn-sm" id="btnQuickEnd">结束入库</button>
+            <span class="muted" id="quickCount">本次 0 件</span></div>
+          <div id="quickList" class="strip-list"></div>
         </div>
-      </section>
+      </div>
 
-      <!-- 查件 -->
-      <section class="view" id="view-lookup">
-        <div class="card search-card">
-          <div class="lookup-head">
-            <div>
-              <h3>查件</h3>
-              <p class="muted">报尾号或扫单号，立刻看到货架位与取件状态</p>
-            </div>
-            <span class="tag tag-out" id="lookupStock">在库 0 件</span>
-          </div>
-          <div class="search-wrap">
-            <svg class="ic search-ic"><use href="#i-search"/></svg>
-            <input id="lookupKey" class="input input-xl" placeholder="取件码 / 手机后四位 / 运单号 / 收件人 / 货架位" autocomplete="off">
-            <button class="btn btn-primary btn-sm" id="btnLookup">查件</button>
-            <button class="btn btn-ghost btn-sm" id="lookupClear">清空</button>
-          </div>
-          <div class="search-meta">
-            <span id="lookupMeta" class="muted">在库与已出库记录都能查，扫码枪扫完自动出结果</span>
-            <div class="btn-row">
-              <span class="muted">范围</span>
-              <select id="lookupScope" class="input input-sm">
-                <option value="">全部记录</option>
-                <option value="in">仅看在库</option>
-                <option value="out">仅看已出库</option>
-              </select>
-            </div>
-          </div>
-        </div>
-        <div id="lookupSummary" class="lookup-summary" hidden></div>
-        <div id="lookupResults" class="lookup-grid"></div>
-      </section>
-
-      <!-- 入库 -->
-      <section class="view" id="view-inbound">
-        <div class="two-col wide-left">
-          <div class="card">
-            <div class="card-head"><h3>登记新包裹</h3><span class="muted">回车提交 · 连续录入</span></div>
-            <form id="formIn" data-perm="write" autocomplete="off">
-              <div class="field">
-                <label for="inTracking">运单号 <em>*</em></label>
-                <input id="inTracking" name="trackingNo" class="input input-lg" placeholder="扫码或输入运单号" required autocomplete="off">
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label for="inCarrier">快递公司</label>
-                  <select id="inCarrier" name="carrier" class="input"></select>
-                </div>
-                <div class="field">
-                  <label for="inCount">件数</label>
-                  <input id="inCount" name="count" class="input" type="number" min="1" max="99" value="1">
-                </div>
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label for="inRecipient">收件人</label>
-                  <input id="inRecipient" name="recipient" class="input" placeholder="选填" autocomplete="off">
-                </div>
-                <div class="field">
-                  <label for="inPhone">手机后四位</label>
-                  <input id="inPhone" name="phoneTail" class="input" inputmode="numeric" maxlength="11" placeholder="取件核对用" autocomplete="off">
-                </div>
-              </div>
-              <div class="field-row slot-row">
-                <div class="field">
-                  <label for="inZone">货架区</label>
-                  <select id="inZone" name="zone" class="input"></select>
-                </div>
-                <div class="field">
-                  <label for="inSlot">货架位</label>
-                  <div class="input-with-btn">
-                    <input id="inSlot" name="slot" class="input" placeholder="自动分配" autocomplete="off">
-                    <button type="button" class="btn btn-ghost btn-sm" id="btnReslot" title="重新分配"><svg class="ic"><use href="#i-refresh"/></svg></button>
-                  </div>
-                </div>
-              </div>
-              <div class="field">
-                <label for="inPickupCode">取件码（可手改，会写在面单上给顾客）</label>
-                <div class="input-with-btn">
-                  <input id="inPickupCode" name="pickupCode" class="input code-input" placeholder="按规则自动生成" autocomplete="off">
-                  <button type="button" class="btn btn-ghost btn-sm" id="btnRecode" title="按当前货架位重新生成"><svg class="ic"><use href="#i-refresh"/></svg></button>
-                </div>
-                <span class="field-hint" id="inCodeHint">顾客报码即可查件；货架位变化会自动重算</span>
-              </div>
-              <div class="field">
-                <label for="inNote">备注</label>
-                <input id="inNote" name="note" class="input" placeholder="易碎、大件、代收等，选填" autocomplete="off">
-              </div>
-              <div class="field">
-                <label>面单 / 包裹照片（可选，拍完自动识别条码、按条码命名）</label>
-                <div class="photo-picker">
-                  <input type="file" id="inPhotos" accept="image/*" multiple hidden>
-                  <button type="button" class="btn btn-outline btn-sm" data-perm="write" id="btnInCamera"><svg class="ic"><use href="#i-camera"/></svg>打开摄像头</button>
-                  <button type="button" class="btn btn-ghost btn-sm" data-perm="write" id="btnInPhotos">从相册选图</button>
-                  <span class="muted" id="inPhotoState"></span>
-                </div>
-                <div class="in-ocr" id="inOcrState" hidden></div>
-                <div class="photo-preview" id="inPhotoPreview"></div>
-              </div>
-              <div class="form-foot">
-                <button type="submit" class="btn btn-primary btn-block"><svg class="ic"><use href="#i-check"/></svg>确认入库</button>
-              </div>
-            </form>
-            <div class="last-ok" id="lastIn" hidden></div>
-          </div>
-          <div class="side-stack">
-            <div class="card tip-card">
-              <div class="card-head"><h3>录入小贴士</h3></div>
-              <ul class="tips">
-                <li>用扫码枪扫面单，回车即完成入库，焦点自动回到运单号。</li>
-                <li>货架位默认取该区第一个空位，占用会自动跳过。</li>
-                <li>只存手机号后四位，不收集完整号码。</li>
-                <li>同一运单号在库时不能重复登记，避免重件。</li>
-                <li>取件码默认由货架位压缩而来（A-01-2 → A012），可手改，入库后能打印标签贴在面单上。</li>
-              </ul>
-            </div>
-            <div class="card">
-              <div class="card-head"><h3>刚刚入库</h3><span class="muted" id="inTodayCount"></span></div>
-              <div id="inRecent" class="list-box"></div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 出库 -->
-      <section class="view" id="view-outbound">
-        <!-- 拍照取件：进页面自动开镜头；拍完自动识别面单 / 取件码，自动选中并命名凭证 -->
-        <div class="card scan-card" id="scanCard">
-          <div class="scan-head">
-            <div class="scan-title">
-              <h3><svg class="ic"><use href="#i-camera"/></svg>拍照取件</h3>
-              <p>对准面单条码或取件码标签拍照，自动找件、自动命名凭证；识别不到可以直接手输。</p>
-            </div>
-            <button class="btn btn-primary btn-scan" data-perm="write" id="btnScanPickup"><svg class="ic"><use href="#i-camera"/></svg>拍照取件</button>
-          </div>
-          <div class="scan-state" id="scanState">准备就绪 · 点击下方按钮或等待自动开镜头</div>
-          <div class="scan-candidates" id="scanCandidates"></div>
-          <div class="scan-file" id="scanFileName" hidden></div>
-          <div class="scan-engine" id="scanEngine"></div>
-        </div>
-        <!-- 扫码枪连出 + 退件出库：和拍照取件并存，不做短信/电话通知 -->
-        <div class="card out-tools">
-          <div class="field-row">
-            <div class="field">
-              <label for="scanOutInput">扫码连出（扫码枪回车即出库，连扫不用点按钮）</label>
-              <input id="scanOutInput" class="input" placeholder="扫取件码 / 货号 / 运单号后回车" autocomplete="off">
-            </div>
-            <div class="field">
-              <label for="outType">出库类型</label>
-              <select id="outType" class="input">
-                <option value="pickup">取件出库</option>
-                <option value="refund">退件出库</option>
-              </select>
-            </div>
-            <div class="field" id="refundReasonBox" hidden>
-              <label for="refundReason">退件原因</label>
-              <select id="refundReason" class="input">
-                <option value="超期未取">超期未取</option>
-                <option value="拒收">拒收</option>
-                <option value="地址错误">地址错误</option>
-                <option value="破损">破损</option>
-                <option value="其它">其它</option>
-              </select>
-            </div>
-          </div>
-          <div class="muted" id="scanOutState">扫码连出默认开启，可在设置里关闭；退件出库不强制拍取件凭证。</div>
-        </div>
-        <div class="card search-card">
-          <div class="search-wrap">
-            <svg class="ic search-ic"><use href="#i-search"/></svg>
-            <input id="outSearch" class="input input-xl" placeholder="输入取件码 / 手机后四位 / 运单号 / 收件人" autocomplete="off">
-            <button class="btn btn-ghost btn-sm" id="outClear">清空</button>
-          </div>
-          <div class="search-meta">
-            <span id="outResultCount" class="muted">输入关键词开始查找在库包裹</span>
-            <div class="btn-row">
-              <button class="link" id="outClearSel">清空已选</button>
-              <button class="link" id="outSelectAll">全选结果</button>
-            </div>
-          </div>
-        </div>
-        <div id="outResults" class="pick-grid"></div>
-        <div class="checkout-bar" id="checkoutBar">
-          <div class="checkout-info"><strong id="pickCount">0</strong><span>件已选</span>
-            <span class="merge-hint" id="mergeHint" hidden><svg class="ic"><use href="#i-merge"/></svg>合并出库 · 共用一张凭证，可整批撤销</span>
-          </div>
-          <input type="file" id="outProof" accept="image/*" multiple hidden>
-          <button class="btn btn-outline btn-sm" data-perm="write" id="btnProof" title="调用摄像头拍取件凭证；多件出库时记录在第一件包裹上"><svg class="ic"><use href="#i-camera"/></svg>拍取件凭证</button>
-          <button class="btn btn-ghost btn-sm" data-perm="write" id="btnProofPick" title="从相册里选已有照片">选图</button>
-          <div class="proof-preview" id="proofPreview"></div>
-          <input id="pickupBy" class="input" placeholder="取件人（选填，默认本人）" autocomplete="off">
-          <button class="btn btn-primary" data-perm="write" id="btnCheckout"><svg class="ic"><use href="#i-check"/></svg>确认出库</button>
-        </div>
-      </section>
-
-      <!-- 在库台账 -->
-      <section class="view" id="view-inventory">
+      <div class="tab-pane" id="inPane-batch" hidden>
         <div class="card">
-          <div class="filter-bar">
-            <div class="input-with-icon">
-              <svg class="ic"><use href="#i-search"/></svg>
-              <input id="invKeyword" class="input" placeholder="搜索取件码 / 单号 / 收件人 / 后四位 / 批次" autocomplete="off">
-            </div>
-            <select id="invCarrier" class="input"><option value="">全部公司</option></select>
-            <select id="invZone" class="input"><option value="">全部货架区</option></select>
-            <select id="invStatus" class="input">
-              <option value="in">仅看在库</option>
-              <option value="">全部记录</option>
-              <option value="out">仅看已出库</option>
-            </select>
-            <select id="invOverdue" class="input">
-              <option value="">滞留不限</option>
-              <option value="warn">滞留提醒</option>
-              <option value="danger">严重超期</option>
-            </select>
-            <select id="invSort" class="input">
-              <option value="inAt">按入库时间</option>
-              <option value="slot">按货架位</option>
-              <option value="carrier">按快递公司</option>
-              <option value="stayDays">按滞留天数</option>
-            </select>
-            <button class="btn btn-ghost btn-sm" id="btnInvExport"><svg class="ic"><use href="#i-download"/></svg>导出</button>
-          </div>
-          <div class="table-meta"><span id="invCount" class="muted"></span><span class="muted">点击右侧按钮可改资料或删除记录</span></div>
-          <div class="table-wrap">
-            <table class="table" id="invTable">
-              <thead><tr><th>取件码 / 货号</th><th>运单号</th><th>公司</th><th>收件人 / 后四位</th><th>货架位</th><th>入库时间</th><th>停留</th><th>状态</th><th>操作</th></tr></thead>
-              <tbody id="invBody"></tbody>
-            </table>
-          </div>
-          <div class="load-more" id="invMore" hidden><button class="btn btn-outline btn-sm" id="btnInvMore">加载更多</button></div>
+          <div class="card-head"><h3>批量导入</h3><span class="muted">每行：单号 [公司] [电话] [货架] [备注]，逗号 / 空格 / Tab 分隔</span></div>
+          <textarea class="input mono" id="batchText" rows="8" placeholder="YT9000012345,圆通速递,13800138000,A01-01,大件&#10;ZT7700000012 中通 13900001111&#10;SF123456789012"></textarea>
+          <div class="row-actions"><button type="button" class="btn btn-outline btn-sm" id="btnBatchPreview">解析预览</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnBatchCsv">读入 CSV 文件</button>
+            <input type="file" id="batchCsvFile" accept=".csv,text/csv,text/plain" hidden>
+            <button type="button" class="btn btn-primary btn-sm" id="btnBatchImport" data-perm="inbound">导入</button></div>
+          <div id="batchPreview"></div>
         </div>
-      </section>
+      </div>
 
-      <!-- 统计 -->
-      <section class="view" id="view-analytics">
-        <div class="kpi-grid" id="anaKpi"></div>
+      <div class="tab-pane" id="inPane-scan" hidden>
         <div class="card">
-          <div class="card-head"><h3>近 7 日入库 / 出库趋势</h3><span class="legend"><i class="lg lg-in"></i>入库 <i class="lg lg-out"></i>出库</span></div>
-          <div id="anaTrend" class="chart-box chart-lg"></div>
+          <div class="card-head"><h3>扫码枪连录</h3><span class="muted">把光标放这里，扫码枪回车即入库</span></div>
+          <input class="input mono input-lg" id="scanInNo" placeholder="等待扫码…" autocomplete="off">
+          <div class="quick-hint">支持「单号,尾号」一次扫入；重复单号会提示，不会静默覆盖。</div>
+          <div id="scanInList" class="strip-list"></div>
         </div>
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>在库件 · 快递公司分布</h3></div>
-            <div id="anaCarrier" class="bars"></div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h3>在库件 · 货架区占用</h3><span class="muted" id="anaCapacity"></span></div>
-            <div id="anaZone" class="bars"></div>
-          </div>
-        </div>
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>滞留分布</h3></div>
-            <div id="anaOverdue" class="bars"></div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h3>运营小结</h3></div>
-            <div id="anaSummary" class="summary"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-head"><h3>业务统计 · 时间段明细</h3>
-            <div class="btn-row">
-              <select id="anaRange" class="input input-sm">
-                <option value="today">今天</option><option value="yesterday">昨天</option>
-                <option value="3d">近 3 天</option><option value="week">近 7 天</option>
-                <option value="month">本月</option><option value="all">全部</option>
-              </select>
-              <button class="btn btn-outline btn-sm" id="btnAnaExport">导出明细</button>
-            </div>
-          </div>
-          <div class="filter-bar">
-            <input id="anaFrom" class="input" type="date" title="开始日期">
-            <input id="anaTo" class="input" type="date" title="结束日期">
-            <button class="btn btn-ghost btn-sm" id="btnAnaCustom">按日期查询</button>
-            <span class="muted" id="anaRangeHint"></span>
-          </div>
-          <div class="stat-row" id="anaRangeSummary"></div>
-          <div class="table-wrap">
-            <table class="table"><thead><tr><th>时间</th><th>类型</th><th>运单号</th><th>公司</th><th>操作人</th><th>货号 / 取件人 / 原因</th></tr></thead>
-              <tbody id="anaDetailBody"></tbody></table>
-          </div>
-        </div>
-      </section>
+      </div>
+    </section>
 
-      <!-- 批量处理：极速入库 / 批量出库 -->
-      <section class="view" id="view-batch">
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>批量入库（极速入库）</h3><span class="muted">粘贴单号，一行一件</span></div>
-            <p class="hint">每行：<code>运单号,快递公司,收件人,手机尾号,备注</code>，后面的列可省略；支持整段 CSV / 表格粘贴，<code>#</code> 开头跳过。公司留空时按单号前缀自动识别。</p>
-            <textarea id="batchInText" class="input textarea" rows="7" placeholder="YT100001&#10;7788123456,申通,张三,3456,易碎&#10;# 井号开头的行会跳过"></textarea>
-            <div class="btn-row">
-              <button class="btn btn-outline btn-sm" id="btnBatchInFile">从 CSV 读入</button>
-              <button class="btn btn-ghost btn-sm" id="btnBatchInPreview">预览校验</button>
-              <button class="btn btn-primary btn-sm" data-perm="write" id="btnBatchInAdd">确认批量入库</button>
-              <button class="btn btn-ghost btn-sm" id="btnBatchLabels" disabled>打印刚入库标签</button>
-            </div>
-            <input type="file" id="batchInFile" accept=".csv,.txt,text/csv,text/plain" hidden>
-            <div id="batchInResult" class="batch-result"></div>
-          </div>
-          <div class="card">
-            <div class="card-head"><h3>批量出库 / 货号出库</h3><span class="muted">一行一个码</span></div>
-            <p class="hint">可粘贴取件码、货号、编号、运单号或手机尾号；多个候选会列出让你确认，不会蒙着出库。</p>
-            <textarea id="batchOutText" class="input textarea" rows="7" placeholder="A012&#10;YT100001&#10;0007"></textarea>
-            <div class="field-row">
-              <div class="field"><label for="batchOutType">出库类型</label>
-                <select id="batchOutType" class="input"><option value="pickup">取件出库</option><option value="refund">退件出库</option></select></div>
-              <div class="field"><label for="batchRefundReason">退件原因</label>
-                <select id="batchRefundReason" class="input">
-                  <option value="超期未取">超期未取</option><option value="拒收">拒收</option>
-                  <option value="地址错误">地址错误</option><option value="破损">破损</option><option value="其它">其它</option>
-                </select></div>
-            </div>
-            <div class="btn-row">
-              <button class="btn btn-ghost btn-sm" id="btnBatchOutPreview">预览匹配</button>
-              <button class="btn btn-primary btn-sm" data-perm="write" id="btnBatchOut">确认批量出库</button>
-            </div>
-            <div id="batchOutResult" class="batch-result"></div>
-          </div>
-        </div>
-      </section>
+    <!-- 出库 -->
+    <section class="view" id="view-outbound" hidden>
+      <div class="page-head"><div><h2>出库</h2><p>取件 / 货号 / 电话 / 扫描 / 退件，支持合并出库与拍照留证</p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" id="btnUndoLastOut">撤销本次出库</button>
+          <button class="btn btn-primary btn-sm" id="btnOutCamera">拍照取件</button></div></div>
 
-      <!-- 客户管理 -->
-      <section class="view" id="view-customers">
-        <div class="card">
-          <div class="card-head"><h3>客户管理</h3><span class="muted" id="cusCount"></span></div>
-          <div class="filter-bar">
-            <input id="cusKeyword" class="input" placeholder="姓名 / 手机 / 尾号 / 备注" autocomplete="off">
-            <select id="cusTag" class="input">
-              <option value="">全部标记</option><option value="normal">普通</option>
-              <option value="vip">重点客户</option><option value="block">黑名单</option>
-            </select>
-            <button class="btn btn-outline btn-sm" data-perm="manage" id="btnCusAdd">新增客户</button>
-            <button class="btn btn-ghost btn-sm" id="btnCusExport">导出名单</button>
-          </div>
-          <p class="hint">入库时按手机尾号自动归档；标记为黑名单后，开启「入库拦截」会拦下该客户的件。手机号只存本机，不发短信、不打电话。</p>
-          <div class="table-wrap">
-            <table class="table"><thead><tr><th>客户</th><th>手机 / 尾号</th><th>标记</th><th>累计件数</th><th>在库</th><th>备注</th><th>操作</th></tr></thead>
-              <tbody id="cusBody"></tbody></table>
-          </div>
-        </div>
-      </section>
+      <div class="card scan-card">
+        <div class="scan-head"><div><h3>拍照取件</h3><p class="muted">进入本页自动开镜头，拍面单自动识别货号 / 运单号并选中</p></div>
+          <button class="btn btn-outline btn-sm" id="btnOutCameraNow">立即拍照</button></div>
+        <div class="ocr-state" id="outOcrState" hidden></div>
+        <div class="scan-engine" id="outEngine"></div>
+        <div id="outCandidates" class="candidate-row"></div>
+      </div>
 
-      <!-- 流水 -->
-      <section class="view" id="view-logs">
-        <div class="card">
-          <div class="filter-bar">
-            <div class="input-with-icon">
-              <svg class="ic"><use href="#i-search"/></svg>
-              <input id="logKeyword" class="input" placeholder="搜索摘要或运单号" autocomplete="off">
-            </div>
-            <select id="logType" class="input">
-              <option value="">全部类型</option>
-              <option value="in">入库</option>
-              <option value="out">出库</option>
-              <option value="edit">修改</option>
-              <option value="delete">删除</option>
-              <option value="restore">撤销出库</option>
-              <option value="settings">设置</option>
-              <option value="import">导入</option>
-              <option value="photo">照片</option>
-              <option value="clear">清空</option>
-            </select>
-            <button class="btn btn-ghost btn-sm" id="btnLogExport"><svg class="ic"><use href="#i-download"/></svg>导出流水</button>
-            <button class="btn btn-ghost btn-sm danger" id="btnLogClear"><svg class="ic"><use href="#i-trash"/></svg>清空流水</button>
-          </div>
-          <div class="table-meta"><span id="logCount" class="muted"></span></div>
-          <div id="logList" class="log-list"></div>
-        </div>
-      </section>
+      <div class="tabs" id="outTabs">
+        <button class="tab on" data-tab="pickup" data-type="pickup">取件出库</button>
+        <button class="tab" data-tab="goods" data-type="goods">货号出库</button>
+        <button class="tab" data-tab="phone" data-type="phone">电话出库</button>
+        <button class="tab" data-tab="scan" data-type="scan">扫描出库</button>
+        <button class="tab" data-tab="refund" data-type="refund">退件出库</button>
+      </div>
 
-      <!-- 设置 -->
-      <!-- 账号管理（仅站长可见） -->
-      <section class="view" id="view-accounts">
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>我的账号</h3><svg class="ic muted"><use href="#i-user"/></svg></div>
-            <div id="myAccount" class="my-account"></div>
-            <div class="divider"></div>
-            <form id="formChangePwd" class="settings-form" autocomplete="off">
-              <div class="field"><label for="oldPwd">原密码</label><input id="oldPwd" class="input" type="password" required autocomplete="current-password"></div>
-              <div class="field-row">
-                <div class="field"><label for="newPwd">新密码（至少 6 位）</label><input id="newPwd" class="input" type="password" required autocomplete="new-password"></div>
-                <div class="field"><label for="confirmPwd">确认新密码</label><input id="confirmPwd" class="input" type="password" required autocomplete="new-password"></div>
-              </div>
-              <button type="submit" class="btn btn-outline btn-sm"><svg class="ic"><use href="#i-lock"/></svg>修改我的密码</button>
-            </form>
-          </div>
-          <div class="card">
-            <div class="card-head"><h3>新增子账号</h3><svg class="ic muted"><use href="#i-users"/></svg></div>
-            <p class="hint">这是本站<b>唯一</b>的账号来源：自助注册已关闭，外人无法自行注册。给店员各开一个账号，入库、出库、拍照都会记下操作人。操作员可办日常业务；只读访客只能查件和看台账。人走了直接「停用」，别删，历史流水里的操作人还能对上。</p>
-            <form id="formAddSub" data-perm="owner" class="settings-form" autocomplete="off">
-              <div class="field-row">
-                <div class="field"><label for="subName">显示姓名</label><input id="subName" class="input" placeholder="如：小王" required></div>
-                <div class="field"><label for="subUser">登录账号</label><input id="subUser" class="input" placeholder="字母 / 数字，如 wang" required autocomplete="off"></div>
-              </div>
-              <div class="field-row">
-                <div class="field"><label for="subPass">初始密码（至少 6 位）</label><input id="subPass" class="input" type="password" required autocomplete="new-password"></div>
-                <div class="field"><label for="subRole">角色</label>
-                  <select id="subRole" class="input">
-                    <option value="operator">操作员 · 入库出库改台账</option>
-                    <option value="viewer">只读访客 · 仅查件看板</option>
-                  </select>
-                </div>
-              </div>
-              <button type="submit" class="btn btn-primary btn-sm"><svg class="ic"><use href="#i-plus"/></svg>创建子账号</button>
-            </form>
-          </div>
+      <div class="card search-card">
+        <div class="input-row"><input class="input mono input-lg" id="outKeyword" placeholder="货号 / 编号 / 单号 / 手机尾号 / 收件人" autocomplete="off">
+          <select class="input input-sm" id="outMode"><option value="fuzzy">模糊</option><option value="exact">精确</option><option value="tail">尾号匹配</option></select>
+          <button class="btn btn-outline btn-sm" id="btnOutSearch">查询</button></div>
+        <div class="row-actions wrap" id="outExtra">
+          <label class="inline">取件人<input class="input input-sm" id="outPickupBy" placeholder="选填"></label>
+          <label class="inline">出库备注<input class="input input-sm" id="outNote" placeholder="选填"></label>
+          <label class="inline" id="outReasonBox" hidden>退件原因<select class="input input-sm" id="outReason">
+            <option value="">请选择</option><option>超期未取</option><option>用户拒收</option><option>地址不详</option>
+            <option>破损</option><option>错分件</option><option>联系不上</option><option>其他</option></select></label>
         </div>
-        <div class="card">
-          <div class="card-head"><h3>账号列表</h3><span class="muted" id="acCount"></span></div>
-          <div id="accountList" class="account-list"></div>
-          <div class="divider"></div>
-          <div class="btn-row">
-            <button class="btn btn-outline btn-sm" data-perm="owner" id="btnAccountsExport"><svg class="ic"><use href="#i-download"/></svg>导出账号库</button>
-            <button class="btn btn-outline btn-sm" data-perm="owner" id="btnAccountsImport"><svg class="ic"><use href="#i-upload"/></svg>导入账号库</button>
-          </div>
-          <p class="hint"><b>换设备怎么办</b>：账号只存在本机浏览器，不会自动上传。用「JSON 全量备份」导出，或开启 GitHub 私有仓库同步，账号库会随台账一起写进备份文件；新设备打开后点登录页的「导入备份恢复」即可用同一套账号登录。备份文件里是加盐哈希而非明文密码，但仍请当作敏感文件保存，别放进公开仓库。</p>
+        <div class="row-actions"><span class="muted" id="outSelected">已选 0 件</span>
+          <button class="btn btn-ghost btn-sm" id="btnOutSelectAll">全选</button>
+          <button class="btn btn-ghost btn-sm" id="btnOutClear">清空</button>
+          <button class="btn btn-ghost btn-sm" id="btnOutPhoto">拍出库凭证</button>
+          <button class="btn btn-outline btn-sm" id="btnOutMerge">合并出库</button>
+          <button class="btn btn-primary" id="btnOutSubmit" data-perm="outbound">确认出库</button></div>
+        <div class="photo-preview" id="outPhotoPreview"></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>待出库 / 查询结果</h3><span class="muted" id="outResultCount"></span></div>
+        <div class="table-wrap"><table class="table" id="outTable"></table></div></div>
+      <div class="card" id="lastOutCard" hidden><div class="card-head"><h3>本次出库</h3></div><div id="lastOut"></div></div>
+    </section>
+
+    <!-- 查件 -->
+    <section class="view" id="view-query" hidden>
+      <div class="page-head"><div><h2>查件</h2><p>按运单号 / 货号 / 电话 / 编号 / 状态 / 时间 / 公司 / 标签组合查询</p></div></div>
+      <div class="card">
+        <div class="filter-grid">
+          <label class="wide">关键词<input class="input mono" id="qKw" placeholder="任意 3 位以上，支持货号、单号、尾号、收件人"></label>
+          <label>查询模式<select class="input" id="qMode"><option value="fuzzy">模糊</option><option value="exact">精确</option><option value="tail">尾号匹配</option></select></label>
+          <label>状态<select class="input" id="qStatus"><option value="all">全部</option><option value="in">待出库</option><option value="out">已出库</option><option value="refund">已退件</option><option value="overdue">滞留件</option><option value="void">已撤销</option></select></label>
+          <label>快递公司<select class="input" id="qCarrier"></select></label>
+          <label>货架号<input class="input mono" id="qSlot" placeholder="如 A01"></label>
+          <label>标签<select class="input" id="qLabel"></select></label>
+          <label>入库起<input class="input" id="qFrom" type="date"></label>
+          <label>入库止<input class="input" id="qTo" type="date"></label>
         </div>
-      </section>
+        <div class="row-actions"><button class="btn btn-primary btn-sm" id="btnQuery">查询</button>
+          <button class="btn btn-ghost btn-sm" id="btnQueryReset">重置</button>
+          <button class="btn btn-outline btn-sm" id="btnQueryExport">导出结果 CSV</button>
+          <span class="muted" id="qCount"></span></div>
+      </div>
+      <div class="card"><div class="table-wrap"><table class="table" id="queryTable"></table></div></div>
+    </section>
 
-      <section class="view" id="view-settings">
-        <div class="card">
-          <div class="card-head"><h3>图片存储 · 云盘</h3><span class="muted" id="photoStatus"></span></div>
-          <p class="hint"><b>推荐 GitHub 仓库直存</b>：照片直接提交进项目仓库的 <b>photos/</b> 目录，不用云盘、不用 Worker、不用额外账号，一次配好 token 就完事。出库凭证归档到 <b>photos/出库凭证/年-月/</b>，入库照片放到 <b>photos/入库照片/年-月/</b>。仓库必须是<b>私有</b>——面单上有收件人手机号和地址，公开仓库会被直接拦住。也可以用云盘 WebDAV（坚果云 / 123 云盘，需 <b>deploy/webdav-proxy.js</b> 中转补 CORS）或本机同步目录。凭据只填在这里，绝不写进公开仓库。</p>
-          <div class="field-row">
-            <div class="field">
-              <label for="phMode">写入方式</label>
-              <select id="phMode" class="input">
-                <option value="github">GitHub 仓库（项目内 photos/，推荐）</option>
-                <option value="webdav">云盘 WebDAV（坚果云 / 123 云盘）</option>
-                <option value="local">云盘客户端同步文件夹</option>
-                <option value="browser">仅暂存浏览器（不写入云盘）</option>
-              </select>
-            </div>
-            <div class="field"><label for="phDir">云盘内目录名（WebDAV / 本机文件夹用）</label><input id="phDir" class="input" placeholder="express-station"></div>
-          </div>
-          <div id="phGithubBox" class="ph-box" hidden>
-            <div class="field-row">
-              <div class="field"><label for="ghRepo">仓库（owner/repo，留空则跟随 GitHub 同步）</label><input id="ghRepo" class="input" placeholder="RhuaHub/express-station" autocomplete="off"></div>
-              <div class="field"><label for="ghBranch">分支（留空跟随同步）</label><input id="ghBranch" class="input" placeholder="main" autocomplete="off"></div>
-            </div>
-            <div class="field-row">
-              <div class="field"><label for="ghDir">仓库内目录</label><input id="ghDir" class="input" placeholder="photos"></div>
-              <div class="field" style="display:flex;align-items:flex-end">
-                <button class="btn btn-outline btn-sm" id="btnGhFromSync" type="button">用「GitHub 同步」里的仓库</button>
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field"><label for="ghProxyBase">Cloudflare 加速地址（可选）</label><input id="ghProxyBase" class="input" placeholder="https://xxx.workers.dev，结尾不带 /photo" autocomplete="off"></div>
-              <div class="field"><label for="ghProxyKey">加速节点密钥（配了 PROXY_KEY 才填）</label><input id="ghProxyKey" class="input" placeholder="留空表示 Worker 没设密钥" autocomplete="off"></div>
-            </div>
-            <label class="switch"><input type="checkbox" id="ghAllowPublic"><span>允许写入公开仓库：<b>默认关闭</b>。面单照片含收件人手机号与地址，公开后任何人可见，别为了省事关掉这道闸</span></label>
-            <label class="switch"><input type="checkbox" id="ghCache"><span>本机缓存照片：同一张只下载一次，第二次点开立即可看，断网也能翻旧单。<b>建议开</b></span></label>
-            <div class="fallback-row" style="margin-top:6px">
-              <span id="ghCacheState" class="muted" style="font-size:12px">缓存状态读取中…</span>
-              <button class="btn btn-outline btn-sm" id="btnGhClearCache" type="button">清除照片缓存</button>
-            </div>
-            <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
-              token 复用上方「GitHub 同步」里的 <b>Personal Access Token</b>（Contents 读写即可），不需要再填一份。照片会按
-              <b>入库照片/出库凭证 + 年-月</b> 提交到 <b>photos/</b> 下，<b>每张照片一次 commit</b>；仓库有 1GB 软上限，单张压缩后约 150–250KB，
-              自己按件量估一下。<b>加速地址不是必需项</b>：填了之后读图走 Cloudflare 边缘缓存、token 也可以只留在 Worker 里；
-              不填就直连 api.github.com，配合本机缓存也够用（详见 README 的性能一节）。
-            </p>
-          </div>
-          <div id="phWebdavBox" class="ph-box" hidden>
-            <div class="field-row">
-              <div class="field">
-                <label for="phProvider">云盘服务</label>
-                <select id="phProvider" class="input">
-                  <option value="nutstore">坚果云（免费版就有 WebDAV，推荐）</option>
-                  <option value="pan123">123 云盘（需账号仍保留 WebDAV 权益）</option>
-                  <option value="custom">自定义 / AList</option>
-                </select>
-              </div>
-              <div class="field"><label for="phBase">WebDAV 上游地址（选服务后自动填）</label><input id="phBase" class="input" placeholder="https://dav.jianguoyun.com/dav" autocomplete="off"></div>
-            </div>
-            <div class="field-row">
-              <div class="field"><label for="phProxyBase">CORS 代理地址（Cloudflare Worker）</label><input id="phProxyBase" class="input" placeholder="https://xxx.workers.dev，结尾不带 /nutstore" autocomplete="off"></div>
-              <div class="field"><label for="phProxyKey">代理密钥（可选）</label><input id="phProxyKey" class="input" placeholder="仅当 Worker 里设置了 PROXY_KEY 时才填" autocomplete="off"></div>
-            </div>
-            <div class="field-row">
-              <div class="field"><label for="phUser" id="phUserLabel">账号</label><input id="phUser" class="input" autocomplete="off"></div>
-              <div class="field"><label for="phPass">应用密码 / WebDAV 密码</label><input id="phPass" class="input" type="password" autocomplete="off"></div>
-            </div>
-          </div>
-          <div id="phProviderTipBox" class="ph-box nut-tip" hidden>
-            <b id="phProviderTitle">用坚果云：三步就够</b>
-            <p id="phProviderHint"></p>
-            <p class="muted" id="phProviderRoute"></p>
-          </div>
-          <div id="phWebdavTipBox" class="ph-box" hidden>
-            <b>选了 123 云盘，却看不到「WebDAV 授权管理」？</b>
-            <p class="muted" style="font-size:12px;line-height:1.7;margin-top:4px">
-              123 云盘自 <b>2026-11-04</b> 起调整权益：<b>新注册账号、新开通的会员不再包含 WebDAV</b>（同步 / 备份 / 云桌面 / 离线下载 同样被移除），老会员只要资格连续有效才保留。所以后台可能只剩「会员中心 → 工具中心」，没有「第三方挂载 → WebDAV 授权管理」这一项。这不是配置问题，换三条路都行：
-            </p>
-            <div class="fallback-row">
-              <button class="btn btn-outline btn-sm" id="btnUseNutstore" type="button">改用坚果云 WebDAV（推荐，免费版即可用）</button>
-              <button class="btn btn-outline btn-sm" id="btnUseLocal" type="button">改用本机文件夹（123 云盘客户端挂载盘 / 同步目录）</button>
-              <button class="btn btn-outline btn-sm" id="btnUseBrowser" type="button">只存浏览器（不配置）</button>
-            </div>
-          </div>
-          <div id="phLocalBox" class="ph-box" hidden>
-            <button class="btn btn-outline btn-sm" id="btnPhPick">选择本机文件夹</button>
-            <span class="muted">适合 123 云盘客户端挂载出来的磁盘 / 同步目录。仅桌面版 Chrome / Edge 且需 https 页面；若选择器里看不到挂载盘（浏览器不列网络驱动器），请改用坚果云 WebDAV。安卓 App 不支持文件夹授权，只能用浏览器暂存。</span>
-          </div>
-          <div class="field-row">
-            <div class="field"><label for="phMax">图片最长边（px）</label><input id="phMax" class="input" type="number" min="600" max="4000"></div>
-            <div class="field"><label for="phQuality">JPEG 质量（0.4–1）</label><input id="phQuality" class="input" type="number" step="0.05" min="0.4" max="1"></div>
-          </div>
-          <label class="switch"><input type="checkbox" id="phRequireProof" checked><span>出库必须拍取件凭证：勾选后，点「确认出库」会自动调起摄像头，未拍照不出库（可关闭）</span></label>
-          <label class="switch"><input type="checkbox" id="phAutoCapture" checked><span>进入「取件出库」自动打开摄像头拍照；关掉后仍可点首屏按钮拍照，或直接手输取件码</span></label>
-          <div class="btn-row">
-            <button class="btn btn-primary btn-sm" data-perm="manage" id="btnPhSave">保存图片设置</button>
-            <button class="btn btn-outline btn-sm" data-perm="manage" id="btnPhTest">测试连接</button>
-          </div>
+    <!-- 库存台账 -->
+    <section class="view" id="view-inventory" hidden>
+      <div class="page-head"><div><h2>库存台账</h2><p>在库天数、批量改号、移库、批量打印与批量出库</p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" id="btnInvExport">导出台账</button></div></div>
+      <div class="card">
+        <div class="filter-grid">
+          <label class="wide">搜索<input class="input mono" id="invKw" placeholder="货号 / 单号 / 尾号 / 收件人"></label>
+          <label>状态<select class="input" id="invStatus"><option value="in">在库</option><option value="all">全部</option><option value="out">已出库</option><option value="refund">已退件</option><option value="overdue">滞留</option><option value="void">已撤销</option></select></label>
+          <label>排序<select class="input" id="invSort"><option value="new">最新入库</option><option value="old">最早入库</option><option value="days">在库最久</option><option value="goods">按货号</option></select></label>
         </div>
-        <div class="two-col">
-          <div class="card">
-            <div class="card-head"><h3>驿站设置</h3></div>
-            <form id="formSettings" data-perm="manage" class="settings-form">
-              <div class="field"><label for="setName">驿站名称</label><input id="setName" class="input" required></div>
-              <div class="field"><label for="setOperator">默认值班员</label><input id="setOperator" class="input"></div>
-              <div class="field-row">
-                <div class="field"><label for="setWarn">滞留提醒（天）</label><input id="setWarn" class="input" type="number" min="0" max="365"></div>
-                <div class="field"><label for="setDanger">严重超期（天）</label><input id="setDanger" class="input" type="number" min="1" max="365"></div>
-              </div>
-              <div class="field"><label for="setCodeMode">取件码规则</label>
-                <select id="setCodeMode" class="input">
-                  <option value="slot">货架位式（A-01-2 → A012，报码即知货位）</option>
-                  <option value="daily">每日流水号（1113-007，每天从 001 开始）</option>
-                  <option value="off">不生成（只用尾号 / 单号查件）</option>
-                </select>
-              </div>
-              <div class="field"><label for="setCarriers">快递公司（逗号分隔）</label><input id="setCarriers" class="input"></div>
-              <div class="field"><label for="setZones">货架区（逗号分隔）</label><input id="setZones" class="input"></div>
-              <div class="field-row">
-                <div class="field"><label for="setShelves">每区货架数</label><input id="setShelves" class="input" type="number" min="1" max="99"></div>
-                <div class="field"><label for="setLevels">每架层数</label><input id="setLevels" class="input" type="number" min="1" max="99"></div>
-              </div>
-              <div class="field-row">
-                <div class="field"><label for="setAddress">驿站地址（打印标签用）</label><input id="setAddress" class="input" placeholder="选填"></div>
-                <div class="field"><label for="setStationPhone">联系电话（仅打印用，不拨号）</label><input id="setStationPhone" class="input" inputmode="tel" placeholder="选填"></div>
-              </div>
-              <div class="field-row">
-                <div class="field"><label for="setGoodsMode">货号规则</label>
-                  <select id="setGoodsMode" class="input">
-                    <option value="slot">货架位式（A-01-2 → A012）</option>
-                    <option value="date">日期 + 公司简称 + 流水（1114YT007）</option>
-                    <option value="phone">手机尾号 + 流水</option>
-                    <option value="serial">纯流水编号</option>
-                    <option value="off">不生成货号</option>
-                  </select>
-                </div>
-                <div class="field"><label for="setSerialStart">下一个连续编号</label>
-                  <div class="input-with-btn"><input id="setSerialStart" class="input" type="number" min="1">
-                    <button type="button" class="btn btn-ghost btn-sm" data-perm="manage" id="btnSerialStart" title="从该数字重新起编">重设</button></div>
-                </div>
-              </div>
-              <div class="field"><label for="setCarrierRules">快递公司识别规则（公司=前缀，多个前缀用 | 分隔）</label>
-                <input id="setCarrierRules" class="input" placeholder="圆通=YT|8,中通=ZT|75"></div>
-              <div class="field"><label for="setBlocked">入库拦截名单（单号或手机尾号，逗号分隔）</label>
-                <input id="setBlocked" class="input" placeholder="选填"></div>
-              <div class="switch-list">
-                <label class="switch"><input type="checkbox" id="setBlockEnabled"><span>开启入库拦截（命中名单或黑名单客户不让入库）</span></label>
-                <label class="switch"><input type="checkbox" id="setVoiceEnabled"><span>本地语音播报（念货号 / 取件码，不联网、不打电话）</span></label>
-                <label class="switch"><input type="checkbox" id="setScanAutoOut" checked><span>扫码连出（扫码枪回车即出库）</span></label>
-              </div>
-              <button type="submit" class="btn btn-primary">保存设置</button>
-            </form>
-          </div>
-
-          <div class="side-stack">
-            <div class="card">
-              <div class="card-head"><h3>数据备份</h3><svg class="ic muted"><use href="#i-download"/></svg></div>
-              <p class="hint">数据默认保存在当前浏览器。换设备、清缓存前请先导出备份。</p>
-              <div class="btn-row">
-                <button class="btn btn-outline btn-sm" data-perm="manage" data-export="json">JSON 全量备份</button>
-                <button class="btn btn-outline btn-sm" data-export="all">全部包裹 CSV</button>
-                <button class="btn btn-outline btn-sm" data-export="instock">在库件 CSV</button>
-                <button class="btn btn-outline btn-sm" data-export="logs">流水 CSV</button>
-              </div>
-              <div class="divider"></div>
-              <div class="btn-row">
-                <button class="btn btn-ghost btn-sm" data-perm="manage" id="btnImport"><svg class="ic"><use href="#i-upload"/></svg>导入备份</button>
-                <select id="importMode" class="input input-sm">
-                  <option value="merge">合并到现有数据</option>
-                  <option value="replace">覆盖现有数据</option>
-                </select>
-              </div>
-              <div class="divider"></div>
-              <div class="btn-row">
-                <button class="btn btn-ghost btn-sm" data-perm="manage" id="btnDemo">载入演示数据</button>
-                <button class="btn btn-ghost btn-sm danger" data-perm="manage" id="btnClearAll"><svg class="ic"><use href="#i-trash"/></svg>清空全部数据</button>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card-head"><h3>GitHub 仓库同步</h3><svg class="ic muted"><use href="#i-cloud"/></svg></div>
-              <p class="hint">可选。用仓库里的一个 JSON 文件保存台账，实现多设备同步。需要仅授权该仓库 Contents 读写权限的 fine-grained token；token 只保存在本浏览器。</p>
-              <div class="field"><label for="syncToken">Personal Access Token</label><input id="syncToken" class="input" type="password" placeholder="github_pat_..." autocomplete="off"></div>
-              <div class="field"><label for="syncRepo">仓库（owner/repo）</label><input id="syncRepo" class="input" placeholder="RhuaHub/express-station" autocomplete="off"></div>
-              <div class="field-row">
-                <div class="field"><label for="syncBranch">分支</label><input id="syncBranch" class="input" value="main"></div>
-                <div class="field"><label for="syncPath">文件路径</label><input id="syncPath" class="input" value="data/station-db.json"></div>
-              </div>
-              <label class="switch"><input type="checkbox" id="syncAuto"><span>写操作后自动上传（后写覆盖，避免多端同时编辑）</span></label>
-              <div class="btn-row">
-                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncSave">保存配置</button>
-                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncTest">测试连接</button>
-                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncPush"><svg class="ic"><use href="#i-upload"/></svg>上传</button>
-                <button class="btn btn-outline btn-sm" data-perm="manage" id="btnSyncPull"><svg class="ic"><use href="#i-download"/></svg>拉取</button>
-              </div>
-              <div class="sync-state muted" id="syncState">未配置</div>
-            </div>
-          </div>
+        <div class="row-actions wrap">
+          <button class="btn btn-ghost btn-sm" id="btnInvAll">全选</button>
+          <button class="btn btn-outline btn-sm" id="btnInvMove">移库</button>
+          <input class="input input-sm mono" id="invMoveSlot" placeholder="移库后货架号" style="max-width:150px">
+          <label class="inline"><input type="checkbox" id="invRegen"> 同时重算货号</label>
+          <button class="btn btn-outline btn-sm" id="btnInvRenumSerial">批量改编号</button>
+          <button class="btn btn-outline btn-sm" id="btnInvRenumGoods">批量改货号</button>
+          <button class="btn btn-outline btn-sm" id="btnInvPrint">打印标签</button>
+          <button class="btn btn-outline btn-sm" id="btnInvOut">批量出库</button>
+          <button class="btn btn-ghost btn-sm danger" id="btnInvDel">删除记录</button>
         </div>
+        <div class="muted" id="invSummary"></div>
+      </div>
+      <div class="card"><div class="table-wrap"><table class="table" id="invTable"></table></div></div>
+    </section>
 
-        <div class="card help-card">
-          <div class="card-head"><h3>使用说明与部署</h3></div>
-          <div class="help-grid">
-            <div><h4>查件（最常用）</h4><p>顾客报取件码、手机号后四位或扫面单，在「查件」页输入即可看到货架位、在库天数，若已取走则显示取件人与出库时间；在库件可一键跳到「取件出库」并自动勾选。工作台顶部也有快速查件框。</p></div>
-            <div><h4>取件码 = 货号</h4><p>入库自动生成取件码，默认由货架位压缩而成（A-01-2 → A012），顾客报码就能定位货位；也可在入库框里手改，或在台账「修改」里改。入库成功后点「打印标签」用普通打印机打小票贴面单，不需要专用打印控件。规则可在「驿站设置」里改成每日流水号或关闭；改规则只影响新入库的件，旧记录保持原码。</p></div>
-            <div><h4>合并出库</h4><p>同一顾客的多件包裹一起勾选出库即自动合并为一个批次：共用同一张取件凭证（每件记录里都能翻到）、流水只记一条。误操作可在「操作流水」点「整批撤销」一次性把整批恢复在库；若某个货位已被新件占用，会整批拒绝并提示，避免只撤一半。批次号也能直接粘进查件框查同批所有件。</p></div>
-            <div><h4>日常流程</h4><p>入库登记（生成取件码、可拍面单照）→ 包裹按货架位上架 → 顾客报码或尾号检索 → 拍照留证后确认出库（多件自动合并出库）。所有动作写入操作流水，误操作可撤销出库。</p></div>
-            <div><h4>摄像头与拍照</h4><p>「打开摄像头 / 拍取件凭证」会直接调用设备摄像头，可连拍、切换前后镜头；拍照后自动压缩并写入云盘。摄像头需要 https 页面（GitHub Pages 满足）并授权相机权限，用本地 file:// 打开或浏览器不支持时会自动回退到系统相机 / 相册。出库默认要求先拍照，可在「图片存储」里关闭。</p></div>
-            <div><h4>账号与权限</h4><p>首次打开注册站长账号，之后在「账号管理」里给店员开子账号。站长可改设置、导入备份、管账号；操作员可入库出库与改台账；只读访客只能查件和看板。每条流水都记录操作人，可在流水页按姓名搜索。账号随 JSON 全量备份 / GitHub 同步迁移，换设备打开后点登录页「导入备份恢复」即可。</p></div>
-            <div><h4>数据在哪</h4><p>台账与账号都保存在浏览器 localStorage，无需服务器。开启 GitHub 同步后，台账与账号库会一起写入指定仓库的 JSON 文件；<b>仓库必须是私有</b>，里面含账号密码哈希与收件人后四位。Pages 站点本身不要放任何令牌。</p></div>
-            <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
-            <div><h4>照片存进 GitHub 仓库（默认）</h4><p>最省事的一条路：照片直接提交进项目仓库的 <b>photos/</b> 目录，不用云盘、不用 Worker、不用第二个账号。配置只要两处：先在下方「GitHub 同步」填 <b>Personal Access Token</b>（Contents 读写即可）和 <b>owner/repo</b>，再在「图片存储」把写入方式选 GitHub，点「用同步里的仓库」+「测试连接」。照片按 <b>photos/入库照片/年-月/</b>（RK- 前缀）与 <b>photos/出库凭证/年-月/</b>（CK- 前缀）提交，<b>每张照片一次 commit</b>。<b>仓库必须是私有</b>：面单上有收件人手机号与地址，公开仓库默认被拦下，要写公开仓库得手动勾「允许写入公开仓库」。仓库有 1GB 软上限，单张压缩后约 150–250KB，按一天 100 件算约每月 600MB，件量大就把「图片最长边」降到 1200 或定期清理旧月份目录。</p></div>
-            <div><h4>照片存云盘：坚果云</h4><p>免费版就含 WebDAV，不用会员。网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用密码（只显示一次）；入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间。坚果云不返回 CORS 头，直连 dav.jianguoyun.com 会被浏览器拦，所以要把 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker，把 Worker 根地址填进「CORS 代理地址」，上游保持默认 <b>https://dav.jianguoyun.com/dav</b>；账号填注册邮箱，密码填应用密码。免费版每月上传 1GB / 下载 3GB，照片量大就把「图片最长边」设为 1200。</p></div>
-            <div><h4>照片存云盘：123 云盘（需账号仍保留 WebDAV 权益）</h4><p>123 自 <b>2026-11-04</b> 起，新注册账号与新开通会员都不再含 WebDAV，只有老账号、或会员权益连续有效的老会员才看得到入口。有入口就走：网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制<b>应用密码</b>。Worker 路由 <b>/pan123</b>，上游保持默认 <b>https://webdav.123pan.cn/webdav</b>，账号填手机号/邮箱；若后台给的是专属域名，在 Worker 里设环境变量 UPSTREAM_PAN123 覆盖。看不到这个入口就别耗时间，直接选坚果云。</p></div>
-            <div><h4>照片存云盘：自定义 / AList</h4><p>用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList 挂其它网盘，开启 WebDAV 后把 <b>https://你的域名/dav</b> 填进上游地址。AList 自带 CORS 头，可以直连、不必填代理；但必须是 https，内网 http 地址会被 Pages 拦截，可用 Cloudflare Tunnel / Nginx 反代。Worker 的 <b>/webdav</b> 路由配合环境变量 UPSTREAM_CUSTOM 也能代理无 CORS 的自建服务。</p></div>
-            <div><h4>安全提醒</h4><p>手机号只保留后四位。云盘应用密码只存在本机浏览器、随请求头透传给自己的 Worker，Worker 代码里不写任何账号密码；第三方网盘 token 只填 AList 后台。本机 <b>deploy/.env</b> 与 <b>deploy/data/</b> 已被 .gitignore 排除，绝不提交到公开仓库。建议在 Worker 里配置 ALLOWED_ORIGINS / PROXY_KEY，避免地址泄露后被他人借用额度。</p></div>
-          </div>
+    <!-- 收件任务 -->
+    <section class="view" id="view-collections" hidden>
+      <div class="page-head"><div><h2>收件任务</h2><p>上门取件 / 寄件登记，状态可流转</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>新建收件任务</h3></div>
+          <form id="formCollection"><div class="form-grid">
+            <label>寄件人<input class="input" id="colSender"></label>
+            <label>寄件电话<input class="input mono" id="colSenderPhone"></label>
+            <label>收件人<input class="input" id="colRecipient"></label>
+            <label>收件电话<input class="input mono" id="colPhone"></label>
+            <label class="wide">收件地址<input class="input" id="colAddress"></label>
+            <label>快递公司<select class="input" id="colCarrier"></select></label>
+            <label>重量 kg<input class="input" id="colWeight" type="number" step="0.1" min="0"></label>
+            <label>费用 ¥<input class="input" id="colFee" type="number" step="0.01" min="0"></label>
+            <label class="wide">备注<input class="input" id="colNote"></label>
+          </div><div class="form-foot"><button class="btn btn-primary" type="submit" data-perm="collections">保存任务</button></div></form></div>
+        <div class="card"><div class="card-head"><h3>任务列表</h3>
+          <select class="input input-sm" id="colFilter"><option value="all">全部</option><option value="pending">待取</option><option value="picked">已取</option><option value="sent">已发出</option><option value="done">完成</option></select></div>
+          <div id="colList" class="strip-list"></div></div>
+      </div>
+    </section>
+
+    <!-- 客户管理 -->
+    <section class="view" id="view-customers" hidden>
+      <div class="page-head"><div><h2>客户管理</h2><p>按尾号自动归档，支持重点 / 黑名单、星标、备注与号码导入导出</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>客户信息</h3></div>
+          <form id="formCustomer"><input type="hidden" id="cusId"><div class="form-grid">
+            <label>客户姓名<input class="input" id="cusName" placeholder="填写面单收件人姓名，便于核对号码"></label>
+            <label>客户电话<input class="input mono" id="cusPhone" inputmode="tel"></label>
+            <label>客户类型<select class="input" id="cusType"><option value="normal">普通客户</option><option value="vip">VIP 客户</option><option value="old">老客户</option><option value="black">黑名单</option></select></label>
+            <label>星标<select class="input" id="cusStar"><option value="">无</option><option value="red">红星</option><option value="black">黑星</option><option value="green">绿星</option></select></label>
+            <label class="wide">备注<input class="input" id="cusRemark" maxlength="30" placeholder="选填，最多 30 字"></label>
+          </div><div class="form-foot"><button class="btn btn-ghost btn-sm" type="button" id="btnCusClear">清空表单</button>
+            <button class="btn btn-primary" type="submit" data-perm="customers">保存客户</button></div></form>
+          <div class="card-head"><h3>号码导入 / 导出</h3></div>
+          <textarea class="input mono" id="cusNumbers" rows="4" placeholder="批量粘贴手机号，逗号或换行分隔"></textarea>
+          <div class="row-actions"><button class="btn btn-outline btn-sm" id="btnCusImport">导入号码</button>
+            <button class="btn btn-ghost btn-sm" id="btnCusDedup">删除重复</button>
+            <button class="btn btn-ghost btn-sm" id="btnCusExport">导出客户 CSV</button></div>
+          <div class="muted" id="cusImportState"></div></div>
+        <div class="card"><div class="card-head"><h3>客户列表</h3>
+          <input class="input input-sm" id="cusKw" placeholder="搜索姓名 / 电话 / 尾号"></div>
+          <div class="row-actions"><select class="input input-sm" id="cusFilter"><option value="all">全部类型</option><option value="normal">普通</option><option value="vip">VIP</option><option value="old">老客户</option><option value="black">黑名单</option></select>
+            <span class="muted" id="cusCount"></span></div>
+          <div class="table-wrap"><table class="table" id="cusTable"></table></div>
+          <div class="card-head"><h3>入库拦截单号</h3></div>
+          <div class="input-row"><input class="input mono input-sm" id="interceptNo" placeholder="输入不允许入库的单号">
+            <button class="btn btn-outline btn-sm" id="btnInterceptAdd">添加拦截</button></div>
+          <div id="interceptList" class="chip-row"></div></div>
+      </div>
+    </section>
+
+    <!-- 业务统计 -->
+    <section class="view" id="view-stats" hidden>
+      <div class="page-head"><div><h2>业务统计</h2><p>出库率统计 / 工作量统计，支持自定义时间与每日明细</p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" id="btnStatsExport">导出明细 CSV</button></div></div>
+      <div class="card"><div class="filter-grid">
+        <label>时间范围<select class="input" id="statPreset"></select></label>
+        <label>开始日期<input class="input" id="statFrom" type="date"></label>
+        <label>结束日期<input class="input" id="statTo" type="date"></label>
+        <label>页签<select class="input" id="statTab"><option value="rate">出库率统计</option><option value="work">工作量统计</option></select></label>
+      </div><div class="muted" id="statRangeLabel"></div></div>
+      <div class="kpi-grid" id="statKpi"></div>
+      <div class="card" id="statRateBox"><div class="card-head"><h3>出库率</h3></div><div id="statRate"></div></div>
+      <div class="card" id="statWorkBox" hidden><div class="card-head"><h3>按操作人工作量</h3></div><div id="statWork"></div></div>
+      <div class="card"><div class="card-head"><h3>每日统计明细</h3><span class="muted">点一行可看当天明细</span></div>
+        <div class="table-wrap"><table class="table" id="statDaily"></table></div></div>
+    </section>
+
+    <!-- 货号标签 / 打印 -->
+    <section class="view" id="view-print" hidden>
+      <div class="page-head"><div><h2>货号标签</h2><p>选包裹 → 调模板 → 用系统打印；条码为 Code39，可用扫码枪识别</p></div>
+        <div class="head-actions"><button class="btn btn-primary btn-sm" id="btnDoPrint">打印标签</button></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>打印模板设置</h3></div>
+          <div class="check-grid" id="labelFields"></div>
+          <div class="form-grid"><label>标签宽 mm<input class="input" id="labelW" type="number" min="40" max="150"></label>
+            <label>标签高 mm<input class="input" id="labelH" type="number" min="25" max="150"></label></div>
+          <div class="muted">蓝牙打印机需厂商 SDK，网页版改为系统打印（可选择连蓝牙打印机）。</div></div>
+        <div class="card"><div class="card-head"><h3>选择包裹</h3>
+          <input class="input input-sm mono" id="printKw" placeholder="货号 / 单号 / 批次"></div>
+          <div class="row-actions"><button class="btn btn-ghost btn-sm" id="btnPrintRecent">最近入库 10 件</button>
+            <button class="btn btn-ghost btn-sm" id="btnPrintAll">全选结果</button></div>
+          <div id="printList" class="strip-list"></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>打印预览</h3><span class="muted" id="printCount"></span></div>
+        <div id="printPreview" class="print-preview"></div></div>
+    </section>
+
+    <!-- 同步记录 -->
+    <section class="view" id="view-sync" hidden>
+      <div class="page-head"><div><h2>同步记录</h2><p>原版用于上行数据到快递公司；重建版为纯本地，这里保留记录与导出上行文件</p></div></div>
+      <div class="card notice"><b>本机模式</b>：没有服务器，也不会把包裹、手机号发给任何第三方。
+        如需对接快递公司代收 / 签收上行，需要对方开放接口与资质；本页只做本地记录与「导出上行文件」，不会假装已上传。</div>
+      <div class="card"><div class="row-actions"><select class="input input-sm" id="syncState"><option value="all">全部状态</option><option value="local">本机记录</option><option value="pending">待同步</option><option value="done">已标记</option></select>
+        <input class="input input-sm mono" id="syncKw" placeholder="搜索货号 / 单号">
+        <button class="btn btn-outline btn-sm" id="btnSyncExport">导出上行文件 CSV</button>
+        <span class="muted" id="syncCount"></span></div>
+        <div class="table-wrap"><table class="table" id="syncTable"></table></div></div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings" hidden>
+      <div class="page-head"><div><h2>设置</h2><p>驿站信息、编号货号规则、录入方式、提醒、拍照、拦截与公司管理</p></div></div>
+      <form id="formSettings">
+        <details class="card" open><summary>驿站信息</summary><div class="form-grid">
+          <label>驿站名称<input class="input" id="setStation"></label>
+          <label>联系人<input class="input" id="setContact"></label>
+          <label>联系电话<input class="input mono" id="setPhone"></label>
+          <label>所在省市<input class="input" id="setProvince" placeholder="如 广东省 深圳市"></label>
+          <label class="wide">详细地址<input class="input" id="setAddress"></label>
+        </div></details>
+        <details class="card"><summary>编号 / 货号 / 货架号</summary><div class="form-grid">
+          <label>编号模式<select class="input" id="setSerialMode"></select></label>
+          <label>起始编号<input class="input" id="setSerialStart" type="number" min="1"></label>
+          <label>编号位数<input class="input" id="setSerialWidth" type="number" min="1" max="8"></label>
+          <label>货号模式<select class="input" id="setGoodsMode"></select></label>
+          <label class="wide">自定义货号模板<input class="input mono" id="setGoodsTemplate" placeholder="{slot}{serial}，可用 {date} {day} {short} {tail} {zone}"></label>
+          <label>货架区（逗号分隔）<input class="input mono" id="setZones" placeholder="A,B,C"></label>
+          <label>每区货架数<input class="input" id="setShelves" type="number" min="1" max="40"></label>
+          <label>每货架层数<input class="input" id="setLevels" type="number" min="1" max="20"></label>
+        </div><div class="muted" id="setNumsPreview"></div></details>
+        <details class="card"><summary>录入 / 查询 / 提醒</summary><div class="form-grid">
+          <label>手机号默认录入方式<select class="input" id="setPhoneInput"><option value="manual">默认手动输入</option><option value="scan">默认扫描录入</option><option value="voice">默认语音录入</option></select></label>
+          <label>查询模式<select class="input" id="setQueryMode"><option value="fuzzy">模糊</option><option value="exact">精确</option><option value="tail">尾号匹配</option></select></label>
+          <label>闲置锁屏（分钟）<input class="input" id="setIdle" type="number" min="1" max="120"></label>
+          <label>滞留预警（天）<input class="input" id="setWarn" type="number" min="1"></label>
+          <label>严重滞留（天）<input class="input" id="setDanger" type="number" min="2"></label>
         </div>
-      </section>
+          <div class="check-grid">
+            <label class="switch"><input type="checkbox" id="setBeepIn">入库「嘀」声提醒</label>
+            <label class="switch"><input type="checkbox" id="setBeepOut">出库「嘀」声提醒</label>
+            <label class="switch"><input type="checkbox" id="setVibrateIn">入库振动提醒</label>
+            <label class="switch"><input type="checkbox" id="setVibrateOut">出库振动提醒</label>
+            <label class="switch"><input type="checkbox" id="setVoiceIn">入库语音播报</label>
+            <label class="switch"><input type="checkbox" id="setVoiceOut">出库语音播报</label>
+            <label class="switch"><input type="checkbox" id="setTorch">拍照自动开补光灯</label>
+            <label class="switch"><input type="checkbox" id="setAutoCapture">出库页自动开镜头</label>
+          </div></details>
+        <details class="card"><summary>拍照 / 拦截 / 同步</summary>
+          <div class="check-grid">
+            <label class="switch"><input type="checkbox" id="setPhotoIn">入库拍照留证</label>
+            <label class="switch"><input type="checkbox" id="setPhotoOut">出库拍照留证</label>
+            <label class="switch"><input type="checkbox" id="setPhotoAuto">出库自动拍照模式</label>
+            <label class="switch"><input type="checkbox" id="setBlacklist">黑名单禁止入库</label>
+            <label class="switch"><input type="checkbox" id="setDuplicate">重复单号禁止入库</label>
+            <label class="switch"><input type="checkbox" id="setSync">开启同步标记（仅本地队列）</label>
+          </div><div class="form-grid">
+            <label>出库拍照方式<select class="input" id="setPhotoMode"><option value="auto">自动拍照</option><option value="manual">手动拍照</option></select></label>
+            <label>拦截记录保存天数<input class="input" id="setInterceptDays" type="number" min="1" max="365"></label>
+            <label>延迟同步（分钟）<input class="input" id="setDelay" type="number" min="0" max="120"></label>
+          </div></details>
+        <div class="form-foot sticky-foot"><button class="btn btn-primary" type="submit" data-perm="settings">保存设置</button></div>
+      </form>
 
-    </div>
-  </div>
+      <div class="card"><div class="card-head"><h3>快递公司管理</h3><button class="btn btn-outline btn-sm" id="btnCompanyAdd">新增公司</button></div>
+        <div class="muted">单号识别规则用正则，从上往下匹配；命中后自动带出公司与简称。</div>
+        <div class="table-wrap"><table class="table" id="companyTable"></table></div></div>
+      <div class="card"><div class="card-head"><h3>快递标签管理</h3></div>
+        <div class="input-row"><input class="input input-sm" id="labelNew" maxlength="6" placeholder="2-5 个字，如 到付">
+          <button class="btn btn-outline btn-sm" id="btnLabelAdd">添加标签</button></div>
+        <div id="labelList" class="chip-row"></div></div>
+
+      <div class="card"><div class="card-head"><h3>数据备份</h3></div>
+        <div class="row-actions wrap">
+          <button class="btn btn-primary btn-sm" id="btnBackup">导出完整备份 JSON</button>
+          <button class="btn btn-outline btn-sm" id="btnRestore">从备份恢复</button>
+          <button class="btn btn-outline btn-sm" id="btnImportCsv">导入包裹 CSV</button>
+          <button class="btn btn-outline btn-sm" id="btnExportCsv">导出包裹 CSV</button>
+          <button class="btn btn-ghost btn-sm" id="btnPhotoExport">照片打包信息</button>
+          <button class="btn btn-ghost btn-sm danger" id="btnClearAll">清空全部数据</button>
+          <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+          <input type="file" id="importCsvFile" accept=".csv,text/csv,text/plain" hidden>
+        </div><div class="muted" id="dataState"></div></div>
+    </section>
+
+    <!-- 子账号 -->
+    <section class="view" id="view-accounts" hidden>
+      <div class="page-head"><div><h2>子账号</h2><p>多人共用账号：逐项授权，子账号不能改设置或管理账号</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>创建 / 编辑子账号</h3></div>
+          <form id="formAccount"><input type="hidden" id="accId"><div class="form-grid">
+            <label>账号<input class="input" id="accName"></label>
+            <label>密码<input class="input" id="accPw" type="password" placeholder="新建必填，编辑留空不改"></label>
+            <label>角色<select class="input" id="accRole"><option value="operator">操作员</option><option value="viewer">只读查看</option></select></label>
+          </div><div class="check-grid" id="accPerms"></div>
+          <div class="form-foot"><button class="btn btn-ghost btn-sm" type="button" id="btnAccClear">清空</button>
+            <button class="btn btn-primary" type="submit" data-perm="accounts">保存子账号</button></div></form>
+          <div class="card-head"><h3>修改自己的密码</h3></div>
+          <div class="input-row"><input class="input" id="myPw" type="password" placeholder="新密码，至少 6 位">
+            <button class="btn btn-outline btn-sm" id="btnMyPw">修改</button></div></div>
+        <div class="card"><div class="card-head"><h3>账号列表</h3></div>
+          <div class="table-wrap"><table class="table" id="accTable"></table></div>
+          <div class="card-head"><h3>自检</h3><button class="btn btn-ghost btn-sm" id="btnDiag2">运行状态</button></div>
+          <pre class="diag" id="appDiag" hidden></pre></div>
+      </div>
+    </section>
+
+    <!-- 流水 -->
+    <section class="view" id="view-logs" hidden>
+      <div class="page-head"><div><h2>操作流水</h2><p>每一步都留痕，支持筛选与导出</p></div></div>
+      <div class="card"><div class="row-actions"><input class="input input-sm" id="logKw" placeholder="搜索内容 / 操作人">
+        <select class="input input-sm" id="logAction"><option value="all">全部操作</option><option value="in">入库</option><option value="out">出库</option><option value="refund">退件</option><option value="undoIn">撤销入库</option><option value="undoOut">撤销出库</option><option value="move">移库</option><option value="edit">修改</option><option value="settings">设置</option></select>
+        <button class="btn btn-outline btn-sm" id="btnLogExport">导出流水</button><span class="muted" id="logCount"></span></div>
+        <div class="table-wrap"><table class="table" id="logTable"></table></div></div>
+    </section>
+
+    <!-- 帮助 -->
+    <section class="view" id="view-help" hidden>
+      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.0 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
+      <div class="card"><div class="card-head"><h3>已实现的功能</h3></div><div id="helpFeatures" class="help-grid"></div></div>
+      <div class="card"><div class="card-head"><h3>明确不做的功能</h3></div><div id="helpExcluded" class="help-grid"></div>
+        <div class="muted">短信 / 电话 / 群呼属于通知类，按需求整块排除；其余需要服务端合作、实名资质或厂商 SDK 的能力，在纯静态本地版里无法真实实现，已在 README 中逐条写明替代方式。</div></div>
+      <div class="card"><div class="card-head"><h3>数据与隐私</h3></div>
+        <div class="muted">台账、客户、账号、设置、照片全部只存在当前浏览器（localStorage + IndexedDB），按站点来源隔离。换浏览器 / 换设备不会自动同步，请用「设置 → 数据备份」导出 JSON 再导入。清除浏览器数据会一并清掉，务必定期备份。</div></div>
+    </section>
+
+  </main>
 </div>
 
-<div id="toast" class="toast" aria-live="polite"></div>
-<div id="modalRoot"></div>
-<div id="cameraRoot"></div>
-<input type="file" id="importFile" accept="application/json,.json" hidden>
+<!-- 通用弹窗 / 提示 / 打印 -->
+<div class="modal-mask" id="modalMask" hidden><div class="modal" id="modal"></div></div>
+<div class="toast-wrap" id="toastWrap"></div>
+<div id="printRoot" class="print-root"></div>
+<input type="file" id="globalFile" hidden>
 
-<script src="assistant.js?v=1.1.0"></script>
-<script src="store.js?v=1.1.0"></script>
-<script src="auth.js?v=1.1.0"></script>
-<script src="photos.js?v=1.1.0"></script>
-<script src="camera.js?v=1.1.0"></script>
-<script src="recognize.js?v=1.1.0"></script>
-<script src="sync.js?v=1.1.0"></script>
-<script src="app.js?v=1.1.0"></script>
+<script src="rules.js?v=2.0.0"></script>
+<script src="db.js?v=2.0.0"></script>
+<script src="auth.js?v=2.0.0"></script>
+<script src="media.js?v=2.0.0"></script>
+<script src="app.js?v=2.0.0"></script>
 <script>
-/* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
-(function () {
-  if (!('serviceWorker' in navigator)) return;
-  if (!/^https?:$/.test(location.protocol)) return;
-  window.addEventListener('load', function () {
-    navigator.serviceWorker.register('sw.js').catch(function () { /* 离线缓存失败不影响业务 */ });
-  });
-})();
+if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+  navigator.serviceWorker.register('sw.js?v=2.0.0').catch(function () {});
+}
 </script>
 </body>
 </html>

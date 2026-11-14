@@ -1,82 +1,42 @@
-/* Service Worker：应用外壳离线缓存。
-   只缓存本站 GET 静态资源，绝不拦截云盘上传、GitHub 同步等跨域请求。 */
-'use strict';
-
-var VERSION = 'station-shell-v10';
-var BUILD = '1.1.0';
+/* 驿站助手（重建版）· PWA 壳缓存
+   缓存优先只用于带版本号的本地静态资源；版本号一变，旧缓存整体失效。 */
+var VERSION = 'station-rebuild-v1';
+var BUILD = '2.0.0';
 var SHELL = [
   './',
   './index.html',
   './styles.css?v=' + BUILD,
-  './app.js?v=' + BUILD,
-  './assistant.js?v=' + BUILD,
-  './store.js?v=' + BUILD,
+  './rules.js?v=' + BUILD,
+  './db.js?v=' + BUILD,
   './auth.js?v=' + BUILD,
-  './photos.js?v=' + BUILD,
-  './camera.js?v=' + BUILD,
-  './recognize.js?v=' + BUILD,
-  './sync.js?v=' + BUILD,
-  './manifest.webmanifest',
+  './media.js?v=' + BUILD,
+  './app.js?v=' + BUILD,
+  './manifest.webmanifest?v=' + BUILD,
   './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-512.png',
-  './icons/apple-touch-icon.png'
+  './icons/icon-512.png'
 ];
 
 self.addEventListener('install', function (e) {
-  e.waitUntil(
-    caches.open(VERSION).then(function (c) {
-      // 单个资源失败不应让整次安装失败
-      return Promise.all(SHELL.map(function (url) {
-        return c.add(new Request(url, { cache: 'reload' })).catch(function () { return null; });
-      }));
-    }).then(function () { return self.skipWaiting(); })
-  );
+  e.waitUntil(caches.open(VERSION).then(function (c) {
+    return Promise.all(SHELL.map(function (u) {
+      return c.add(new Request(u, { cache: 'reload' })).catch(function () { });
+    }));
+  }).then(function () { return self.skipWaiting(); }));
 });
 
 self.addEventListener('activate', function (e) {
-  e.waitUntil(
-    caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (k) { return k !== VERSION; })
-        .map(function (k) { return caches.delete(k); }));
-    }).then(function () { return self.clients.claim(); })
-  );
+  e.waitUntil(caches.keys().then(function (keys) {
+    return Promise.all(keys.filter(function (k) { return k !== VERSION; })
+      .map(function (k) { return caches.delete(k); }));
+  }).then(function () { return self.clients.claim(); }));
 });
 
 self.addEventListener('fetch', function (e) {
-  var req = e.request;
-  if (req.method !== 'GET') return;
-  var url;
-  try { url = new URL(req.url); } catch (err) { return; }
-  // 只接管同源静态资源，跨域（云盘 / GitHub API）一律直连
+  if (e.request.method !== 'GET') return;
+  var url = new URL(e.request.url);
   if (url.origin !== self.location.origin) return;
-
-  // 页面导航：先走网络拿最新版，失败再回落到缓存的外壳
-  if (req.mode === 'navigate') {
-    e.respondWith(
-      fetch(req).then(function (res) {
-        var copy = res.clone();
-        caches.open(VERSION).then(function (c) { c.put('./index.html', copy); });
-        return res;
-      }).catch(function () {
-        return caches.match('./index.html').then(function (hit) {
-          return hit || caches.match('./');
-        });
-      })
-    );
-    return;
-  }
-
-  // 静态资源：缓存优先 + 后台更新
-  e.respondWith(
-    caches.open(VERSION).then(function (c) {
-      return c.match(req).then(function (hit) {
-        var fetching = fetch(req).then(function (res) {
-          if (res && res.ok && res.type === 'basic') c.put(req, res.clone());
-          return res;
-        }).catch(function () { return hit; });
-        return hit || fetching;
-      });
-    })
-  );
+  /* 壳资源在 install 时已全部预缓存；运行时只做缓存优先，不再往缓存里塞未知资源 */
+  e.respondWith(caches.match(e.request).then(function (hit) {
+    return hit || fetch(e.request).catch(function () { return caches.match('./index.html'); });
+  }));
 });

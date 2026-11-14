@@ -1,54 +1,17 @@
 {
-  "name": "快递驿站 · 入库出库管理",
-  "short_name": "快递驿站",
-  "description": "本地优先的快递驿站入库、出库、查件与台账系统，支持取件码、合并出库与拍照留证。",
-  "lang": "zh-CN",
-  "dir": "ltr",
+  "name": "驿站助手 · 入库出库查件统计",
+  "short_name": "驿站助手",
+  "description": "本地优先的快递驿站管理系统：入库、出库、查件、台账、客户、统计与货号标签",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#FFFDF7",
-  "theme_color": "#B8860B",
-  "categories": ["business", "productivity", "utilities"],
+  "background_color": "#fbf9f3",
+  "theme_color": "#b8860b",
+  "lang": "zh-CN",
   "icons": [
-    {
-      "src": "icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icons/icon-maskable-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
-    }
-  ],
-  "shortcuts": [
-    {
-      "name": "入库登记",
-      "short_name": "入库",
-      "url": "./index.html#inbound",
-      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
-    },
-    {
-      "name": "查件",
-      "short_name": "查件",
-      "url": "./index.html#lookup",
-      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
-    },
-    {
-      "name": "取件出库",
-      "short_name": "出库",
-      "url": "./index.html#outbound",
-      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
-    }
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

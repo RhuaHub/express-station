@@ -1,2426 +1,1512 @@
-/* 快递驿站 - 界面与交互 */
+/* 驿站助手（重建版）· UI 控制器 */
 (function () {
   'use strict';
-
-  /* 不能直接写 createStore(localStorage)：Safari 开了「阻止所有 Cookie」、微信/QQ 内置浏览器
-     或 WebView 未开 DOM storage 时，读 localStorage 这个属性本身就会抛 SecurityError，
-     整个 app.js 会在加载阶段崩掉，所有按钮绑定都执行不到 —— 表现就是「点登录毫无反应」。
-     pickStorage 会兜住异常并退回内存实现。 */
-  var store = StationStore.createStore(StationStore.pickStorage('local'));
-  var auth = window.StationAuth;
-  var sync = window.StationSync;
-  var photos = window.StationPhotos;
-  var camera = window.StationCamera;
-  var recognize = window.StationRecognize;
-  var assistant = window.StationAssistant;
+  var R = window.StationRules, DB = window.StationDB, Auth = window.StationAuth, Media = window.StationMedia;
+  var store = DB.createStore(DB.pickStorage('local'));
+  var auth = Auth.create(store);
   var $ = function (id) { return document.getElementById(id); };
-  var esc = function (v) {
-    return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
+  var esc = R.esc;
+
+  var S = {
+    view: 'dash', inTab: 'manual', outTab: 'pickup', outType: 'pickup',
+    inFiles: [], outFiles: [], inUrls: [], outUrls: [], inOcrPending: null,
+    lastIn: null, lastInBatchId: '', lastOut: null, lastOutIds: [],
+    quickList: [], scanInList: [], batchRows: [], batchErrors: [],
+    outSelected: {}, invSelected: {}, printSelected: {},
+    autoTried: false, outEngine: '', outCandidates: [], outScanPhoto: null,
+    statPreset: 'today', statTab: 'rate', qResult: [], invResult: [],
+    photoUrls: {}, idleTimer: null, lastActive: Date.now()
   };
-  var viewTitles = {
-    dash: ['工作台', '今天也要把包裹安排明白'],
-    lookup: ['查件', '报尾号或扫单号，货架位与取件状态一屏看清'],
-    inbound: ['入库登记', '扫码、回车、下一件'],
-    outbound: ['取件出库', '打开即拍照，自动识别取件码并命名凭证'],
-    inventory: ['在库台账', '所有包裹的记录、修改与检索'],
-    analytics: ['统计看板', '流转、滞留与货架占用'],
-    logs: ['操作流水', '每一步都留痕，误操作可撤销'],
-    batch: ['批量处理', '粘贴单号批量入库 / 批量出库，逐行校验'],
-    customers: ['客户管理', '按尾号归档、重点客户与入库拦截名单'],
-    accounts: ['账号管理', '子账号、角色权限与密码'],
-    settings: ['设置与数据', '驿站参数、备份导出与 GitHub 同步']
-  };
-  var state = { view: 'dash', selected: {}, invLimit: 50, outKeyword: '', lookupKey: '',
-    inFiles: [], proofFiles: [], lastParcel: null,
-    /* 拍照取件：一次拍照 → 识别 → 自动选中 → 自动命名凭证的全过程状态 */
-    scan: { status: 'idle', message: '', candidates: [], fileName: '', engine: '',
-      photoIndex: -1, busy: false, autoTried: false, userClosed: false, pickIntent: false },
-    /* 入库照片还在识别条码时，提交必须等它完成，否则照片会漏存 */
-    inOcrPending: null,
-    /* 仿驿站助手：批量处理预览结果、刚批量入库的件（用于连续打印标签） */
-    batchInRows: [], batchOut: null, lastBatchParcels: [], anaRange: 'today' };
-  var syncTimer = null;
-  var inPreviewUrls = [];
-  var proofPreviewUrls = [];
-  var viewerUrls = [];
 
-  /* ---------- 基础工具 ---------- */
-  function toast(msg, type) {
-    var el = $('toast');
-    el.innerHTML = '<div class="toast-inner ' + (type === 'err' ? 'err' : 'ok') + '">' +
-      '<svg class="ic"><use href="#' + (type === 'err' ? 'i-warn' : 'i-check') + '"/></svg>' + esc(msg) + '</div>';
-    el.classList.add('show');
-    clearTimeout(el._timer);
-    el._timer = setTimeout(function () { el.classList.remove('show'); }, 2600);
-  }
-  function closeModal() { $('modalRoot').innerHTML = ''; }
-  function confirmDialog(title, text, okText, isDanger) {
-    return new Promise(function (resolve) {
-      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
-        '<h3>' + esc(title) + '</h3><p>' + esc(text) + '</p>' +
-        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
-        '<button class="btn ' + (isDanger ? 'btn-primary' : 'btn-primary') + '" data-act="ok">' + esc(okText || '确认') + '</button></div>' +
-        '</div></div>';
-      var root = $('modalRoot');
-      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(false); };
-      root.querySelector('[data-act="ok"]').onclick = function () { closeModal(); resolve(true); };
-      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(false); } };
-    });
-  }
-  function editDialog(p) {
-    return new Promise(function (resolve) {
-      var carriers = store.settings().carriers.map(function (c) {
-        return '<option value="' + esc(c) + '"' + (c === p.carrier ? ' selected' : '') + '>' + esc(c) + '</option>';
-      }).join('');
-      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
-        '<h3>修改包裹资料</h3><p>运单号 ' + esc(p.trackingNo) + ' · 当前状态：' + (p.status === 'in' ? '在库' : '已出库') + '</p>' +
-        '<div class="field"><label>运单号</label><input class="input" id="edNo" value="' + esc(p.trackingNo) + '"></div>' +
-        '<div class="field-row"><div class="field"><label>快递公司</label><select class="input" id="edCarrier">' + carriers + '</select></div>' +
-        '<div class="field"><label>件数</label><input class="input" type="number" min="1" id="edCount" value="' + p.count + '"></div></div>' +
-        '<div class="field-row"><div class="field"><label>收件人</label><input class="input" id="edRecipient" value="' + esc(p.recipient) + '"></div>' +
-        '<div class="field"><label>手机后四位</label><input class="input" id="edPhone" value="' + esc(p.phoneTail) + '"></div></div>' +
-        '<div class="field-row"><div class="field"><label>取件码</label><input class="input" id="edCode" value="' + esc(p.pickupCode || '') + '"></div>' +
-        '<div class="field"><label>货架位</label><input class="input" id="edSlot" value="' + esc(p.slot) + '"></div></div>' +
-        '<div class="field"><label>备注</label><input class="input" id="edNote" value="' + esc(p.note) + '"></div>' +
-        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
-        '<button class="btn btn-primary" data-act="ok">保存修改</button></div></div></div>';
-      var root = $('modalRoot');
-      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
-      root.querySelector('[data-act="ok"]').onclick = function () {
-        var patch = {
-          trackingNo: $('edNo').value, carrier: $('edCarrier').value, count: $('edCount').value,
-          recipient: $('edRecipient').value, phoneTail: $('edPhone').value,
-          slot: $('edSlot').value, note: $('edNote').value
-        };
-        /* 只有真正改了取件码才传，避免覆盖「换货位时自动重算」 */
-        if ($('edCode').value.trim() !== (p.pickupCode || '')) patch.pickupCode = $('edCode').value;
-        closeModal(); resolve(patch);
-      };
-      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
-    });
-  }
-  /* 取件标签：普通打印机即可，不依赖本机打印控件 */
-  function printLabelDialog(p) {
-    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal label-modal">' +
-      '<h3>取件标签</h3><p>用普通打印机打在标签纸或 A4 上，贴到面单；也可以直接抄下取件码。</p>' +
-      (assistant && assistant.labelHTML
-        ? assistant.labelHTML(p, store.settings()).replace('class="label-sheet"', 'class="label-sheet" id="labelSheet"')
-        : '<div class="label-sheet" id="labelSheet">' + esc(p.pickupCode || '—') + '</div>') +
-      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button>' +
-      '<button class="btn btn-outline" data-act="copy">复制取件码</button>' +
-      '<button class="btn btn-primary" data-act="print"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' +
-      '</div></div>';
-    var root = $('modalRoot');
-    root.querySelector('[data-act="close"]').onclick = closeModal;
-    root.querySelector('[data-act="copy"]').onclick = function () { copyText(p.pickupCode || ''); };
-    root.querySelector('[data-act="print"]').onclick = function () {
-      document.body.classList.add('printing-label');
-      window.addEventListener('afterprint', function handler() {
-        document.body.classList.remove('printing-label');
-        window.removeEventListener('afterprint', handler);
-      });
-      window.print();
-    };
-    root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) closeModal(); };
-  }
-
-  /* 入库框里的取件码预览：手改过就保留，换货架位只重算自动生成的值 */
-  function refreshCodePreview(force) {
-    var el = $('inPickupCode');
-    var slot = $('inSlot').value.trim() || store.suggestSlot($('inZone').value || store.settings().zones[0]);
-    var auto = store.previewPickupCode(slot);
-    if (force || !el.dataset.manual || el.value === el.dataset.auto) {
-      el.value = auto;
-      el.dataset.auto = auto;
-      el.dataset.manual = '';
-    }
-    var mode = store.settings().codeMode;
-    $('inCodeHint').textContent = mode === 'off'
-      ? '当前规则为「不生成取件码」，旧记录仍可用原码查件'
-      : mode === 'daily' ? '每日流水号：每天从 001 开始，不与当天已有件重复'
-        : '顾客报码即可查件；货架位变化会自动重算';
-  }
-
-  function downloadFile(name, text, mime) {
-    /* 安卓 App 内运行时：WebView 不支持 blob 下载，交给原生写入「下载/快递驿站」 */
-    if (window.StationNative && typeof window.StationNative.saveText === 'function') {
-      try {
-        window.StationNative.saveText(name, text, mime || 'text/plain;charset=utf-8');
-        return;
-      } catch (e) { /* 桥接异常时回落到浏览器下载 */ }
-    }
-    var blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url; a.download = name; document.body.appendChild(a); a.click();
-    document.body.removeChild(a);
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-  }
-  function dateStamp() {
-    var d = new Date(), p = function (n) { return n < 10 ? '0' + n : '' + n; };
-    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
-  }
-  function scheduleSync() {
-    var c = sync.config();
-    if (!c.auto || !sync.isConfigured()) return;
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(function () {
-      sync.push(store.exportJSON()).then(function (r) {
-        renderSyncState();
-        if (!r.ok) toast('自动同步失败：' + r.error, 'err');
-      });
-    }, 2500);
-  }
-  /* 本地存储写不进去（无痕模式 / 存储满 / 系统限制）时只提示一次，避免每次操作都弹 */
-  var storageWarned = false;
-  function warnStorageOnce() {
-    if (storageWarned) return;
-    var okStore = typeof store.storageOk !== 'function' || store.storageOk();
-    var okAuth = auth.status ? auth.status().storageOk !== false : true;
-    if (okStore && okAuth) return;
-    storageWarned = true;
-    toast('本机存储写不进去（无痕模式或空间不足）：这次改动刷新后会丢，请尽快导出备份', 'err');
-  }
-  function afterWrite(msg, type) {
-    if (msg) toast(msg, type);
-    warnStorageOnce();
-    renderAll();
-    scheduleSync();
-  }
-
-  /* ---------- 照片 ---------- */
-  function releaseUrls(arr) {
-    arr.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) { /* 忽略 */ } });
-    arr.length = 0;
-  }
-  function renderFilePreview(containerId, files, urlBag, removable) {
-    releaseUrls(urlBag);
-    $(containerId).innerHTML = files.map(function (f, i) {
-      var u = URL.createObjectURL(f);
-      urlBag.push(u);
-      return '<div class="thumb"><img src="' + u + '" alt="待上传照片">' +
-        (removable ? '<button type="button" class="thumb-del" data-remove="' + i + '" title="移除"><svg class="ic"><use href="#i-close"/></svg></button>' : '') +
-        '</div>';
-    }).join('');
-  }
-  function clearFiles(which) {
-    if (which === 'in') {
-      state.inFiles = []; $('inPhotos').value = '';
-      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
-      renderInOcr('', '');
-    } else {
-      state.proofFiles = []; $('outProof').value = '';
-      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
-      var s = state.scan;
-      s.status = 'idle'; s.message = ''; s.candidates = []; s.fileName = '';
-      s.photoIndex = -1; s.busy = false; s.pickIntent = false;
-      renderScan();
+  /* ---------------- 通用 ---------------- */
+  function toast(msg, kind) {
+    var w = $('toastWrap'), d = document.createElement('div');
+    d.className = 'toast' + (kind ? ' ' + kind : ''); d.textContent = msg;
+    w.appendChild(d);
+    setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 2800);
+    if (window.StationNative && window.StationNative.toastMsg && kind === 'err') {
+      try { window.StationNative.toastMsg(msg); } catch (e) { }
     }
   }
-  /* 入库识别状态条：拍照/选图后告诉用户读到了哪个条码、有没有自动填单号 */
-  function renderInOcr(status, message) {
-    var el = $('inOcrState');
-    if (!el) return;
-    el.className = 'in-ocr' + (status ? ' ' + status : '');
-    el.textContent = message || '';
-    el.hidden = !message;
-  }
-  /* 入库照片逐张读条码：文件名写成 RK_时间_条码_随机.jpg，条码同时可当运单号。
-     只有运单号输入框为空时才自动填，绝不覆盖扫码枪 / 手输的内容。 */
-  async function nameInboundFiles(files) {
-    renderInOcr('busy', '正在识别 ' + files.length + ' 张照片里的条码…');
-    var out = [], codes = [];
-    for (var i = 0; i < files.length; i++) {
-      var d = null;
-      try { d = recognize ? await recognize.detect(files[i]) : null; }
-      catch (e) { d = null; }
-      var code = d && recognize && recognize.barcodeOf ? recognize.barcodeOf(d) : '';
-      if (code && codes.indexOf(code) < 0) codes.push(code);
-      var name = recognize && recognize.inboundName ? recognize.inboundName(code) : '';
-      out.push(name ? renameFile(files[i], name) : files[i]);
-    }
-    if (codes.length) {
-      var input = $('inTracking');
-      var filled = false;
-      if (input && !input.value.trim()) { input.value = codes[0]; filled = true; }
-      var list = codes.slice(0, 3).join('、') + (codes.length > 3 ? ' 等 ' + codes.length + ' 个' : '');
-      renderInOcr('ok', '识别到条码 ' + list + ' · 照片已按条码命名' +
-        (filled ? ' · 已自动填入运单号' : '（运单号已填，未覆盖）'));
-      toast(filled ? '识别到条码 ' + codes[0] + '，已填入运单号' : '识别到条码，照片已按条码命名');
-    } else {
-      renderInOcr('err', '没读到条码 · 照片按时间命名，运单号请扫码或手输');
-    }
-    return out;
-  }
-  async function addFiles(which, fileList) {
-    var files = Array.from(fileList || []).filter(function (f) { return /^image\//.test(f.type); }).slice(0, 12);
-    if (!files.length) { toast('请选择图片文件', 'err'); return; }
-    if (which === 'in') {
-      var task = nameInboundFiles(files);
-      state.inOcrPending = task;
-      try { files = await task; }
-      finally { if (state.inOcrPending === task) state.inOcrPending = null; }
-    }
-    if (which === 'in') {
-      state.inFiles = state.inFiles.concat(files).slice(0, 12);
-      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
-    } else {
-      state.proofFiles = state.proofFiles.concat(files).slice(0, 12);
-      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
-    }
-    renderPhotoStatus();
-  }
-  async function savePhotos(files, kind) {
-    var items = [], warnings = [], failed = 0;
-    for (var i = 0; i < files.length; i++) {
-      var r;
-      /* 拍照取件生成的 CK_ 文件名带取件码 / 单号，写进仓库时沿用，事后按码能翻到凭证 */
-      var customName = /^(CK|RK)_/.test(files[i].name) ? files[i].name : '';
-      try { r = await photos.put(files[i], kind, { name: customName }); }
-      catch (e) { r = { ok: false, error: e.message || String(e) }; }
-      if (!r.ok) { failed++; continue; }
-      if (r.warning) warnings.push(r.warning);
-      items.push({
-        ref: r.ref, name: r.name, mode: r.mode, kind: kind,
-        size: r.size, at: new Date().toISOString()
-      });
-    }
-    return { items: items, warnings: warnings, failed: failed };
-  }
-  function reportPhotoResult(res) {
-    if (res.failed) toast(res.failed + ' 张照片保存失败，包裹记录已保留', 'err');
-    if (res.warnings.length) toast(res.warnings[0], 'err');
-  }
-  function renderPhotoStatus() {
-    var st = photos.status();
-    $('photoStatus').textContent = st;
-    $('inPhotoState').textContent = state.inFiles.length ? state.inFiles.length + ' 张待上传 · ' + st : st;
-    var n = state.proofFiles.length;
-    $('btnProof').innerHTML = '<svg class="ic"><use href="#i-camera"/></svg>' + (n ? '凭证 ' + n + ' 张 · 再拍' : '拍取件凭证');
-  }
-  async function renderCacheState() {
-    var el = $('ghCacheState');
-    if (!el) return;
-    var info = await photos.cacheInfo();
-    var c = photos.config();
-    if (!info.supported) { el.textContent = '本机缓存不可用（这个浏览器禁用了本地存储），照片每次都会重新下载'; return; }
-    var hits = info.hit, total = info.hit + info.miss;
-    var rate = total ? Math.round(hits * 100 / total) + '%' : '—';
-    el.textContent = '已缓存 ' + info.count + '/' + info.max + ' 张 · 本次命中 ' + hits + '/' + total +
-      '（' + rate + '）' + (c.github.cache ? '' : ' · 缓存开关已关');
-  }
-  /* 拍照：优先调用设备摄像头实时预览，不可用时回退到系统相机 / 相册 */
-  function nativeCapture(which) {
-    var input = $(which === 'in' ? 'inPhotos' : 'outProof');
-    input.setAttribute('capture', 'environment');
-    input.click();
-    setTimeout(function () { input.removeAttribute('capture'); }, 1500);
-    /* 用户取消了系统相机就不会有 change，别让 pickIntent 挂到下一次「选图」上 */
-    if (which === 'proof' && state.scan.pickIntent) {
-      setTimeout(function () { state.scan.pickIntent = false; }, 30000);
-    }
-  }
-  async function takePhoto(which) {
-    var single = which === 'proof';
-    if (camera && camera.supported()) {
-      var files = await camera.open({
-        single: single,
-        title: single ? '取件凭证 · 拍照' : '面单 / 包裹照片'
-      });
-      if (files && files.length) { addFiles(which, files); return files; }
-      if (camera.lastError) { toast(camera.lastError, 'err'); nativeCapture(which); }
-      return null;
-    }
-    nativeCapture(which);
-    return null;
-  }
-
-  /* ---------- 拍照取件：进页面自动开镜头 → 识别 → 自动选中 → 自动命名凭证 ---------- */
-  function renameFile(file, name) {
-    try {
-      return new File([file], name, {
-        type: file.type || 'image/jpeg', lastModified: file.lastModified || Date.now()
-      });
-    } catch (e) { return file; }  /* 老浏览器不支持 File 构造，就保留原名 */
-  }
-  function renderScan() {
-    var s = state.scan;
-    var el = $('scanState');
-    if (!el) return;
-    el.className = 'scan-state' + (s.status === 'err' ? ' err'
-      : (s.status === 'ok' ? ' ok' : (s.status === 'busy' ? ' busy' : '')));
-    el.textContent = s.message || '准备就绪 · 点「拍照取件」或等自动开镜头；识别不到就用下面搜索框手输';
-    var box = $('scanCandidates');
-    box.innerHTML = s.candidates.length
-      ? '<span class="scan-cand-label">识别到多件可能匹配，请点选：</span>' + s.candidates.map(function (c) {
-        var p = c.parcel;
-        return '<button type="button" class="scan-cand" data-scan-id="' + esc(p.id) + '">' +
-          '<b>' + esc(p.pickupCode || '无码') + '</b><span>' + esc(p.trackingNo) + '</span>' +
-          '<em>' + esc(p.slot || '') + '</em></button>';
-      }).join('')
-      : '';
-    var fn = $('scanFileName');
-    fn.hidden = !s.fileName;
-    fn.textContent = s.fileName ? '凭证文件名：' + s.fileName : '';
-    var eng = $('scanEngine');
-    if (eng) {
-      var e = recognize ? recognize.engines() : { any: false, label: '识别模块未加载' };
-      eng.textContent = '本机识别：' + e.label + (e.any
-        ? '' : ' · 这个浏览器不支持本地条码/文字识别，拍照后请手输取件码；照片仍会按时间自动命名');
-    }
-  }
-  async function handlePickupPhoto(file) {
-    var s = state.scan;
-    if (!file || String(file.type || '').indexOf('image/') !== 0) {
-      toast('请选择图片文件', 'err'); return;
-    }
-    s.busy = true; s.status = 'busy';
-    s.message = '正在识别照片里的条码 / 取件码…';
-    s.candidates = []; s.fileName = '';
-    renderScan();
-
-    var inStock = store.listParcels({ status: 'in' });
-    var res;
-    try {
-      res = recognize
-        ? await recognize.detectAndMatch(file, inStock)
-        : { tokens: [], candidates: [], best: null, top: null, supported: false,
-            engineLabel: '识别模块未加载', detected: [], readError: '' };
-    } catch (e) {
-      res = { tokens: [], candidates: [], best: null, top: null, supported: false,
-        engineLabel: '识别失败', detected: [], readError: e.message || String(e) };
-    }
-
-    var name = recognize ? recognize.fileName(res) : '';
-    var named = name ? renameFile(file, name) : file;
-    s.fileName = named.name;
-    s.engine = res.engineLabel || '';
-    s.candidates = res.candidates || [];
-    /* 新拍的一张一定进凭证列表；旧凭证最多留 11 张，仍支持一次多件合并出库 */
-    state.proofFiles = state.proofFiles.slice(-11).concat([named]);
-    s.photoIndex = state.proofFiles.length - 1;
-    renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
-    renderPhotoStatus();
-
-    if (res.best) {
-      var p = res.best.parcel;
-      state.selected[p.id] = true;
-      /* 把命中的串填进搜索框，列表立刻显示这件被勾选的包裹，肉眼可复核再出库 */
-      $('outSearch').value = res.best.token;
-      state.outKeyword = res.best.token;
-      s.status = 'ok';
-      s.message = '识别到「' + res.best.token + '」· 已自动选中 ' + p.trackingNo +
-        '（取件码 ' + (p.pickupCode || '无码') + ' / ' + (p.slot || '未分配') + '）';
-      toast('已自动识别并选中 1 件，确认无误后点「确认出库」');
-    } else if (res.candidates && res.candidates.length) {
-      if (res.top && res.top.token) {
-        $('outSearch').value = res.top.token;
-        state.outKeyword = res.top.token;
-      }
-      s.status = 'busy';
-      s.message = '识别到 ' + res.candidates.length + ' 件可能匹配，请点下方按钮选一件（不会自动出库）';
-    } else {
-      s.status = 'err';
-      s.message = (res.readError || '照片里没找到可对应的在库包裹') +
-        '；凭证已自动命名，可在下方搜索框手输取件码后出库';
-    }
-    s.busy = false;
-    renderScan();
-    renderOutbound();
-  }
-  async function capturePickup(auto) {
-    var s = state.scan;
-    if (s.busy) return;
-    if (!auth.can('write')) {
-      if (!auto) toast('当前账号没有出库权限', 'err');
-      return;
-    }
-    if (!camera || !camera.supported()) {
-      s.pickIntent = true;
-      if (!auto) toast('当前浏览器不支持网页摄像头，改用系统相机', 'err');
-      nativeCapture('proof');
-      return;
-    }
-    s.busy = true; s.status = 'busy';
-    s.message = auto ? '正在自动打开摄像头…' : '摄像头已打开 · 拍完自动识别并命名';
-    renderScan();
-    /* 刚登录完键盘可能还开着，先收起来再弹相机，避免软键盘盖住取景框 */
-    try { if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); } catch (e) { /* 忽略 */ }
-    var files;
-    try {
-      files = await camera.open({
-        single: true,
-        title: '拍照取件 · 自动识别',
-        subtitle: '对准面单条码或取件码标签，拍完自动找件、自动命名凭证',
-        tip: '对准面单 / 取件码后点「拍照」'
-      });
-    } catch (e) { files = null; }
-    s.busy = false;
-    if (camera.lastError) toast(camera.lastError, 'err');
-    if (!files || !files.length) {
-      /* 主动关过一次相机，本会话就不再自动弹，避免每次切页面都被打断 */
-      s.userClosed = true;
-      s.status = 'idle';
-      s.message = '已取消拍照 · 可点「拍照取件」重拍，或用下面搜索框手输取件码';
-      renderScan();
-      return;
-    }
-    await handlePickupPhoto(files[0]);
-  }
-  async function maybeAutoCapture() {
-    var s = state.scan;
-    if (s.autoTried || s.busy || s.userClosed) return;
-    if (!photos.config().autoCapture || !auth.can('write')) return;
-    s.autoTried = true;
-    if (!camera || !camera.supported()) {
-      s.status = 'err';
-      s.message = '当前浏览器不支持网页摄像头；可点「拍照取件」用系统相机，或直接手输取件码';
-      renderScan();
-      return;
+  function download(name, content, mime) {
+    if (window.StationNative && window.StationNative.saveText) {
+      try { window.StationNative.saveText(name, content, mime || 'text/plain'); return; } catch (e) { }
     }
     try {
-      if (navigator.permissions && navigator.permissions.query) {
-        var st = await navigator.permissions.query({ name: 'camera' });
-        if (st && st.state === 'denied') {
-          s.userClosed = true;
-          s.status = 'err';
-          s.message = '相机权限被拒绝：请在浏览器/系统设置里允许摄像头，或关掉「自动开镜头」改手输取件码';
-          renderScan();
-          return;
-        }
-      }
-    } catch (e) { /* Safari 不支持 camera 权限查询，直接尝试开镜头 */ }
-    capturePickup(true);
+      var blob = new Blob([content], { type: (mime || 'text/plain') + ';charset=utf-8' });
+      var u = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href = u; a.download = name; document.body.appendChild(a); a.click();
+      setTimeout(function () { URL.revokeObjectURL(u); if (a.parentNode) a.parentNode.removeChild(a); }, 800);
+    } catch (e) { toast('导出失败：' + e.message, 'err'); }
   }
-  function applyScanChoice(id) {
-    var p = store.listParcels({ status: 'in' }).find(function (x) { return x.id === id; });
-    if (!p) { toast('该包裹已出库，请重新拍照', 'err'); return; }
-    var s = state.scan;
-    state.selected[id] = true;
-    s.status = 'ok';
-    s.message = '已选中 ' + p.trackingNo + '（取件码 ' + (p.pickupCode || '无码') +
-      ' / ' + (p.slot || '未分配') + '）';
-    s.candidates = [];
-    /* 用户改选了另一件，文件名跟着改，别把错的取件码留在凭证上 */
-    if (recognize && s.photoIndex >= 0 && s.photoIndex < state.proofFiles.length) {
-      var name = recognize.fileName({ best: { parcel: p } });
-      state.proofFiles[s.photoIndex] = renameFile(state.proofFiles[s.photoIndex], name);
-      s.fileName = state.proofFiles[s.photoIndex].name;
-      renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
-    }
-    renderScan();
-    renderOutbound();
-  }
-
-  function togglePhotoBoxes() {
-    var m = $('phMode').value;
-    $('phGithubBox').hidden = m !== 'github';
-    $('phWebdavBox').hidden = m !== 'webdav';
-    $('phProviderTipBox').hidden = m !== 'webdav';
-    $('phWebdavTipBox').hidden = m !== 'webdav';
-    $('phLocalBox').hidden = m !== 'local';
-  }
-  function currentProvider() {
-    var key = $('phProvider').value;
-    var list = photos.providers();
-    for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
-    return list[0];
-  }
-  /* 切换云盘服务时带出官方地址，并实时预览真正会请求的根地址 */
-  function refreshProviderUI(applyPreset) {
-    var p = currentProvider();
-    var all = photos.providers();
-    var cur = $('phBase').value.trim();
-    var isPreset = all.some(function (x) { return x.upstream && x.upstream === cur; });
-    if (applyPreset ? (!cur || isPreset) : (!cur && p.upstream)) $('phBase').value = p.upstream || '';
-
-    $('phUserLabel').textContent = '账号（' + p.account + '）';
-    $('phProviderTitle').textContent = p.upstream ? '用 ' + p.name + '：三步就够' : '自定义 WebDAV（AList 等）';
-    $('phProviderHint').innerHTML = p.hint +
-      (p.upstream
-        ? ' ③ 把仓库里的 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker（只补 CORS 头，不需要服务器），' +
-          '把 <b>Worker 根地址</b>填到「CORS 代理地址」，下面的上游地址保持默认即可。' +
-          (p.key === 'pan123'
-            ? '照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。注意：123 云盘自 2026-11-04 起新账号/新会员已不含 WebDAV，' +
-              '后台看不到「WebDAV 授权管理」就说明这个账号没有该权益，别在这儿耗时间，改用坚果云或本机文件夹。'
-            : '照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。坚果云免费版就有 WebDAV，每月上传 1GB / 下载 3GB，' +
-              '存出库凭证够用；照片量大就把「图片最长边」调到 1200，或升级套餐。')
-        : '');
-    var ep = photos.endpoint({
-      provider: $('phProvider').value,
-      baseUrl: $('phBase').value.trim(),
-      proxyBase: $('phProxyBase').value.trim()
-    });
-    $('phProviderRoute').textContent = !ep
-      ? '实际请求：未配置'
-      : $('phProxyBase').value.trim()
-        ? '实际请求：' + ep + '（经 Worker 转发到 ' + ($('phBase').value.trim() || '上游') + '）'
-        : '实际请求：' + ep + (p.upstream ? ' · 直连没有 CORS 头，浏览器会拦，务必填代理地址' : '');
-  }
-  function fillPhotoSettings() {
-    var c = photos.config();
-    $('phMode').value = c.mode;
-    $('phDir').value = c.dirName;
-    $('phProvider').value = c.webdav.provider || 'nutstore';
-    $('phBase').value = c.webdav.baseUrl;
-    $('phProxyBase').value = c.webdav.proxyBase;
-    $('phUser').value = c.webdav.user;
-    $('phPass').value = c.webdav.pass;
-    $('phProxyKey').value = c.webdav.proxyKey;
-    $('ghRepo').value = c.github.repo;
-    $('ghBranch').value = c.github.branch;
-    $('ghDir').value = c.github.dir;
-    $('ghAllowPublic').checked = !!c.github.allowPublic;
-    $('ghProxyBase').value = c.github.proxyBase;
-    $('ghProxyKey').value = c.github.proxyKey;
-    $('ghCache').checked = c.github.cache !== false;
-    $('phMax').value = c.maxSide;
-    $('phQuality').value = c.quality;
-    $('phRequireProof').checked = c.requireProof !== false;
-    $('phAutoCapture').checked = c.autoCapture !== false;
-    togglePhotoBoxes();
-    refreshProviderUI(false);
-    renderPhotoStatus();
-    renderCacheState();
-  }
-  function savePhotoForm() {
-    photos.saveConfig({
-      mode: $('phMode').value,
-      dirName: $('phDir').value.trim(),
-      webdav: {
-        provider: $('phProvider').value,
-        baseUrl: $('phBase').value.trim(),
-        proxyBase: $('phProxyBase').value.trim(),
-        user: $('phUser').value,
-        pass: $('phPass').value,
-        proxyKey: $('phProxyKey').value.trim()
-      },
-      github: {
-        repo: $('ghRepo').value.trim(),
-        branch: $('ghBranch').value.trim(),
-        dir: $('ghDir').value.trim() || 'photos',
-        allowPublic: $('ghAllowPublic').checked,
-        proxyBase: $('ghProxyBase').value.trim(),
-        proxyKey: $('ghProxyKey').value.trim(),
-        cache: $('ghCache').checked
-      },
-      maxSide: Number($('phMax').value),
-      quality: Number($('phQuality').value),
-      requireProof: $('phRequireProof').checked,
-      autoCapture: $('phAutoCapture').checked
-    });
-    renderPhotoStatus();
-  }
-  async function openPhotoViewer(parcelId) {
-    var p = store.getDB().parcels.find(function (x) { return x.id === parcelId; });
-    if (!p || !p.photos || !p.photos.length) return;
-    releaseUrls(viewerUrls);
-    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal" style="width:min(700px,100%)">' +
-      '<h3>' + esc(p.trackingNo) + ' · 照片 ' + p.photos.length + ' 张</h3>' +
-      '<p>照片按设置存到 GitHub 仓库或云盘。移除只删台账里的引用，文件本身保留。</p>' +
-      '<div class="viewer-grid" id="viewerGrid"></div>' +
-      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button></div></div></div>';
-    var root = $('modalRoot');
-    root.querySelector('[data-act="close"]').onclick = function () { releaseUrls(viewerUrls); closeModal(); };
-    root.querySelector('.modal-mask').onclick = function (e) {
-      if (e.target === this) { releaseUrls(viewerUrls); closeModal(); }
-    };
-    var grid = $('viewerGrid');
-    grid.innerHTML = p.photos.map(function (ph) {
-      return '<div class="viewer-item"><div class="viewer-img" data-img>加载中…</div>' +
-        '<div class="viewer-meta"><span class="viewer-kind">' + (ph.kind === 'pickup' ? '取件凭证' : '入库照片') + '</span>' +
-        '<button type="button" data-detach="' + esc(ph.id) + '">移除引用</button></div></div>';
-    }).join('');
-    var loads = p.photos.map(function (ph, idx) {
-      var box = grid.children[idx] && grid.children[idx].querySelector('[data-img]');
-      if (!box) return null;
-      return photos.getUrl(ph.ref).then(function (url) {
-        viewerUrls.push(url);
-        box.innerHTML = '<img src="' + url + '" alt="照片">';
-      }).catch(function (e) {
-        box.textContent = e.message || '读取失败';
-      });
-    });
-    /* 照片读完后刷新缓存命中率，顺便让「清除缓存」旁边的数字是实时的 */
-    Promise.all(loads).then(renderCacheState, renderCacheState);
-    grid.addEventListener('click', function (e) {
-      var b = e.target.closest('[data-detach]');
-      if (!b) return;
-      if (!window.confirm('移除这张照片的引用？台账里将不再显示，阿里云盘里的文件保留。')) return;
-      var r = store.detachPhoto(parcelId, b.dataset.detach);
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      releaseUrls(viewerUrls);
-      closeModal();
-      afterWrite('已移除照片引用');
-    });
-  }
-
-  /* ---------- 账号、登录门与权限 ---------- */
+  function feedback(kind, text) { Media.feedback(kind, text, store.settings()); }
   function guard(perm) {
-    if (auth.can(perm)) return true;
-    var c = auth.current();
-    toast('当前账号（' + (c ? c.roleName : '未登录') + '）没有此操作权限', 'err');
-    return false;
+    if (!auth.can(perm)) { toast('当前账号没有「' + perm + '」权限', 'err'); return false; }
+    return true;
   }
-  function renderUserChip() {
-    var c = auth.current();
-    $('userChip').textContent = c ? c.name + ' · ' + c.roleName : '未登录';
+  function openModal(title, html, foot) {
+    $('modal').innerHTML = '<h3>' + esc(title) + '</h3>' + html +
+      '<div class="modal-foot">' + (foot || '<button class="btn btn-ghost" data-modal="close">关闭</button>') + '</div>';
+    $('modalMask').hidden = false;
+    return $('modal');
   }
-  function applyPermissions() {
-    document.querySelectorAll('[data-perm]').forEach(function (el) {
-      var ok = auth.can(el.dataset.perm);
-      if (el.classList.contains('nav-item')) { el.hidden = !ok; return; }
-      if (el.tagName === 'FORM') {
-        el.querySelectorAll('input, select, button, textarea').forEach(function (x) { x.disabled = !ok; });
-      } else el.disabled = !ok;
-      el.classList.toggle('perm-locked', !ok);
+  function closeModal() { $('modalMask').hidden = true; $('modal').innerHTML = ''; }
+  function confirmBox(title, msg, onOk) {
+    var m = openModal(title, '<div class="notice" style="border-radius:9px">' + esc(msg) + '</div>',
+      '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">确定</button>');
+    m.querySelector('[data-modal="ok"]').onclick = function () { closeModal(); onOk(); };
+  }
+  function table(elId, cols, rows, opts) {
+    opts = opts || {};
+    var el = $(elId); if (!el) return;
+    var h = '<thead><tr>' + (opts.check ? '<th></th>' : '') +
+      cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
+    if (!rows.length) {
+      h += '<tr><td class="empty" colspan="' + (cols.length + (opts.check ? 1 : 0)) + '">' +
+        esc(opts.empty || '查无数据') + '</td></tr>';
+    }
+    rows.forEach(function (r) {
+      h += '<tr' + (r.id ? ' data-id="' + esc(r.id) + '"' : '') + '>' +
+        (opts.check ? '<td data-label="选择"><input type="checkbox" data-check="' + esc(r.id) + '"' +
+          (opts.selected && opts.selected[r.id] ? ' checked' : '') + '></td>' : '') +
+        r.cells.map(function (c, i) { return '<td data-label="' + esc(cols[i]) + '">' + c + '</td>'; }).join('') + '</tr>';
     });
-    renderUserChip();
-    if (!viewTitles[state.view]) state.view = 'dash';
-    var activeNav = $('nav').querySelector('[data-view="' + state.view + '"]');
-    if (!activeNav || activeNav.hidden) state.view = 'dash';
+    el.innerHTML = h + '</tbody>';
   }
-  function authMsg(text, isErr) {
-    var box = $('authMsg');
-    box.textContent = text;
-    box.className = 'auth-msg' + (isErr ? ' err' : ' ok');
-    box.hidden = false;
-    /* 手机上键盘会挡掉下半屏，错误提示在按钮下方很容易看不见，主动带进视野 */
-    try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { /* 老浏览器忽略 */ }
+  function fillSelect(id, list, value, labelFn, valFn) {
+    var el = $(id); if (!el) return;
+    el.innerHTML = list.map(function (x) {
+      var v = valFn ? valFn(x) : x, l = labelFn ? labelFn(x) : x;
+      return '<option value="' + esc(v) + '"' + (String(v) === String(value) ? ' selected' : '') + '>' + esc(l) + '</option>';
+    }).join('');
   }
-  /* 初始化入口只在「一个账号都没有」且显式请求时才放行：
-     ① 打开带 #setup 或 ?setup=1 的地址；② 在登录面板长按标题 1.2 秒（安卓 App 用这个）。
-     站内不再默认展示注册表单，外人打开网站只能看到登录框。 */
-  function wantSetup() {
-    if (!auth.status().needSetup) return false;
-    var h = String(location.hash || '').toLowerCase();
-    var q = String(location.search || '').toLowerCase();
-    return h === '#setup' || h === '#/setup' || q.indexOf('setup=1') >= 0;
+  function ops(buttons) {
+    return '<div class="ops">' + buttons.map(function (b) {
+      return '<button class="btn btn-ghost btn-sm" data-act="' + b[0] + '" data-id="' + esc(b[2]) + '">' + esc(b[1]) + '</button>';
+    }).join('') + '</div>';
   }
-  function showGate(mode) {
+  function statusTag(p) {
+    if (p.status === 'void') return '<span class="tag tag-out">已撤销</span>';
+    if (p.status === 'out') return p.outType === 'refund'
+      ? '<span class="tag tag-refund">已退件</span>' : '<span class="tag tag-out">已出库</span>';
+    var d = R.daysBetween(p.inAt, Date.now());
+    var set = store.settings();
+    return '<span class="tag ' + (d >= set.dangerDays ? 'tag-danger' : d >= set.warnDays ? 'tag-warn' : 'tag-in') + '">' +
+      (d >= set.warnDays ? '滞留 ' + d + ' 天' : '在库') + '</span>';
+  }
+  function parcelLine(p) {
+    return '<div><b class="mono">' + esc(p.goodsNo || p.serial || '—') + '</b>' +
+      '<div class="td-sub">' + esc(p.trackingNo) + ' · ' + esc(p.slot) + '</div></div>';
+  }
+  function afterWrite(msg, kind) {
+    store.save();
+    renderAll();
+    if (kind) feedback(kind, msg);
+    toast(msg, 'ok');
+  }
+
+  /* ---------------- 登录门 ---------------- */
+  function showGate() {
+    $('app').hidden = true; $('authGate').hidden = false;
     var st = auth.status();
-    /* 有账号时注册入口永久失效，任何情况下都回落到登录 */
-    if (mode === 'setup' && !st.needSetup) mode = 'login';
-    document.body.classList.add('auth-locked');
-    $('authGate').hidden = false;
-    $('authSetup').hidden = mode !== 'setup';
-    $('authLogin').hidden = mode !== 'login';
-    $('authStationName').textContent = store.settings().stationName;
-    $('authMsg').hidden = true;
-    ['regPass', 'regConfirm', 'loginPass'].forEach(function (id) { $(id).value = ''; });
-    /* 无账号时在登录页给出唯一线索，避免站长自己也不知道怎么初始化 */
-    var boot = $('authBootHint');
-    if (boot) {
-      boot.hidden = !(mode === 'login' && st.needSetup);
+    $('authSetup').hidden = true; $('authLogin').hidden = true; $('authBootHint').hidden = true;
+    $('authStorageHint').hidden = st.storageOk;
+    if (st.locked) {
+      $('authLogin').hidden = false; $('authLoginTitle').textContent = '已锁屏 · 输入密码解锁';
+    } else if (st.needSetup) {
+      $('authBootHint').hidden = false;
+    } else {
+      $('authLogin').hidden = false; $('authLoginTitle').textContent = '登录';
     }
-    /* 存储不可写（无痕模式/配额满）时提前说清楚，别等用户输完密码以为账号错了 */
-    var sh = $('authStorageHint');
-    if (sh) {
-      sh.hidden = st.storageOk !== false;
-      var why = $('authStorageWhy');
-      if (why && st.storageOk === false) {
-        /* file:// 是最常见的一种：手机上直接点开下载的 index.html，
-           Chrome / Safari 一律拒绝这类页面使用 localStorage，提示必须写准。 */
-        why.innerHTML = location.protocol === 'file:'
-          ? '你现在是用<b>文件方式</b>打开的（<code>file://</code>）。Chrome 与 Safari 都禁止这种页面保存数据，所以账号库读不到，也没法登录。请把站点放到网址上打开（GitHub Pages 等），或直接用安卓 App。'
-          : '账号库读不到，也存不下来。常见原因：<b>Safari 开了「阻止所有 Cookie」</b>、<b>微信/QQ/微博的内置浏览器</b>、无痕模式、存储已满。请复制地址栏网址，用<b>系统浏览器</b>（Safari / Chrome）重新打开；Safari 需到「设置 → Safari → 阻止所有 Cookie」关掉。';
-      }
-    }
-    var focusId = mode === 'setup' ? 'regName' : 'loginUser';
-    /* 触屏设备不自动聚焦：一进页面就弹键盘，iOS 还会因输入框字号不足 16px 自动放大，
-       把登录按钮顶出可视区——这正是「手机上点不到登录」的典型成因。 */
-    var coarse = false;
-    try { coarse = window.matchMedia('(hover: none), (pointer: coarse)').matches; } catch (e) { coarse = false; }
-    if (!coarse) setTimeout(function () { $(focusId).focus(); }, 80);
-  }
-  function hideGate() {
-    document.body.classList.remove('auth-locked');
-    $('authGate').hidden = true;
+    $('authMsg').textContent = '';
   }
   function enterApp() {
-    var c = auth.current();
-    if (!c) { showGate(wantSetup() ? 'setup' : 'login'); return; }
-    /* 先放行进入，再补记账：写日志失败不该把登录卡在门口 */
-    hideGate();
-    store.setActor(c.name);
-    try { store.logEvent('login', c.name + ' 登录（' + c.roleName + '）'); } catch (e) { /* 日志失败不影响使用 */ }
-    applyPermissions();
-    fillSettings();
+    $('authGate').hidden = true; $('app').hidden = false;
+    var st = auth.status();
+    $('topUser').textContent = st.user + (st.role === 'owner' ? ' · 站长' : st.role === 'viewer' ? ' · 只读' : '');
+    $('topStation').textContent = store.settings().stationName || '快递驿站';
+    store.setActor(st.user);
     renderAll();
-    var target = hashView();
-    switchView(target || 'dash', target ? { noHash: true } : undefined);
-    if (target) toast('已打开「' + viewTitles[target][0] + '」');
-    else toast('欢迎回来，' + c.name + '（' + c.roleName + '）');
-    /* 放在最后：存储告警比「欢迎回来」更需要被看见 */
-    warnStorageOnce();
+    var h = (location.hash || '').replace('#', '');
+    if (h && $('view-' + h)) switchView(h);
+    bindIdle();
   }
-  function leaveApp() {
-    var c = auth.current();
-    if (c) { try { store.logEvent('logout', c.name + ' 退出登录'); } catch (e) { /* 忽略 */ } }
-    auth.logout();
-    store.setActor('');
-    state.selected = {}; state.outKeyword = ''; state.lookupKey = '';
-    ['outSearch', 'lookupKey', 'quickLookup'].forEach(function (id) { $(id).value = ''; });
-    syncHash('dash');
-    showGate('login');
+  function doLogin() {
+    var pw = $('loginPw').value;
+    var r = auth.status().locked ? auth.unlock(pw) : auth.login($('loginName').value, pw);
+    $('authMsg').textContent = r.ok ? '' : r.error;
+    $('authMsg').className = 'auth-msg';
+    if (r.ok) { $('loginPw').value = ''; enterApp(); }
   }
-  /* 闲置自动锁定：设备放在柜台上没人管时，别让人顺手点进去。
-     15 分钟无操作即回登录门；正在输入框里打字（可能填到一半）不抢锁。 */
-  var IDLE_MS = 15 * 60 * 1000;
-  var idleAt = Date.now();
-  function markActive() { idleAt = Date.now(); }
-  function idleTick() {
-    if (!auth.current() || document.body.classList.contains('auth-locked')) return;
-    var ae = document.activeElement;
-    var tag = ae && ae.tagName ? ae.tagName.toLowerCase() : '';
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') { idleAt = Date.now(); return; }
-    if (Date.now() - idleAt < IDLE_MS) return;
-    leaveApp();
-    authMsg('已闲置 ' + Math.round(IDLE_MS / 60000) + ' 分钟，为防止他人操作已自动锁定，请重新登录', false);
-  }
-  function bindIdle() {
-    ['mousedown', 'keydown', 'touchstart', 'change', 'wheel'].forEach(function (ev) {
-      document.addEventListener(ev, markActive, { passive: true, capture: true });
-    });
-    setInterval(idleTick, 30000);
-    /* 切回前台立刻判断一次，别等下一个 30 秒 */
-    document.addEventListener('visibilitychange', function () {
-      if (!document.hidden) idleTick();
-    });
-  }
-  function bindAuth() {
-    /* 手机键盘弹出时，position:fixed 的登录门不会被压缩，按钮会躲在键盘后面且滚不到。
-       用 visualViewport 算出键盘占了多高，写进 --kb，给登录门留出可滚动的余量。 */
-    (function bindKeyboardInset() {
-      var vv = window.visualViewport;
-      if (!vv || !vv.addEventListener) return;
-      var apply = function () {
-        var gap = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-        document.documentElement.style.setProperty('--kb', gap + 'px');
-      };
-      vv.addEventListener('resize', apply);
-      vv.addEventListener('scroll', apply);
-      apply();
-    })();
-    $('formRegister').addEventListener('submit', function (e) {
-      e.preventDefault();
-      try {
-        var r = auth.register({
-          name: $('regName').value, username: $('regUser').value,
-          password: $('regPass').value, confirm: $('regConfirm').value,
-          remember: $('regRemember').checked
-        });
-        if (!r.ok) { authMsg(r.error, true); return; }
-        toast('初始化完成，注册入口已关闭，之后请在「账号管理」里添加店员');
-        enterApp();
-        if (r.warning) toast(r.warning, 'err');
-      } catch (err) {
-        /* 兜住任何意外异常：不能让按钮点下去毫无反应 */
-        authMsg('初始化失败：' + (err && err.message ? err.message : '浏览器拒绝写入本地存储'), true);
-      }
-    });
-    $('formLogin').addEventListener('submit', function (e) {
-      e.preventDefault();
-      try {
-        /* 锁定期间连正确密码也不放行，避免绕过限速反复试 */
-        var wait = auth.lockRemain ? auth.lockRemain() : 0;
-        if (wait > 0) { authMsg('密码错误次数过多，请 ' + wait + ' 秒后再试', true); return; }
-        var r = auth.login({
-          username: $('loginUser').value, password: $('loginPass').value,
-          remember: $('loginRemember').checked
-        });
-        if (!r.ok) { authMsg(r.error, true); return; }
-        /* 上一次输错留下的红字必须清掉，否则登录成功后回到登录页还会看到旧报错 */
-        authMsg('', false);
-        $('authMsg').hidden = true;
-        enterApp();
-        if (r.warning) toast(r.warning, 'err');
-      } catch (err) {
-        authMsg('登录失败：' + (err && err.message ? err.message : '浏览器拒绝写入本地存储'), true);
-      }
-    });
-    /* 无账号时长按标题 1.2 秒进入初始化（安卓 App 内没法改地址，只能靠手势） */
-    var brand = document.querySelector('.auth-brand');
-    if (brand && !brand.dataset.longpress) {
-      brand.dataset.longpress = '1';
-      var timer = null;
-      var trySetup = function () {
-        if (!auth.status().needSetup) { authMsg('本站已初始化，注册入口已关闭', true); return; }
-        showGate('setup');
-        authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
-      };
-      var stop = function () { if (timer) { clearTimeout(timer); timer = null; } };
-      var start = function () {
-        stop();
-        timer = setTimeout(function () { timer = null; trySetup(); }, 1200);
-      };
-      /* 手机长按会先弹系统菜单（iOS 的「拷贝/查询」），那一下会触发 touchcancel 把计时器清掉，
-         所以必须屏蔽长按菜单与文字选中（配合 CSS 的 touch-callout / user-select），
-         否则初始化入口在移动端等于不存在。 */
-      brand.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-      brand.addEventListener('mousedown', start);
-      brand.addEventListener('touchstart', start, { passive: true });
-      ['mouseup', 'mouseleave', 'touchend', 'touchcancel', 'touchmove'].forEach(function (ev) {
-        brand.addEventListener(ev, stop, ev === 'touchmove' ? { passive: true } : undefined);
-      });
-      /* 长按仍被系统吃掉时的兜底：2.5 秒内连点 5 下 */
-      var taps = [];
-      brand.addEventListener('click', function () {
-        var now = Date.now();
-        taps.push(now);
-        taps = taps.filter(function (t) { return now - t < 2500; });
-        if (taps.length >= 5) { taps = []; trySetup(); }
-      });
-    }
-    /* 登录页自检：手机上出问题时，不用猜也不用连电脑。
-       把「地址 / 存储 / 账号数 / 缓存版本 / 浏览器」一次列清楚。 */
-    if ($('btnAuthDiag')) {
-      $('btnAuthDiag').onclick = async function () {
-        var box = $('authDiag');
-        if (!box.hidden && box.textContent) { box.hidden = true; return; }
-        box.textContent = '正在自检…';
-        box.hidden = false;
-        var st = auth.status();
-        var lines = [];
-        lines.push('地址：' + location.origin + location.pathname + (location.hash || ''));
-        lines.push('协议：' + location.protocol + (window.isSecureContext ? '（安全上下文）' : '（非安全上下文）'));
-        lines.push('本地存储：' + (st.storageOk ? '可用' : '被禁止（读或写 localStorage 抛出异常）'));
-        lines.push('账号数：' + st.count + (st.needSetup ? '（本站未初始化）' : ''));
-        lines.push('登录状态：' + (st.loggedIn ? '已登录' : '未登录') + (st.lockLeft ? ' · 剩余锁定 ' + st.lockLeft + ' 秒' : ''));
-        var reg = null;
-        try {
-          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-            var regs = await navigator.serviceWorker.getRegistrations();
-            reg = regs && regs[0];
-          }
-        } catch (e) { /* 忽略 */ }
-        var ver = '未知';
-        try {
-          var res = await fetch('sw.js?probe=' + Date.now(), { cache: 'no-store' });
-          var m = /VERSION\s*=\s*'([^']+)'/.exec(await res.text());
-          if (m) ver = m[1];
-        } catch (e) { /* 离线时取不到 */ }
-        lines.push('离线缓存：' + (reg ? '已注册 · 缓存版本 ' + ver : '未注册') +
-          (navigator.serviceWorker && navigator.serviceWorker.controller ? ' · 本页已受控' : ''));
-        lines.push('页面代码：' + (document.querySelector('script[src*="app.js"]') || {}).getAttribute('src'));
-        lines.push('浏览器：' + navigator.userAgent);
-        box.textContent = lines.join('\n');
-      };
-    }
-    /* 零账号时给可见入口：手机上「长按标题 1.2 秒」这种手势没人会去猜，
-       站长换域名/换浏览器后只会看到「登录不了」。初始化仍然只允许在零账号时进行。 */
-    if ($('btnGoSetup')) {
-      $('btnGoSetup').onclick = function () {
-        if (!auth.status().needSetup) { authMsg('本站已初始化，注册入口已关闭', true); return; }
-        showGate('setup');
-        authMsg('已进入初始化，请创建站长账号；建好后此入口自动失效', false);
-      };
-    }
-    if ($('btnBootImport')) {
-      $('btnBootImport').onclick = function () { $('authImportFile').click(); };
-    }
-    $('btnAuthImport').onclick = function () { $('authImportFile').click(); };
-    $('authImportFile').addEventListener('change', async function () {
-      var file = this.files && this.files[0];
-      if (!file) return;
-      var text = await file.text();
-      this.value = '';
-      var r = store.importJSON(text, 'replace');
-      if (!r.ok) { authMsg(r.error, true); return; }
-      fillSettings();
-      showGate('login');
-      authMsg('已恢复 ' + r.count + ' 条记录' +
-        (r.accounts && r.accounts.ok ? '和 ' + r.accounts.count + ' 个账号' : '') + '，请用原密码登录', false);
-    });
-  }
-
-  /* ---------- 账号管理（仅站长） ---------- */
-  function renderMyAccount() {
-    var c = auth.current();
-    $('myAccount').innerHTML = c
-      ? '<div class="ma-avatar"><svg class="ic"><use href="#i-user"/></svg></div>' +
-        '<div class="ma-info"><strong>' + esc(c.name) + '</strong>' +
-        '<span>@' + esc(c.username) + ' · <b>' + esc(c.roleName) + '</b></span>' +
-        '<span class="muted">最近登录 ' + esc(c.lastLoginAt ? store.fmtTime(c.lastLoginAt) : '本次') + '</span></div>'
-      : emptyHTML('未登录');
-  }
-  function accountCardHTML(a) {
-    var me = auth.current() && auth.current().id === a.id;
-    var badge = a.role === 'owner' ? 'tag-normal' : (a.role === 'operator' ? 'tag-warn' : 'tag-out');
-    return '<div class="account-row' + (a.active ? '' : ' is-off') + '">' +
-      '<div class="ar-avatar"><svg class="ic"><use href="#i-user"/></svg></div>' +
-      '<div class="ar-main"><div class="ar-name">' + esc(a.name) +
-      '<span class="tag ' + badge + '">' + esc(a.roleName) + '</span>' +
-      (a.active ? '' : '<span class="tag tag-danger">已停用</span>') +
-      (me ? '<span class="tag tag-out">当前账号</span>' : '') + '</div>' +
-      '<div class="ar-meta">@' + esc(a.username) + ' · ' +
-      (a.createdBy ? '由 ' + esc(a.createdBy) + ' 创建 · ' : '') +
-      '最近登录 ' + esc(a.lastLoginAt ? store.fmtTime(a.lastLoginAt) : '从未') + '</div></div>' +
-      '<div class="ar-actions">' +
-      '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="edit" data-id="' + esc(a.id) + '">编辑</button>' +
-      '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="reset" data-id="' + esc(a.id) + '">重置密码</button>' +
-      (me ? '' : '<button class="btn btn-ghost btn-sm" data-perm="owner" data-account-act="toggle" data-id="' + esc(a.id) + '">' +
-        (a.active ? '停用' : '启用') + '</button>' +
-        '<button class="btn btn-ghost btn-sm danger" data-perm="owner" data-account-act="remove" data-id="' + esc(a.id) + '">删除</button>') +
-      '</div></div>';
-  }
-  function renderAccounts() {
-    renderMyAccount();
-    var list = auth.list();
-    $('acCount').textContent = '共 ' + list.length + ' 个账号';
-    $('accountList').innerHTML = list.length ? list.map(accountCardHTML).join('') : emptyHTML('暂无账号');
-  }
-  function accountEditDialog(a) {
-    return new Promise(function (resolve) {
-      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
-        '<h3>编辑账号 · ' + esc(a.name) + '</h3><p>登录账号 @' + esc(a.username) + ' 不可修改。</p>' +
-        '<div class="field"><label>显示姓名</label><input class="input" id="acEditName" value="' + esc(a.name) + '"></div>' +
-        '<div class="field"><label>角色</label><select class="input" id="acEditRole"' + (a.role === 'owner' ? ' disabled' : '') + '>' +
-        '<option value="owner"' + (a.role === 'owner' ? ' selected' : '') + '>站长（不可授予）</option>' +
-        '<option value="operator"' + (a.role === 'operator' ? ' selected' : '') + '>操作员 · 入库出库改台账</option>' +
-        '<option value="viewer"' + (a.role === 'viewer' ? ' selected' : '') + '>只读访客 · 仅查件看板</option>' +
-        '</select></div>' +
-        '<label class="switch"><input type="checkbox" id="acEditActive"' + (a.active ? ' checked' : '') +
-        (a.role === 'owner' ? ' disabled' : '') + '><span>启用该账号（停用后不能登录）</span></label>' +
-        '<div class="field"><label>重设密码（留空表示不改）</label><input class="input" id="acEditPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>' +
-        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
-        '<button class="btn btn-primary" data-act="ok">保存</button></div></div></div>';
-      var root = $('modalRoot');
-      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
-      root.querySelector('[data-act="ok"]').onclick = function () {
-        var patch = {
-          name: $('acEditName').value,
-          role: $('acEditRole').value,
-          active: $('acEditActive').checked,
-          password: $('acEditPass').value
-        };
-        closeModal(); resolve(patch);
-      };
-      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
-    });
-  }
-  function accountResetDialog(a) {
-    return new Promise(function (resolve) {
-      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
-        '<h3>重置密码 · ' + esc(a.name) + '</h3><p>设置后请线下告知本人，密码只以哈希形式保存。</p>' +
-        '<div class="field"><label>新密码</label><input class="input" id="acResetPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>' +
-        '<div class="field"><label>确认新密码</label><input class="input" id="acResetConfirm" type="password" autocomplete="new-password"></div>' +
-        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
-        '<button class="btn btn-primary" data-act="ok">确认重置</button></div></div></div>';
-      var root = $('modalRoot');
-      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
-      root.querySelector('[data-act="ok"]').onclick = function () {
-        var pw = $('acResetPass').value, cf = $('acResetConfirm').value;
-        closeModal(); resolve(pw && pw === cf ? pw : null);
-        if (pw !== cf) toast('两次输入的新密码不一致', 'err');
-      };
-      root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) { closeModal(); resolve(null); } };
-    });
-  }
-  function bindAccounts() {
-    $('btnUserMenu').onclick = function () {
-      var c = auth.current();
-      if (auth.can('owner')) switchView('accounts');
-      else toast(c ? c.name + ' · ' + c.roleName + '（只读或操作权限）' : '未登录');
-    };
-    $('btnLogout').onclick = leaveApp;
-
-    $('formAddSub').addEventListener('submit', function (e) {
-      e.preventDefault();
-      if (!guard('owner')) return;
-      var r = auth.createSub({
-        name: $('subName').value, username: $('subUser').value,
-        password: $('subPass').value, role: $('subRole').value
-      });
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      this.reset();
-      store.logEvent('account', '创建子账号 ' + r.account.name + '（' + r.account.roleName + '）');
-      renderAccounts();
-      toast('已创建子账号 ' + r.account.name + '（' + r.account.roleName + '）');
-    });
-    $('formChangePwd').addEventListener('submit', function (e) {
-      e.preventDefault();
-      var r = auth.changePassword($('oldPwd').value, $('newPwd').value, $('confirmPwd').value);
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      this.reset();
-      store.logEvent('account', '修改自己的登录密码');
-      toast('密码已修改，请牢记新密码');
-    });
-    $('accountList').addEventListener('click', async function (e) {
-      var b = e.target.closest('[data-account-act]');
-      if (!b || !guard('owner')) return;
-      var id = b.dataset.id, act = b.dataset.accountAct;
-      var a = auth.list().find(function (x) { return x.id === id; });
-      if (!a) return;
-      var r = null;
-      if (act === 'toggle') {
-        r = auth.updateSub(id, { active: !a.active });
-        if (r.ok) toast(a.active ? '已停用 ' + a.name : '已启用 ' + a.name);
-      } else if (act === 'edit') {
-        var patch = await accountEditDialog(a);
-        if (patch) { r = auth.updateSub(id, patch); if (r.ok) toast('账号资料已更新'); }
-      } else if (act === 'reset') {
-        var pw = await accountResetDialog(a);
-        if (pw) { r = auth.updateSub(id, { password: pw }); if (r.ok) toast('已重置 ' + a.name + ' 的密码'); }
-      } else if (act === 'remove') {
-        var ok = await confirmDialog('删除账号？', '账号 ' + a.name + ' 将被删除，历史流水里的操作人姓名会保留。', '确认删除', true);
-        if (ok) { r = auth.removeSub(id); if (r.ok) toast('已删除账号 ' + a.name); }
-      }
-      if (r && !r.ok) toast(r.error, 'err');
-      if (r && r.ok) {
-        store.logEvent('account', ({ edit: '编辑账号资料', reset: '重置账号密码', toggle: '切换账号启用状态', remove: '删除账号' }[act] || '账号操作') + '：' + a.name);
-      }
-      renderAccounts();
-    });
-    $('btnAccountsExport').onclick = function () {
-      if (!guard('owner')) return;
-      downloadFile('accounts-' + dateStamp() + '.json', auth.exportAccounts(), 'application/json');
-      toast('账号库已导出（含密码哈希，请妥善保管）');
-    };
-    $('btnAccountsImport').onclick = function () { $('acImportFile').click(); };
-    $('acImportFile').addEventListener('change', async function () {
-      var file = this.files && this.files[0];
-      if (!file) return;
-      var text = await file.text();
-      this.value = '';
-      var ok = await confirmDialog('导入并覆盖账号库？', '本机现有账号会被备份文件里的账号替换，可能需要用备份中的密码重新登录。', '确认导入', true);
-      if (!ok) return;
-      var r = auth.importAccounts(text);
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      if (!auth.current()) { leaveApp(); return; }
+  function bindGate() {
+    $('btnLogin').onclick = doLogin;
+    $('loginPw').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
+    $('btnSetup').onclick = function () {
+      var n = $('setupName').value.trim(), p = $('setupPw').value, p2 = $('setupPw2').value;
+      if (p !== p2) { $('authMsg').textContent = '两次密码不一致'; return; }
+      var r = auth.setup({ name: n, password: p });
+      if (!r.ok) { $('authMsg').textContent = r.error; return; }
       enterApp();
-      toast('已导入 ' + r.count + ' 个账号');
-    });
-  }
-
-  /* ---------- 视图切换 ---------- */
-  function switchView(name, opts) {
-    if (!viewTitles[name]) name = 'dash';
-    state.view = name;
-    /* 地址栏 hash 跟随视图，便于桌面快捷方式、分享链接直达具体页面 */
-    if (!(opts && opts.noHash)) syncHash(name);
-    document.querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.view === name); });
-    document.querySelectorAll('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + name); });
-    $('pageTitle').textContent = viewTitles[name][0];
-    $('pageSub').textContent = viewTitles[name][1];
-    $('checkoutBar').style.display = name === 'outbound' ? 'flex' : 'none';
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    if (name === 'inbound') setTimeout(function () { $('inTracking').focus(); }, 120);
-    if (name === 'outbound') {
-      /* 出库页默认就是拍照取件：自动开镜头时不聚焦搜索框，免得软键盘盖住取景框 */
-      state.scan.autoTried = false;
-      var willAuto = photos.config().autoCapture && camera && camera.supported() &&
-        auth.can('write') && !state.scan.userClosed;
-      if (willAuto) setTimeout(function () { maybeAutoCapture(); }, 420);
-      else setTimeout(function () { $('outSearch').focus(); }, 120);
-    }
-    if (name === 'lookup') setTimeout(function () { $('lookupKey').focus(); }, 120);
-    if (name === 'batch') renderBatch();
-    if (name === 'customers') renderCustomers();
-    if (name === 'analytics') renderRangeStats();
-  }
-
-  /* ---------- 渲染：公共 ---------- */
-  function syncHash(name) {
-    var h = '#' + name;
-    if (location.hash === h) return;
-    try { history.replaceState(null, '', h); } catch (e) { /* file:// 下可能不支持，忽略 */ }
-  }
-  function hashView() {
-    var raw = String(location.hash || '').replace(/^#\/?/, '').trim();
-    return viewTitles[raw] ? raw : '';
-  }
-  function renderHeader() {
-    var s = store.settings();
-    $('brandName').textContent = s.stationName;
-    document.title = s.stationName + ' · 入库出库管理';
-    var d = new Date();
-    var week = ['日', '一', '二', '三', '四', '五', '六'][d.getDay()];
-    $('todayText').textContent = d.getFullYear() + '年' + (d.getMonth() + 1) + '月' + d.getDate() + '日 · 周' + week;
-  }
-  function kpiHTML(st) {
-    var items = [
-      { label: '今日入库', value: st.todayIn, foot: '件包裹已登记', tone: '' },
-      { label: '今日出库', value: st.todayOut, foot: '件已取走', tone: 'tone-ok' },
-      { label: '当前在库', value: st.inStock, foot: '容量 ' + st.capacity + ' 个货位', tone: '' },
-      { label: '滞留件', value: st.warn + st.danger, foot: '其中严重超期 ' + st.danger + ' 件', tone: st.danger ? 'tone-danger' : (st.warn ? 'tone-warn' : '') }
-    ];
-    return items.map(function (i) {
-      return '<div class="kpi ' + i.tone + '"><div class="k-label">' + i.label + '</div>' +
-        '<div class="k-value">' + i.value + '</div><div class="k-foot">' + i.foot + '</div></div>';
-    }).join('');
-  }
-  function trendSVG(data, large) {
-    var W = 640, H = large ? 220 : 176;
-    var left = 34, right = 12, top = 14, bottom = 28;
-    var plotW = W - left - right, plotH = H - top - bottom;
-    var max = 1;
-    data.forEach(function (d) { max = Math.max(max, d.in, d.out); });
-    max = Math.max(4, Math.ceil(max / 4) * 4);
-    var grid = '';
-    for (var g = 0; g <= 4; g++) {
-      var y = top + plotH - plotH * g / 4;
-      grid += '<line class="grid-line" x1="' + left + '" y1="' + y + '" x2="' + (W - right) + '" y2="' + y + '"/>' +
-        '<text x="' + (left - 7) + '" y="' + (y + 3.5) + '" text-anchor="end">' + Math.round(max * g / 4) + '</text>';
-    }
-    var group = plotW / data.length, bw = Math.min(18, group * 0.26), gap = 4;
-    var bars = '';
-    data.forEach(function (d, i) {
-      var gx = left + i * group + (group - (bw * 2 + gap)) / 2;
-      var hIn = plotH * d.in / max, hOut = plotH * d.out / max;
-      var yBase = top + plotH;
-      bars += '<rect class="bar-in" x="' + gx + '" y="' + (yBase - hIn) + '" width="' + bw + '" height="' + hIn + '" rx="3"/>';
-      bars += '<rect class="bar-out" x="' + (gx + bw + gap) + '" y="' + (yBase - hOut) + '" width="' + bw + '" height="' + hOut + '" rx="3"/>';
-      if (d.in) bars += '<text x="' + (gx + bw / 2) + '" y="' + (yBase - hIn - 5) + '" text-anchor="middle">' + d.in + '</text>';
-      if (d.out) bars += '<text x="' + (gx + bw * 1.5 + gap) + '" y="' + (yBase - hOut - 5) + '" text-anchor="middle">' + d.out + '</text>';
-      bars += '<text x="' + (left + i * group + group / 2) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(d.label) + '</text>';
-    });
-    return '<svg class="chart-svg" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">' + grid + bars + '</svg>';
-  }
-  function barsHTML(rows, color, suffix) {
-    if (!rows.length) return '<div class="empty">暂无在库包裹</div>';
-    var max = Math.max.apply(null, rows.map(function (r) { return r.value; })) || 1;
-    return rows.map(function (r) {
-      return '<div class="bar-row"><div class="bar-name">' + esc(r.name) + '</div>' +
-        '<div class="bar-track"><div class="bar-fill ' + (color || '') + '" style="width:' + (r.value / max * 100) + '%"></div></div>' +
-        '<div class="bar-val">' + r.value + (suffix || '') + '</div></div>';
-    }).join('');
-  }
-  function emptyHTML(text) {
-    return '<div class="empty"><svg class="ic"><use href="#i-box"/></svg>' + esc(text) + '</div>';
-  }
-  function listItemHTML(p, side) {
-    return '<div class="list-item"><div class="li-main"><div class="li-title">' + esc(p.trackingNo) +
-      '</div><div class="li-sub">' + esc(p.carrier) + (p.pickupCode ? ' · 码 ' + esc(p.pickupCode) : '') +
-      (p.recipient ? ' · ' + esc(p.recipient) : '') +
-      (p.phoneTail ? ' · 尾号 ' + esc(p.phoneTail) : '') + '</div></div>' +
-      '<span class="slot-chip">' + esc(p.slot || '未分配') + '</span>' +
-      '<div class="li-side">' + side + '</div></div>';
-  }
-
-  /* ---------- 渲染：工作台 ---------- */
-  function renderDash() {
-    var st = store.stats();
-    $('dashKpi').innerHTML = kpiHTML(st);
-    $('dashTrend').innerHTML = trendSVG(st.last7, false);
-    $('trendHint').textContent = '近 7 日入库 ' + st.last7.reduce(function (a, b) { return a + b.in; }, 0) + ' / 出库 ' + st.last7.reduce(function (a, b) { return a + b.out; }, 0);
-    var overdue = store.listParcels({ status: 'in', sortBy: 'inAt', sortDir: 'asc' })
-      .filter(function (p) { return p.overdueLevel !== 'normal'; }).slice(0, 6);
-    $('dashOverdue').innerHTML = overdue.length ? overdue.map(function (p) {
-      return listItemHTML(p, '<span class="tag ' + (p.overdueLevel === 'danger' ? 'tag-danger' : 'tag-warn') + '">滞留 ' + p.stayDays + ' 天</span>');
-    }).join('') : emptyHTML('没有滞留包裹，很清爽');
-    var recent = store.listParcels({ sortBy: 'inAt' }).slice(0, 6);
-    $('dashRecent').innerHTML = recent.length ? recent.map(function (p) {
-      return listItemHTML(p, '<span class="tag ' + (p.status === 'in' ? 'tag-normal' : 'tag-out') + '">' + (p.status === 'in' ? '在库' : '已取') + '</span>');
-    }).join('') : emptyHTML('还没有包裹，去登记第一件吧');
-  }
-
-  /* ---------- 渲染：入库 ---------- */
-  function fillSelect(el, values, keep) {
-    var old = keep ? el.value : '';
-    el.innerHTML = values.map(function (v) { return '<option value="' + esc(v) + '">' + esc(v) + '</option>'; }).join('');
-    if (old && values.indexOf(old) !== -1) el.value = old;
-  }
-  function renderInbound() {
-    var s = store.settings();
-    fillSelect($('inCarrier'), s.carriers, true);
-    fillSelect($('inZone'), s.zones, true);
-    fillSelect($('invCarrier'), ['全部公司'].concat(s.carriers), true);
-    fillSelect($('invZone'), ['全部货架区'].concat(s.zones), true);
-    if (!$('inSlot').value.trim() || !store.slotAvailable($('inSlot').value.trim())) {
-      $('inSlot').value = store.suggestSlot($('inZone').value || s.zones[0]);
-    }
-    refreshCodePreview();
-    var recent = store.listParcels({ sortBy: 'inAt' }).slice(0, 7);
-    $('inRecent').innerHTML = recent.length ? recent.map(function (p) {
-      return listItemHTML(p, store.fmtTime(p.inAt).slice(5));
-    }).join('') : emptyHTML('暂无入库记录');
-    $('inTodayCount').textContent = '今日 ' + store.stats().todayIn + ' 件';
-  }
-  function clearInForm(keepMeta) {
-    $('inTracking').value = '';
-    $('inRecipient').value = '';
-    $('inPhone').value = '';
-    $('inNote').value = '';
-    $('inCount').value = '1';
-    if (!keepMeta) { $('inCarrier').selectedIndex = 0; $('inZone').selectedIndex = 0; }
-    $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
-    $('inCarrier').dataset.manual = '';
-    $('inPickupCode').dataset.manual = '';
-    refreshCodePreview(true);
-    $('inTracking').focus();
-  }
-
-  /* ---------- 渲染：查件 ---------- */
-  function lookupCardHTML(p) {
-    var inStock = p.status === 'in';
-    var tagCls = inStock
-      ? (p.overdueLevel === 'danger' ? 'tag-danger' : (p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal'))
-      : 'tag-out';
-    var tagText = inStock ? '在库 · 待取' + (p.overdueLevel !== 'normal' ? ' · 滞留' : '') : '已取出';
-    var photoCount = (p.photos || []).length;
-    return '<div class="lookup-card ' + (inStock ? 'is-in' : 'is-out') + '">' +
-      '<div class="lc-top"><span class="tag ' + tagCls + '">' + tagText + '</span>' +
-      '<span class="lc-carrier">' + esc(p.carrier) + '</span>' +
-      '<button type="button" class="lc-copy" data-copy="' + esc(p.trackingNo) + '" title="复制运单号"><svg class="ic"><use href="#i-copy"/></svg></button></div>' +
-      '<div class="lc-code"><svg class="ic"><use href="#i-ticket"/></svg><span>取件码</span>' +
-      '<strong>' + esc(p.pickupCode || '—') + '</strong>' +
-      (p.pickupCode ? '<button type="button" class="lc-code-copy" data-copy-code="' + esc(p.pickupCode) + '" title="复制取件码"><svg class="ic"><use href="#i-copy"/></svg></button>' : '') +
-      '</div>' +
-      '<div class="lc-no">' + esc(p.trackingNo) + '</div>' +
-      '<div class="lc-slot"><div><span>货架位</span><strong>' + esc(p.slot || '未分配') + '</strong></div>' +
-      '<span class="lc-stay">' + (inStock ? '已存放 ' + p.stayDays + ' 天' : '原货位') + '</span></div>' +
-      '<div class="lc-grid">' +
-      '<div><span>收件人</span><b>' + esc(p.recipient || '—') + '</b></div>' +
-      '<div><span>手机尾号</span><b>' + esc(p.phoneTail || '—') + '</b></div>' +
-      '<div><span>件数</span><b>' + p.count + '</b></div>' +
-      '<div><span>' + (inStock ? '入库时间' : '出库时间') + '</span><b>' + esc(store.fmtTime(inStock ? p.inAt : (p.outAt || p.inAt))) + '</b></div>' +
-      (inStock ? '' : '<div class="lc-wide"><span>取件人</span><b>' + esc(p.pickupBy || '本人') + '</b></div>') +
-      (p.batchId ? '<div class="lc-wide"><span>出库批次</span><b><button type="button" class="link" data-batch="' + esc(p.batchId) + '">' + esc(p.batchId) + ' · 查同批</button></b></div>' : '') +
-      '</div>' +
-      (p.note ? '<div class="lc-note">备注：' + esc(p.note) + '</div>' : '') +
-      '<div class="lc-foot"><span class="muted">' + (inStock ? '登记 ' + esc(p.operatorIn || '—') : '办理 ' + esc(p.operatorOut || '—')) + '</span>' +
-      '<div class="btn-row">' +
-      (photoCount ? '<button type="button" class="btn btn-ghost btn-sm" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>照片 ' + photoCount + '</button>' : '') +
-      (inStock ? '<button type="button" class="btn btn-primary btn-sm" data-perm="write" data-lookup-out="' + esc(p.id) + '"><svg class="ic"><use href="#i-out"/></svg>去出库</button>' : '') +
-      '</div></div></div>';
-  }
-  function renderLookup() {
-    var kw = state.lookupKey.trim();
-    var scope = $('lookupScope').value;
-    var rows = kw ? store.lookup(kw, scope) : [];
-    var st = store.stats();
-    $('lookupStock').textContent = '当前在库 ' + st.inStock + ' 件';
-    var summary = $('lookupSummary');
-    var box = $('lookupResults');
-    if (!kw) {
-      summary.hidden = true;
-      var recent = store.listParcels({ status: 'in', sortBy: 'inAt' }).slice(0, 6);
-      var chips = recent.filter(function (p) { return p.phoneTail; }).map(function (p) {
-        return '<button type="button" class="chip" data-quick="' + esc(p.phoneTail) + '">尾号 ' + esc(p.phoneTail) + '</button>';
-      }).join('');
-      box.innerHTML = '<div class="card lookup-empty">' + emptyHTML('输入取件码、手机号后四位、运单号或收件人开始查件；扫码枪扫面单会直接出结果。') +
-        (chips ? '<div class="lookup-quick"><span class="muted">最近入库的尾号</span><div class="chip-row">' + chips + '</div></div>' : '') + '</div>';
-      return;
-    }
-    var inCount = rows.filter(function (p) { return p.status === 'in'; }).length;
-    summary.hidden = false;
-    summary.innerHTML = '<strong>「' + esc(kw) + '」找到 ' + rows.length + ' 件</strong>' +
-      '<span>在库 ' + inCount + ' 件 · 已取出 ' + (rows.length - inCount) + ' 件</span>' +
-      (rows.length >= 60 ? '<span>仅显示最相关的 60 条，可补全单号缩小范围</span>' : '');
-    box.innerHTML = rows.length ? rows.map(lookupCardHTML).join('')
-      : '<div class="card lookup-empty">' + emptyHTML('没有匹配「' + kw + '」的包裹。请核对尾号，或在「范围」里切到全部记录（可能已被取走）。') + '</div>';
-  }
-  function goCheckout(id) {
-    if (!guard('write')) return;
-    var p = store.getDB().parcels.find(function (x) { return x.id === id; });
-    if (!p || p.status !== 'in') { toast('该包裹已出库，请刷新查件结果', 'err'); renderLookup(); return; }
-    state.selected = {};
-    state.selected[id] = true;
-    $('outSearch').value = p.pickupCode || p.trackingNo;
-    state.outKeyword = p.pickupCode || p.trackingNo;
-    switchView('outbound');
-    renderAll();
-    toast('已勾选 ' + p.trackingNo + '，拍照后确认出库');
-  }
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { toast('已复制 ' + text); })
-        .catch(function () { toast('复制失败，请长按选择单号', 'err'); });
-      return;
-    }
-    var ta = document.createElement('textarea');
-    ta.value = text; document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); toast('已复制 ' + text); } catch (e) { toast('复制失败', 'err'); }
-    document.body.removeChild(ta);
-  }
-
-  /* ---------- 渲染：出库 ---------- */
-  function renderOutbound() {
-    var kw = state.outKeyword.trim();
-    var results = kw ? store.listParcels({ status: 'in', keyword: kw, sortBy: 'inAt' }) : [];
-    $('outResultCount').textContent = kw
-      ? (results.length ? '找到 ' + results.length + ' 件在库包裹' : '没有匹配的在库包裹')
-      : '输入关键词开始查找在库包裹';
-    $('outResults').innerHTML = !kw
-      ? '<div class="card" style="grid-column:1/-1">' + emptyHTML('输入手机号后四位、运单号或收件人，支持跨多次搜索累加勾选') + '</div>'
-      : (results.length ? results.map(function (p) {
-        var sel = !!state.selected[p.id];
-        var tagCls = p.overdueLevel === 'danger' ? 'tag-danger' : (p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal');
-        return '<div class="pick-card' + (sel ? ' selected' : '') + '" data-id="' + esc(p.id) + '">' +
-          '<div class="pc-top"><div class="pc-no">' + esc(p.trackingNo) + '</div>' +
-          '<div class="pc-check"><svg class="ic"><use href="#i-check"/></svg></div></div>' +
-          '<div class="pc-meta"><span class="code-chip"><svg class="ic"><use href="#i-ticket"/></svg>' + esc(p.pickupCode || '无码') + '</span>' +
-          '<span class="slot-chip">' + esc(p.slot || '未分配') + '</span>' +
-          '<span>' + esc(p.carrier) + '</span>' +
-          (p.recipient ? '<span>' + esc(p.recipient) + '</span>' : '') +
-          (p.phoneTail ? '<span>尾号 ' + esc(p.phoneTail) + '</span>' : '') + '</div>' +
-          '<div class="pc-foot"><span>' + esc(store.fmtTime(p.inAt)) + '</span>' +
-          '<span class="tag ' + tagCls + '">在库 ' + p.stayDays + ' 天</span></div></div>';
-      }).join('') : '<div class="card" style="grid-column:1/-1">' + emptyHTML('换个关键词试试，或确认包裹是否已出库') + '</div>');
-    var n = Object.keys(state.selected).length;
-    $('pickCount').textContent = n;
-    $('mergeHint').hidden = n < 2;
-    $('btnCheckout').disabled = n === 0 || !auth.can('write');
-    $('btnCheckout').innerHTML = n > 1
-      ? '<svg class="ic"><use href="#i-merge"/></svg>合并出库 ' + n + ' 件'
-      : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
-    renderScan();
-  }
-
-  /* ---------- 渲染：在库台账 ---------- */
-  function renderInventory() {
-    var filter = {
-      keyword: $('invKeyword').value,
-      carrier: $('invCarrier').value === '全部公司' ? '' : $('invCarrier').value,
-      zone: $('invZone').value === '全部货架区' ? '' : $('invZone').value,
-      status: $('invStatus').value,
-      overdueLevel: $('invOverdue').value,
-      sortBy: $('invSort').value === 'stayDays' ? 'stayDays' : $('invSort').value,
-      sortDir: $('invSort').value === 'slot' ? 'asc' : 'desc'
     };
-    var rows = store.listParcels(filter);
-    var shown = rows.slice(0, state.invLimit);
-    $('invCount').textContent = '共 ' + rows.length + ' 条记录' + (rows.length > shown.length ? '，已显示 ' + shown.length + ' 条' : '');
-    $('invMore').hidden = rows.length <= shown.length;
-    $('invBody').innerHTML = shown.length ? shown.map(function (p) {
-      var tag = p.status === 'out'
-        ? '<span class="tag ' + (p.outType === 'refund' ? 'tag-danger' : 'tag-out') + '">' +
-          (p.outType === 'refund' ? '已退件' : '已出库') + '</span>'
-        : '<span class="tag ' + (p.overdueLevel === 'danger' ? 'tag-danger' : p.overdueLevel === 'warn' ? 'tag-warn' : 'tag-normal') + '">' +
-          (p.overdueLevel === 'normal' ? '正常' : '滞留') + '</span>';
-      return '<tr>' +
-        '<td data-label="取件码"><span class="code-chip">' + esc(p.pickupCode || '—') + '</span>' +
-          ((p.goodsNo || p.serialNo) ? '<div class="td-sub">货号 ' + esc(p.goodsNo || '—') + ' · 编号 ' + esc(p.serialNo || '—') + '</div>' : '') +
-          (p.batchId ? '<div class="td-sub">' + esc(p.batchId) + '</div>' : '') + '</td>' +
-        '<td data-label="运单号" class="td-no">' + esc(p.trackingNo) +
-          '<div class="td-sub">×' + p.count + (p.note ? ' · ' + esc(p.note) : '') + '</div>' +
-          ((p.photos && p.photos.length) ? '<button class="photo-badge" data-photos="' + esc(p.id) + '"><svg class="ic"><use href="#i-camera"/></svg>' + p.photos.length + ' 张照片</button>' : '') +
-          '</td>' +
-        '<td data-label="公司">' + esc(p.carrier) + '</td>' +
-        '<td data-label="收件人">' + esc(p.recipient || '—') + '<div class="td-sub">' + (p.phoneTail ? '尾号 ' + esc(p.phoneTail) : '无尾号') + '</div></td>' +
-        '<td data-label="货架位"><span class="slot-chip">' + esc(p.slot || '—') + '</span></td>' +
-        '<td data-label="入库">' + esc(store.fmtTime(p.inAt)) + (p.outAt ? '<div class="td-sub">取件 ' + esc(store.fmtTime(p.outAt)) + '</div>' : '') + '</td>' +
-        '<td data-label="停留">' + p.stayDays + ' 天</td>' +
-        '<td data-label="状态">' + tag + '</td>' +
-        '<td data-label="操作" class="td-actions"><div class="row-actions">' +
-        (p.status === 'in' ? '<button class="icon-btn" data-perm="write" data-undo-in="' + esc(p.id) + '" title="撤销入库"><svg class="ic"><use href="#i-refresh"/></svg></button>' : '') +
-        '<button class="icon-btn" data-perm="write" data-edit="' + esc(p.id) + '" title="修改"><svg class="ic"><use href="#i-edit"/></svg></button>' +
-        '<button class="icon-btn danger" data-perm="write" data-del="' + esc(p.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
-        '</div></td></tr>';
-    }).join('') : '<tr><td colspan="9">' + emptyHTML('没有符合条件的记录') + '</td></tr>';
-  }
-
-  /* ---------- 渲染：统计 ---------- */
-  function renderAnalytics() {
-    var st = store.stats();
-    $('anaKpi').innerHTML = kpiHTML(st);
-    $('anaTrend').innerHTML = trendSVG(st.last7, true);
-    $('anaCarrier').innerHTML = barsHTML(st.byCarrier, '', ' 件');
-    $('anaZone').innerHTML = barsHTML(st.byZone, 'green', ' 件');
-    $('anaCapacity').textContent = '已用 ' + st.inStock + ' / ' + st.capacity + ' 位';
-    $('anaOverdue').innerHTML = barsHTML([
-      { name: '0–2 天', value: st.overdueBuckets['0-2'] },
-      { name: '3–6 天', value: st.overdueBuckets['3-6'] },
-      { name: '7 天以上', value: st.overdueBuckets['7+'] }
-    ], 'red', ' 件');
-    var avg = st.avgStayHours;
-    var avgText = avg ? (avg < 24 ? avg.toFixed(1) + ' 小时' : (avg / 24).toFixed(1) + ' 天') : '暂无已出库记录';
-    var rate = st.todayIn + st.todayOut ? Math.round(st.todayOut / (st.todayIn + st.todayOut) * 100) : 0;
-    $('anaSummary').innerHTML =
-      '<div>当前在库 <b>' + st.inStock + '</b> 件，占全部货位的 <b>' + (st.capacity ? Math.round(st.inStock / st.capacity * 100) : 0) + '%</b>。</div>' +
-      '<div>今日出库 / 今日流转占比 <b>' + rate + '%</b>，平均取件时长 <b>' + avgText + '</b>。</div>' +
-      '<div>滞留提醒线 <b>' + store.settings().warnDays + ' 天</b>，严重超期线 <b>' + store.settings().dangerDays + ' 天</b>；当前超期 <b>' + st.danger + '</b> 件，建议先联系收件人。</div>' +
-      '<div>近 7 日累计入库 <b>' + st.last7.reduce(function (a, b) { return a + b.in; }, 0) + '</b> 件，出库 <b>' + st.last7.reduce(function (a, b) { return a + b.out; }, 0) + '</b> 件。</div>';
-  }
-
-  /* ---------- 渲染：流水 ---------- */
-  function renderLogs() {
-    var rows = store.listLogs({ type: $('logType').value, keyword: $('logKeyword').value });
-    $('logCount').textContent = '共 ' + rows.length + ' 条流水（最多保留 3000 条）';
-    var db = store.getDB();
-    $('logList').innerHTML = rows.length ? rows.slice(0, 300).map(function (l) {
-      var p = l.parcelId ? db.parcels.find(function (x) { return x.id === l.parcelId; }) : null;
-      var canRestore = l.type === 'out' && p && p.status === 'out';
-      var batchCount = l.batchId ? db.parcels.filter(function (x) {
-        return x.status === 'out' && x.batchId === l.batchId;
-      }).length : 0;
-      var btn = (l.batchId && batchCount > 0)
-        ? '<button class="btn btn-outline btn-sm" data-perm="write" data-restore-batch="' + esc(l.batchId) + '"><svg class="ic"><use href="#i-merge"/></svg>' +
-          (batchCount > 1 ? '整批撤销 ' + batchCount + ' 件' : '撤销剩余 1 件') + '</button>'
-        : (canRestore ? '<button class="btn btn-ghost btn-sm" data-perm="write" data-restore="' + esc(l.parcelId) + '">撤销出库</button>' : '');
-      return '<div class="log-item"><div class="log-time">' + esc(store.fmtTime(l.at)) + '</div>' +
-        '<span class="log-badge t-' + esc(l.type) + '">' + esc(store.logTypeName(l.type)) + '</span>' +
-        (l.actor ? '<span class="log-actor">' + esc(l.actor) + '</span>' : '') +
-        '<div class="log-text">' + esc(l.summary) + '</div>' + btn + '</div>';
-    }).join('') : emptyHTML('暂无操作流水');
-  }
-
-  /* ---------- 渲染：设置与同步 ---------- */
-  function fillSettings() {
-    var s = store.settings();
-    $('setName').value = s.stationName;
-    $('setOperator').value = s.operator;
-    $('setWarn').value = s.warnDays;
-    $('setDanger').value = s.dangerDays;
-    $('setCarriers').value = s.carriers.join(', ');
-    $('setZones').value = s.zones.join(', ');
-    $('setShelves').value = s.shelvesPerZone;
-    $('setLevels').value = s.levelsPerShelf;
-    $('setCodeMode').value = s.codeMode;
-    $('setAddress').value = s.stationAddress || '';
-    $('setStationPhone').value = s.stationPhone || '';
-    $('setGoodsMode').value = s.goodsNoMode;
-    $('setSerialStart').value = (store.getDB().counters && store.getDB().counters.serial) || s.serialStart || 1;
-    $('setCarrierRules').value = s.carrierRules || '';
-    $('setBlocked').value = s.blocked || '';
-    $('setBlockEnabled').checked = !!s.blockEnabled;
-    $('setVoiceEnabled').checked = !!s.voiceEnabled;
-    $('setScanAutoOut').checked = s.scanAutoOut !== false;
-    var c = sync.config();
-    $('syncToken').value = c.token;
-    $('syncRepo').value = c.repo;
-    $('syncBranch').value = c.branch;
-    $('syncPath').value = c.path;
-    $('syncAuto').checked = !!c.auto;
-    renderSyncState();
-    fillPhotoSettings();
-  }
-  function renderSyncState() {
-    $('syncState').textContent = sync.state();
-    var c = sync.config();
-    $('storeMode').textContent = (c.auto && sync.isConfigured()) ? '数据同步到 GitHub 仓库' : '数据存于本机浏览器';
-  }
-  function renderAll() {
-    renderHeader();
-    renderDash();
-    renderLookup();
-    renderInbound();
-    renderOutbound();
-    renderInventory();
-    renderAnalytics();
-    renderLogs();
-    renderBatch();
-    renderCustomers();
-    renderRangeStats();
-    if (auth.can('owner')) renderAccounts();
-    renderSyncState();
-    renderPhotoStatus();
-  }
-
-  /* ---------- 仿驿站助手：批量处理、客户管理、时间段统计 ---------- */
-  function speakIf(text) {
-    if (assistant && store.settings().voiceEnabled) assistant.speak(text, true);
-  }
-  function csvQuote(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }
-
-  function parseInText() {
-    return assistant && assistant.parseBatch ? assistant.parseBatch($('batchInText').value)
-      : { rows: [], errors: ['业务规则模块未加载'] };
-  }
-  function batchInHTML(parsed) {
-    var html = '<div class="br-line">解析到 <b>' + parsed.rows.length + '</b> 行' +
-      (parsed.errors.length ? '，<span class="err">' + parsed.errors.length + ' 行需修正</span>' : '') + '</div>';
-    if (parsed.rows.length) {
-      html += '<table class="mini-table"><thead><tr><th>运单号</th><th>公司</th><th>收件人</th><th>尾号</th></tr></thead><tbody>' +
-        parsed.rows.slice(0, 8).map(function (r) {
-          return '<tr><td>' + esc(r.trackingNo) + '</td><td>' + esc(r.carrier || '自动识别') +
-            '</td><td>' + esc(r.recipient || '—') + '</td><td>' + esc(r.phoneTail || '—') + '</td></tr>';
-        }).join('') + '</tbody></table>' +
-        (parsed.rows.length > 8 ? '<div class="br-line">仅预览前 8 行</div>' : '');
-    }
-    if (parsed.errors.length) {
-      html += '<div class="br-err">' + parsed.errors.slice(0, 8).map(esc).join('<br>') + '</div>';
-    }
-    if (state.batchInReport) {
-      var rep = state.batchInReport;
-      html += '<div class="br-ok">实际入库 <b>' + rep.added.length + '</b> 件' +
-        (rep.failed.length ? '，失败 ' + rep.failed.length + ' 件（失败行已留在输入框）' : '') + '</div>';
-      if (rep.failed.length) {
-        html += '<div class="br-err">' + rep.failed.slice(0, 10).map(function (f) {
-          return esc(f.trackingNo) + '：' + esc(f.error);
-        }).join('<br>') + '</div>';
-      }
-    }
-    return html;
-  }
-  function renderBatch() {
-    var parsed = parseInText();
-    state.batchInRows = parsed.rows;
-    $('batchInResult').innerHTML = batchInHTML(parsed);
-    var text = $('batchOutText').value;
-    var m = text.trim() ? store.findTokens(text) : { matched: [], missing: [], ambiguous: [] };
-    state.batchOut = m;
-    var oh = '<div class="br-line">匹配到 <b>' + m.matched.length + '</b> 件在库' +
-      (m.missing.length ? '，<span class="err">' + m.missing.length + ' 个码没找到</span>' : '') +
-      (m.ambiguous.length ? '，<span class="err">' + m.ambiguous.length + ' 个码对应多件</span>' : '') + '</div>';
-    if (m.matched.length) {
-      oh += '<table class="mini-table"><thead><tr><th>输入码</th><th>运单号</th><th>货号</th><th>货架位</th></tr></thead><tbody>' +
-        m.matched.slice(0, 20).map(function (x) {
-          return '<tr><td>' + esc(x.token) + '</td><td>' + esc(x.parcel.trackingNo) + '</td><td>' +
-            esc(x.parcel.goodsNo || '—') + '</td><td>' + esc(x.parcel.slot) + '</td></tr>';
-        }).join('') + '</tbody></table>';
-    }
-    if (m.missing.length) oh += '<div class="br-err">未找到：' + m.missing.slice(0, 20).map(esc).join('、') + '</div>';
-    if (m.ambiguous.length) {
-      oh += '<div class="br-err">多件候选：' + m.ambiguous.map(function (a) {
-        return esc(a.token) + '（' + a.parcels.length + ' 件）';
-      }).join('、') + '，请改用精确单号</div>';
-    }
-    $('batchOutResult').innerHTML = oh;
-    $('btnBatchLabels').disabled = !(state.lastBatchParcels && state.lastBatchParcels.length);
-  }
-  /* 批量打印货号标签：普通打印机 / A4，不依赖蓝牙控件 */
-  function printBatchLabels() {
-    var list = state.lastBatchParcels || [];
-    if (!list.length || !assistant) return;
-    var sheets = list.map(function (p) { return assistant.labelHTML(p, store.settings()); }).join('');
-    $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal label-modal">' +
-      '<h3>批量货号标签（' + list.length + ' 张）</h3>' +
-      '<p>普通打印机打在标签纸或 A4 上即可，不依赖蓝牙打印控件。</p>' +
-      '<div class="label-batch">' + sheets + '</div>' +
-      '<div class="modal-actions"><button class="btn btn-ghost" data-act="close">关闭</button>' +
-      '<button class="btn btn-primary" data-act="print"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div></div></div>';
-    var root = $('modalRoot');
-    root.querySelector('[data-act="close"]').onclick = closeModal;
-    root.querySelector('[data-act="print"]').onclick = function () {
-      document.body.classList.add('printing-label');
-      window.addEventListener('afterprint', function h() {
-        document.body.classList.remove('printing-label');
-        window.removeEventListener('afterprint', h);
-      });
-      window.print();
+    $('btnGoSetup').onclick = function () {
+      $('authSetup').hidden = false; $('authBootHint').hidden = true; $('authLogin').hidden = true;
     };
-    root.querySelector('.modal-mask').onclick = function (e) { if (e.target === this) closeModal(); };
-  }
-
-  function renderCustomers() {
-    var rows = store.customers({ keyword: $('cusKeyword').value, tag: $('cusTag').value });
-    $('cusCount').textContent = '共 ' + rows.length + ' 位客户';
-    $('cusBody').innerHTML = rows.length ? rows.map(function (c) {
-      var label = assistant ? assistant.tagLabel(c.tag) : c.tag;
-      var cls = c.tag === 'block' ? 'tag-danger' : (c.tag === 'vip' ? 'tag-warn' : 'tag-normal');
-      return '<tr><td data-label="客户">' + esc(c.name || '未填姓名') + '</td>' +
-        '<td data-label="手机">' + esc(c.phone || '—') +
-        '<div class="td-sub">尾号 ' + esc(c.phoneTail || '—') + '</div></td>' +
-        '<td data-label="标记"><span class="tag ' + cls + '">' + esc(label) + '</span></td>' +
-        '<td data-label="累计">' + c.total + '</td><td data-label="在库">' + c.inStock + '</td>' +
-        '<td data-label="备注">' + esc(c.note || '—') + '</td>' +
-        '<td data-label="操作" class="td-actions"><div class="row-actions">' +
-        '<button class="icon-btn" data-perm="manage" data-cus-edit="' + esc(c.id) + '" title="编辑"><svg class="ic"><use href="#i-edit"/></svg></button>' +
-        '<button class="icon-btn danger" data-perm="manage" data-cus-del="' + esc(c.id) + '" title="删除"><svg class="ic"><use href="#i-trash"/></svg></button>' +
-        '</div></td></tr>';
-    }).join('') : '<tr><td colspan="7">' + emptyHTML('还没有客户档案：入库填了手机尾号会自动归档') + '</td></tr>';
-  }
-  function customerDialog(c) {
-    return new Promise(function (resolve) {
-      c = c || {};
-      var tags = [['normal', '普通'], ['vip', '重点客户'], ['block', '黑名单']].map(function (t) {
-        return '<option value="' + t[0] + '"' + ((c.tag || 'normal') === t[0] ? ' selected' : '') + '>' + t[1] + '</option>';
-      }).join('');
-      $('modalRoot').innerHTML = '<div class="modal-mask"><div class="modal">' +
-        '<h3>' + (c.id ? '修改客户资料' : '新增客户') + '</h3>' +
-        '<p>手机号只保存在本机浏览器，用于核对与归档，不会发短信或拨号。</p>' +
-        '<div class="field-row"><div class="field"><label>姓名</label><input class="input" id="cdName" value="' + esc(c.name || '') + '"></div>' +
-        '<div class="field"><label>手机后四位</label><input class="input" id="cdTail" inputmode="numeric" maxlength="4" value="' + esc(c.phoneTail || '') + '"></div></div>' +
-        '<div class="field"><label>完整手机号（选填，仅本机）</label><input class="input" id="cdPhone" inputmode="tel" value="' + esc(c.phone || '') + '"></div>' +
-        '<div class="field"><label>标记</label><select class="input" id="cdTag">' + tags + '</select></div>' +
-        '<div class="field"><label>备注</label><input class="input" id="cdNote" value="' + esc(c.note || '') + '"></div>' +
-        '<div class="modal-actions"><button class="btn btn-ghost" data-act="cancel">取消</button>' +
-        '<button class="btn btn-primary" data-act="ok">保存</button></div></div></div>';
-      var root = $('modalRoot');
-      root.querySelector('[data-act="cancel"]').onclick = function () { closeModal(); resolve(null); };
-      root.querySelector('[data-act="ok"]').onclick = function () {
-        var phone = $('cdPhone').value.trim();
-        var tail = $('cdTail').value.replace(/\D/g, '').slice(-4) || phone.replace(/\D/g, '').slice(-4);
-        var patch = { id: c.id || '', key: c.key || '', name: $('cdName').value.trim(),
-          phone: phone, phoneTail: tail, tag: $('cdTag').value, note: $('cdNote').value.trim() };
-        if (!patch.name && !tail) { toast('姓名和手机尾号至少填一个', 'err'); return; }
-        closeModal(); resolve(patch);
-      };
-      root.querySelector('.modal-mask').onclick = function (e) {
-        if (e.target === this) { closeModal(); resolve(null); }
-      };
-    });
-  }
-
-  function currentRangeData() {
-    if (state.anaRange === 'custom') {
-      var f = new Date($('anaFrom').value + 'T00:00:00').getTime();
-      var t = new Date($('anaTo').value + 'T23:59:59').getTime();
-      return store.statsRange(null, f, t);
-    }
-    return store.statsRange(state.anaRange || 'today');
-  }
-  function renderRangeStats() {
-    var d = currentRangeData();
-    state.anaData = d;
-    var avg = d.avgStayHours ? (d.avgStayHours < 24
-      ? d.avgStayHours.toFixed(1) + ' 小时' : (d.avgStayHours / 24).toFixed(1) + ' 天') : '—';
-    $('anaRangeSummary').innerHTML = [
-      ['入库', d.inCount], ['取件出库', d.pickupCount], ['退件出库', d.refundCount],
-      ['撤销入库', d.undoInCount], ['平均取件', avg]
-    ].map(function (x) {
-      return '<div class="stat-chip"><span>' + x[0] + '</span><b>' + esc(x[1]) + '</b></div>';
-    }).join('');
-    $('anaRangeHint').textContent = '共 ' + d.details.length + ' 条流转记录' +
-      (d.details.length > 100 ? '，明细只显示最近 100 条' : '');
-    $('anaDetailBody').innerHTML = d.details.length ? d.details.slice(0, 100).map(function (r) {
-      return '<tr><td>' + esc(store.fmtTime(r.at)) + '</td><td>' + esc(r.type) + '</td><td>' +
-        esc(r.trackingNo) + '</td><td>' + esc(r.carrier) + '</td><td>' +
-        esc(r.operator || '—') + '</td><td>' + esc(r.extra || '—') + '</td></tr>';
-    }).join('') : '<tr><td colspan="6">' + emptyHTML('该时间段没有流转记录') + '</td></tr>';
-  }
-
-  /* 新增交互集中在这里绑定，避免动到原有事件委托 */
-  function bindAssistant() {
-    /* 单号前缀自动带出快递公司；手动选过就不覆盖，下一件再恢复自动 */
-    $('inCarrier').addEventListener('change', function () { this.dataset.manual = '1'; });
-    $('inTracking').addEventListener('input', function () {
-      var no = this.value.trim();
-      if (!assistant || no.length < 4 || $('inCarrier').dataset.manual === '1') return;
-      var name = assistant.detectCarrier(no, store.settings().carrierRules);
-      if (!name) return;
-      var sel = $('inCarrier');
-      for (var i = 0; i < sel.options.length; i++) {
-        if (sel.options[i].value === name) { sel.selectedIndex = i; break; }
-      }
-    });
-    /* 出库类型：退件时显示原因、改按钮文案，且不强制拍凭证 */
-    $('outType').addEventListener('change', function () {
-      var refund = this.value === 'refund';
-      $('refundReasonBox').hidden = !refund;
-      $('btnCheckout').innerHTML = refund
-        ? '<svg class="ic"><use href="#i-check"/></svg>确认退件出库'
-        : '<svg class="ic"><use href="#i-check"/></svg>确认出库';
-    });
-    $('batchOutType').addEventListener('change', function () {
-      $('batchRefundReason').disabled = this.value !== 'refund';
-    });
-    $('batchRefundReason').disabled = true;
-
-    /* 扫码枪连出：回车即出库，多件候选不自动出库 */
-    $('scanOutInput').addEventListener('keydown', async function (e) {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      var token = this.value.trim();
-      this.value = '';
-      if (!token || !guard('write')) return;
-      if (!store.settings().scanAutoOut) {
-        $('outSearch').value = token; state.outKeyword = token; renderOutbound();
-        $('scanOutState').textContent = '扫码连出已关闭，已把 ' + token + ' 填入搜索框';
-        return;
-      }
-      var rows = store.lookup(token, 'in');
-      if (!rows.length) {
-        toast('没找到在库件：' + token, 'err');
-        $('scanOutState').textContent = '未找到：' + token;
-        return;
-      }
-      var k = token.toUpperCase();
-      var exact = rows.filter(function (p) {
-        return [p.pickupCode, p.goodsNo, p.serialNo, p.trackingNo].map(function (x) {
-          return String(x || '').toUpperCase();
-        }).indexOf(k) >= 0 || p.phoneTail === token;
-      });
-      var pick = exact.length === 1 ? exact[0] : (rows.length === 1 ? rows[0] : null);
-      if (!pick) {
-        toast('匹配到多件，请用取件码或完整单号', 'err');
-        $('outSearch').value = token; state.outKeyword = token; renderOutbound();
-        $('scanOutState').textContent = '多件候选：' + token + '，已列在下方，请点选';
-        return;
-      }
-      var outType = $('outType').value === 'refund' ? 'refund' : 'pickup';
-      var reason = outType === 'refund' ? $('refundReason').value : '';
-      if (outType === 'refund') {
-        var ok = await confirmDialog('确认退件？',
-          pick.trackingNo + ' 将按「' + reason + '」退件出库，不发送任何通知。', '确认退件', true);
-        if (!ok) return;
-      }
-      var r = store.checkout([pick.id], '扫码连出', [], { outType: outType, refundReason: reason });
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      afterWrite((outType === 'refund' ? '退件出库 ' : '扫码出库 ') + pick.trackingNo);
-      speakIf((outType === 'refund' ? '退件' : '取件') + '出库，货号 ' + (pick.goodsNo || pick.pickupCode || ''));
-      $('scanOutState').textContent = '已' + (outType === 'refund' ? '退件' : '出库') + ' ' +
-        pick.trackingNo + ' · 货号 ' + (pick.goodsNo || '—') + '，继续扫下一件';
-    });
-
-    /* 批量入库 / 批量出库 */
-    $('btnBatchInPreview').onclick = function () { state.batchInReport = null; renderBatch(); };
-    $('btnBatchInFile').onclick = function () { $('batchInFile').click(); };
-    $('batchInFile').addEventListener('change', function () {
-      var f = this.files && this.files[0];
-      this.value = '';
-      if (!f) return;
+    function importBackup(file) {
+      if (!file) return;
       var fr = new FileReader();
       fr.onload = function () {
-        $('batchInText').value = String(fr.result || '').replace(/^\ufeff/, '');
-        state.batchInReport = null;
-        renderBatch();
-        toast('已读入 ' + f.name);
+        try {
+          var obj = JSON.parse(fr.result);
+          var r = store.restoreSnapshot(obj, 'replace');
+          if (!r.ok) { $('authMsg').textContent = r.error; return; }
+          if (obj.photos && Media.importAll) Media.importAll(obj.photos);
+          $('authMsg').textContent = '已导入 ' + r.parcels + ' 条记录';
+          $('authMsg').className = 'auth-msg ok';
+          showGate();
+        } catch (e) { $('authMsg').textContent = '备份文件无法解析：' + e.message; }
       };
-      fr.readAsText(f, 'utf-8');
-    });
-    $('btnBatchInAdd').onclick = async function () {
-      if (!guard('write')) return;
-      var parsed = parseInText();
-      if (!parsed.rows.length) { toast('没有可入库的单号', 'err'); return; }
-      var ok = await confirmDialog('批量入库 ' + parsed.rows.length + ' 件？',
-        '逐行校验：重复单号、命中拦截名单、货位冲突会单独列出，不影响其它行。', '确认入库');
-      if (!ok) return;
-      var r = store.batchAdd(parsed.rows);
-      state.lastBatchParcels = r.added;
-      state.batchInReport = r;
-      /* 失败的单号留在输入框，改完可以直接重试 */
-      $('batchInText').value = r.failed.map(function (f) { return f.trackingNo; }).join('\n');
-      renderBatch();
-      afterWrite('批量入库 ' + r.added.length + ' 件' + (r.failed.length ? '，失败 ' + r.failed.length + ' 件' : ''));
-      speakIf('批量入库 ' + r.added.length + ' 件');
+      fr.readAsText(file);
+    }
+    $('btnBootImport').onclick = function () { $('authImportFile').click(); };
+    $('btnSetupImport').onclick = function () { $('authImportFile').click(); };
+    $('authImportFile').addEventListener('change', function () { importBackup(this.files[0]); this.value = ''; });
+    $('btnDiag').onclick = function () {
+      var d = auth.diag();
+      d.storage = { db: DB.KEY, ok: store.storageOk() };
+      $('authDiag').hidden = false;
+      $('authDiag').textContent = JSON.stringify(d, null, 2);
     };
-    $('btnBatchLabels').onclick = printBatchLabels;
-    $('btnBatchOutPreview').onclick = function () { renderBatch(); };
-    $('btnBatchOut').onclick = async function () {
-      if (!guard('write')) return;
-      var m = store.findTokens($('batchOutText').value);
-      state.batchOut = m;
-      if (!m.matched.length) { toast('没有匹配到在库件', 'err'); renderBatch(); return; }
-      if (m.ambiguous.length) {
-        toast('有 ' + m.ambiguous.length + ' 个码对应多件，请改用精确单号', 'err');
-        renderBatch(); return;
-      }
-      var outType = $('batchOutType').value === 'refund' ? 'refund' : 'pickup';
-      var reason = outType === 'refund' ? $('batchRefundReason').value : '';
-      var ok = await confirmDialog('批量' + (outType === 'refund' ? '退件' : '取件') +
-        '出库 ' + m.matched.length + ' 件？',
-        '共用一个批次，可整批撤销；不发送短信或电话通知。', '确认出库');
-      if (!ok) return;
-      var r = store.checkout(m.matched.map(function (x) { return x.parcel.id; }), '批量出库', [],
-        { merge: true, outType: outType, refundReason: reason });
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      $('batchOutText').value = m.missing.join('\n');
-      afterWrite('批量' + (outType === 'refund' ? '退件' : '取件') + '出库 ' + r.count + ' 件 · ' + r.batchId);
-      speakIf('批量出库 ' + r.count + ' 件');
-      renderBatch();
-    };
-
-    /* 客户管理 */
-    $('cusKeyword').addEventListener('input', renderCustomers);
-    $('cusTag').addEventListener('change', renderCustomers);
-    $('btnCusAdd').onclick = async function () {
-      if (!guard('manage')) return;
-      var patch = await customerDialog(null);
-      if (!patch) return;
-      var r = store.saveCustomer(patch);
-      if (!r.ok) { toast(r.error, 'err'); return; }
-      afterWrite('客户已保存');
-    };
-    $('btnCusExport').onclick = function () {
-      downloadFile('客户名单-' + dateStamp() + '.csv', store.exportCSV('customers'), 'text/csv;charset=utf-8');
-      toast('客户名单已导出');
-    };
-    $('cusBody').addEventListener('click', async function (e) {
-      var ed = e.target.closest('[data-cus-edit]');
-      var del = e.target.closest('[data-cus-del]');
-      if (!ed && !del) return;
-      if (!guard('manage')) return;
-      var id = ed ? ed.dataset.cusEdit : del.dataset.cusDel;
-      var c = store.customers().find(function (x) { return x.id === id; });
-      if (!c) return;
-      if (ed) {
-        var patch = await customerDialog(c);
-        if (!patch) return;
-        /* 尾号改了等于换了一个客户键：先移除旧档案，避免留下重复条目 */
-        if (c.phoneTail && patch.phoneTail !== c.phoneTail) store.removeCustomer(c.id);
-        var r = store.saveCustomer(patch);
-        if (!r.ok) { toast(r.error, 'err'); return; }
-        afterWrite('客户资料已更新');
-      } else {
-        var ok = await confirmDialog('删除客户档案？', '只删除本机客户资料，包裹台账不受影响。', '确认删除', true);
-        if (!ok) return;
-        store.removeCustomer(c.id);
-        afterWrite('客户档案已删除');
-      }
-    });
-
-    /* 时间段业务统计 */
-    $('anaRange').addEventListener('change', function () {
-      state.anaRange = this.value;
-      renderRangeStats();
-    });
-    $('btnAnaCustom').onclick = function () {
-      if (!$('anaFrom').value || !$('anaTo').value) { toast('请先选开始和结束日期', 'err'); return; }
-      state.anaRange = 'custom';
-      renderRangeStats();
-    };
-    $('btnAnaExport').onclick = function () {
-      var d = state.anaData || currentRangeData();
-      var rows = [['时间', '类型', '运单号', '公司', '操作人', '货号 / 取件人 / 原因']];
-      d.details.forEach(function (r) {
-        rows.push([store.fmtTime(r.at), r.type, r.trackingNo, r.carrier, r.operator, r.extra]);
-      });
-      downloadFile('业务统计明细-' + dateStamp() + '.csv',
-        '\ufeff' + rows.map(function (r) { return r.map(csvQuote).join(','); }).join('\r\n'),
-        'text/csv;charset=utf-8');
-      toast('统计明细已导出');
-    };
-
-    /* 设置：连续编号重设 */
-    $('btnSerialStart').onclick = function () {
-      if (!guard('manage')) return;
-      var n = Number($('setSerialStart').value) || 1;
-      store.setSerialStart(n);
-      toast('下一个连续编号已设为 ' + n);
-    };
+    $('btnClearLock').onclick = function () { auth.clearLock(); $('authMsg').textContent = '登录限制已清除'; };
   }
 
-  /* ---------- 事件绑定 ---------- */
-  function bind() {
-    /* 捕获阶段统一拦截越权操作：按钮与表单上标注 data-perm，静态页面也能做角色隔离 */
-    document.addEventListener('click', function (e) {
-      var t = e.target && e.target.closest && e.target.closest('[data-perm]');
-      if (!t || !auth.current()) return;
-      if (!auth.can(t.dataset.perm)) {
-        e.preventDefault(); e.stopPropagation();
-        toast('当前账号（' + auth.current().roleName + '）没有此操作权限', 'err');
-      }
-    }, true);
-    document.addEventListener('submit', function (e) {
-      var f = e.target && e.target.closest && e.target.closest('form[data-perm]');
-      if (!f || !auth.current()) return;
-      if (!auth.can(f.dataset.perm)) {
-        e.preventDefault(); e.stopPropagation();
-        toast('当前账号（' + auth.current().roleName + '）没有此操作权限', 'err');
-      }
-    }, true);
-
-    $('nav').addEventListener('click', function (e) {
-      var b = e.target.closest('.nav-item');
-      if (b) switchView(b.dataset.view);
+  /* ---------------- 视图切换 ---------------- */
+  var TITLES = {
+    dash: '工作台', inbound: '入库', outbound: '出库', query: '查件', inventory: '库存台账',
+    collections: '收件任务', customers: '客户管理', stats: '业务统计', print: '货号标签',
+    sync: '同步记录', settings: '设置', accounts: '子账号', logs: '操作流水', help: '帮助 / 关于'
+  };
+  function switchView(name) {
+    if (!$('view-' + name)) name = 'dash';
+    S.view = name;
+    Object.keys(TITLES).forEach(function (v) { var el = $('view-' + v); if (el) el.hidden = v !== name; });
+    document.querySelectorAll('.nav-item').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-view') === name);
+      var p = b.getAttribute('data-perm');
+      b.disabled = !!(p && !auth.can(p));
     });
-    document.addEventListener('click', function (e) {
-      var g = e.target.closest('[data-goto]');
-      if (g) switchView(g.dataset.goto);
-    });
-    $('btnQuickIn').onclick = function () { switchView('inbound'); };
-    /* 浏览器前进/后退或外部改 hash 时同步视图（未登录时忽略，登录后再按 hash 落位） */
-    window.addEventListener('hashchange', function () {
-      if (!auth.current()) return;
-      var v = hashView();
-      if (v && v !== state.view) switchView(v, { noHash: true });
-    });
-
-    /* 查件（工作台快捷入口 + 独立查件页） */
-    function quickLookup() {
-      var v = $('quickLookup').value.trim();
-      if (v) { $('lookupKey').value = v; state.lookupKey = v; }
-      switchView('lookup');
-      renderLookup();
-      $('lookupKey').focus();
+    $('topSub').textContent = TITLES[name];
+    $('sidebar').classList.remove('open'); $('sideShade').classList.remove('on');
+    try { history.replaceState(null, '', '#' + name); } catch (e) { }
+    renderAll();
+    window.scrollTo(0, 0);
+    if (name === 'inbound' && S.inTab === 'manual') setTimeout(function () { try { $('inNo').focus(); } catch (e) { } }, 100);
+    if (name === 'outbound' && store.settings().autoCapture && !S.autoTried &&
+      auth.can('outbound') && Media.supported() && store.listParcels({ status: 'in' }).length) {
+      S.autoTried = true;
+      setTimeout(function () { if (S.view === 'outbound') capturePickup(true); }, 500);
     }
-    $('btnQuickLookup').onclick = quickLookup;
-    $('quickLookup').addEventListener('keydown', function (e) { if (e.key === 'Enter') quickLookup(); });
-    $('lookupKey').addEventListener('input', function () {
-      state.lookupKey = this.value;
-      renderLookup();
-    });
-    $('lookupKey').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { this.select(); renderLookup(); }
-    });
-    $('btnLookup').onclick = function () { state.lookupKey = $('lookupKey').value; renderLookup(); $('lookupKey').focus(); };
-    $('lookupScope').addEventListener('change', renderLookup);
-    $('lookupClear').onclick = function () {
-      $('lookupKey').value = ''; state.lookupKey = ''; renderLookup(); $('lookupKey').focus();
-    };
-    $('lookupResults').addEventListener('click', function (e) {
-      var q = e.target.closest('[data-quick]');
-      if (q) {
-        $('lookupKey').value = q.dataset.quick; state.lookupKey = q.dataset.quick;
-        renderLookup(); $('lookupKey').focus(); return;
-      }
-      var pv = e.target.closest('[data-photos]');
-      if (pv) { openPhotoViewer(pv.dataset.photos); return; }
-      var go = e.target.closest('[data-lookup-out]');
-      if (go) { goCheckout(go.dataset.lookupOut); return; }
-      var cc = e.target.closest('[data-copy-code]');
-      if (cc) { copyText(cc.dataset.copyCode); return; }
-      var bt = e.target.closest('[data-batch]');
-      if (bt) {
-        $('lookupKey').value = bt.dataset.batch;
-        state.lookupKey = bt.dataset.batch;
-        $('lookupScope').value = '';
-        renderLookup();
-        $('lookupKey').focus();
-        return;
-      }
-      var cp = e.target.closest('[data-copy]');
-      if (cp) { copyText(cp.dataset.copy); return; }
-    });
+  }
+  function renderAll() {
+    if ($('app').hidden) return;
+    renderDash(); renderInbound(); renderOutbound(); renderQuery(); renderInventory();
+    renderCollections(); renderCustomers(); renderStats(); renderPrint(); renderSync();
+    renderSettings(); renderAccounts(); renderLogs(); renderHelp();
+  }
 
-    /* 入库 */
-    $('formIn').addEventListener('submit', async function (e) {
-      e.preventDefault();
-      if (!guard('write')) return;
-      var btn = $('formIn').querySelector('button[type="submit"]');
-      /* 等条码识别跑完再读运单号、存照片：识别会自动填单号，提交不能抢在它前面 */
-      if (state.inOcrPending) {
-        btn.disabled = true;
-        try { await state.inOcrPending; } catch (err) { /* 识别失败仍按手输继续 */ }
-        btn.disabled = false;
-      }
-      var tn = $('inTracking').value.trim();
-      var exists = store.getDB().parcels.some(function (p) {
-        return p.status === 'in' && p.trackingNo.toUpperCase() === tn.toUpperCase();
+  /* ---------------- 工作台 ---------------- */
+  function renderDash() {
+    var s = store.stats(R.dateRange('today'));
+    var all = store.listParcels({ status: 'in' });
+    var overdue = all.filter(function (p) { return R.daysBetween(p.inAt, Date.now()) >= store.settings().warnDays; }).length;
+    $('dashDate').textContent = R.fmt(new Date(), false) + ' · ' + (store.settings().stationName || '驿站');
+    $('dashKpi').innerHTML = [
+      ['今日入库', s.inCount, '今日累计'], ['今日出库', s.outCount, '取件 ' + s.pickupCount + ' · 退件 ' + s.refundCount],
+      ['当前库存', all.length, '在库件数'], ['滞留提醒', overdue, '超过 ' + store.settings().warnDays + ' 天']
+    ].map(function (x) {
+      return '<div class="kpi"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div><div class="s">' + esc(x[2]) + '</div></div>';
+    }).join('');
+    var d = s.stockDays, max = Math.max(1, d.d0, d.d1, d.d2, d.d3, d.over);
+    $('dashStockTotal').textContent = '共 ' + s.inStock + ' 件';
+    $('dashStock').innerHTML = [['当天', d.d0], ['1 天', d.d1], ['2 天', d.d2], ['3 天', d.d3], ['4 天以上', d.over]]
+      .map(function (x) {
+        return '<div class="bar-row"><span class="b-label">' + x[0] + '</span><span class="bar-track">' +
+          '<span class="bar-fill" style="width:' + (x[1] / max * 100) + '%"></span></span><span class="b-num">' + x[1] + '</span></div>';
+      }).join('');
+    $('dashLogs').innerHTML = store.listLogs({ limit: 8 }).map(function (l) {
+      return '<div class="m-row"><time>' + esc(R.fmt(l.at).slice(5)) + '</time><span>' + esc(l.text) + '</span></div>';
+    }).join('') || '<div class="muted">暂无操作</div>';
+    $('dashQuick').innerHTML = [
+      ['inbound', '手动 / 极速入库'], ['outbound', '拍照取件出库'], ['query', '多维查件'],
+      ['inventory', '库存台账与移库'], ['stats', '业务统计'], ['print', '打印货号标签'],
+      ['customers', '客户管理'], ['settings', '设置与备份']
+    ].map(function (x) {
+      return '<button class="btn btn-outline" data-go="' + x[0] + '">' + esc(x[1]) + '</button>';
+    }).join('');
+  }
+
+  /* ---------------- 入库 ---------------- */
+  function renderInbound() {
+    var set = store.settings();
+    var companies = store.listCompanies().filter(function (c) { return c.enabled !== false; });
+    if (document.activeElement !== $('inCarrier') || !$('inCarrier').value) {
+      fillSelect('inCarrier', companies.map(function (c) { return c.name; }), $('inCarrier').value || companies[0] && companies[0].name);
+    }
+    var slots = R.slotList(set).filter(function (s) { return !store.occupied(s); });
+    fillSelect('inSlot', slots, $('inSlot').value || set.zones[0] + '01-01');
+    fillSelect('inLabel', [''].concat(store.listLabels()), $('inLabel').value, function (x) { return x || '无标签'; });
+    if (!$('inSerial').value && !$('inGoods').value) {
+      var preview = store.previewNums({ slot: $('inSlot').value, tail: R.tail4($('inPhone').value), short: 'YT' });
+      $('inSerial').placeholder = '自动生成：' + preview.serial;
+      $('inGoods').placeholder = '自动生成：' + preview.goodsNo;
+    }
+    $('inPhotoState').textContent = S.inFiles.length ? S.inFiles.length + ' 张照片待保存' : (set.photoIn ? '入库拍照已开启' : '');
+    renderPhotos('inPhotoPreview', S.inFiles, S.inUrls, 'in');
+    renderStrip('quickList', S.quickList, function (x, i) {
+      return '<div class="strip-item"><b>' + esc(x.goodsNo) + '</b><span class="grow">' + esc(x.trackingNo) +
+        ' · ' + esc(x.slot) + '</span><span class="muted">' + esc(x.phoneTail || '待补录') + '</span></div>';
+    }, '本次还没有入库记录');
+    renderStrip('scanInList', S.scanInList, function (x) {
+      return '<div class="strip-item"><b>' + esc(x.goodsNo || '失败') + '</b><span class="grow">' + esc(x.text) + '</span></div>';
+    }, '等待扫码…');
+    $('quickCount').textContent = '本次 ' + S.quickList.length + ' 件';
+    if (S.lastIn) {
+      $('lastInCard').hidden = false;
+      var p = S.lastIn;
+      $('lastIn').innerHTML = '<div class="strip-item"><b class="mono">' + esc(p.goodsNo) + '</b><span class="grow">' +
+        esc(p.trackingNo) + ' → ' + esc(p.slot) + '</span><button class="btn btn-outline btn-sm" data-act="label" data-id="' +
+        esc(p.id) + '">打印标签</button></div>';
+    }
+  }
+  function renderPhotos(elId, files, urls, which) {
+    var el = $(elId); if (!el) return;
+    while (urls.length < files.length) urls.push(URL.createObjectURL(files[urls.length].blob));
+    el.innerHTML = files.map(function (f, i) {
+      return '<img src="' + urls[i] + '" title="' + esc(f.name) + '" data-photo="' + which + '" data-index="' + i + '" alt="照片">';
+    }).join('');
+  }
+  function renderStrip(elId, list, fn, empty) {
+    var el = $(elId); if (!el) return;
+    el.innerHTML = list.length ? list.map(fn).join('') : '<div class="muted">' + esc(empty) + '</div>';
+  }
+
+  function nameInFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []).filter(function (f) { return /^image\//.test((f.blob || f).type || ''); }).slice(0, 12);
+    var jobs = files.map(function (f) {
+      return Media.recognize(f.blob).then(function (d) {
+        var code = R.barcodeOf(d);
+        return { blob: f.blob, type: f.type, name: R.inboundPhotoName(code), code: code,
+          engine: d.supported ? '本机识别' : '未支持识别' };
       });
-      if (exists) { toast('该运单号已在库，请先核对', 'err'); $('inTracking').select(); return; }
-      btn.disabled = true;
-      var pr = await savePhotos(state.inFiles, 'inbound');
-      var res = store.addParcel({
-        trackingNo: tn,
-        carrier: $('inCarrier').value,
-        recipient: $('inRecipient').value,
-        phoneTail: $('inPhone').value,
-        slot: $('inSlot').value,
-        count: $('inCount').value,
-        note: $('inNote').value,
-        pickupCode: $('inPickupCode').value,
-        photos: pr.items
+    });
+    S.inOcrPending = Promise.all(jobs).then(function (out) {
+      S.inFiles = S.inFiles.concat(out).slice(0, 12);
+      if (!$('inNo').value) {
+        var hit = out.filter(function (x) { return x.code; })[0];
+        if (hit) { $('inNo').value = hit.code; syncCarrier(); }
+      }
+      var ok = out.filter(function (x) { return x.code; }).length;
+      var st = $('inOcrState'); st.hidden = false;
+      st.className = 'ocr-state ' + (ok ? 'ok' : 'err');
+      st.textContent = out.length
+        ? (ok ? '识别到条码 ' + out.filter(function (x) { return x.code; }).map(function (x) { return x.code; }).join('、') + '，照片已按条码命名'
+          : '未识别到条码，照片按时间命名，运单号请手输或扫码枪录入')
+        : '';
+      renderInbound();
+      return out;
+    });
+    return S.inOcrPending;
+  }
+  function syncCarrier() {
+    var no = $('inNo').value.trim();
+    if (!no) return;
+    var c = R.detectCarrier(no, store.listCompanies());
+    var sel = $('inCarrier');
+    if (c && Array.prototype.some.call(sel.options, function (o) { return o.value === c.name; })) sel.value = c.name;
+    $('inCarrierHint').textContent = c && c.rule ? '按单号自动识别：' + c.name + '（可手动改）' : '未匹配到识别规则，请手动选公司';
+  }
+  function clearInForm(keepFocus) {
+    ['inNo', 'inRecipient', 'inPhone', 'inSerial', 'inGoods', 'inNote'].forEach(function (id) { $(id).value = ''; });
+    $('inCount').value = '1'; $('inLabel').value = ''; $('inCarrierHint').textContent = '';
+    $('inOcrState').hidden = true; $('inOcrState').textContent = '';
+    S.inUrls.forEach(function (u) { URL.revokeObjectURL(u); }); S.inUrls = []; S.inFiles = [];
+    S.inOcrPending = null;
+    renderInbound();
+    if (keepFocus) $('inNo').focus();
+  }
+  function savePhotos(files, kind, nameFn) {
+    var jobs = files.map(function (f, i) {
+      return Media.put(f.blob, nameFn ? nameFn(f, i) : f.name, kind);
+    });
+    return Promise.all(jobs).then(function (items) {
+      return items.filter(function (x) { return x && x.ok; }).map(function (x) {
+        return { id: x.id, name: x.name, at: R.iso(), kind: kind };
+      });
+    });
+  }
+  function submitInbound(e) {
+    e.preventDefault();
+    if (!guard('inbound')) return;
+    var btn = $('formIn').querySelector('button[type="submit"]');
+    btn.disabled = true;
+    var wait = S.inOcrPending || Promise.resolve([]);
+    wait.then(function () {
+      return savePhotos(S.inFiles, 'in');
+    }).then(function (photos) {
+      var r = store.addParcel({
+        trackingNo: $('inNo').value, carrier: $('inCarrier').value,
+        recipient: $('inRecipient').value, phone: $('inPhone').value,
+        slot: $('inSlot').value, serial: $('inSerial').value, goodsNo: $('inGoods').value,
+        label: $('inLabel').value, note: $('inNote').value, count: $('inCount').value,
+        photos: photos
       });
       btn.disabled = false;
-      if (!res.ok) { toast(res.error, 'err'); $('inTracking').select(); return; }
-      state.lastParcel = res.parcel;
-      $('lastIn').hidden = false;
-      $('lastIn').innerHTML = '<div class="li-ok">已入库 <strong>' + esc(res.parcel.trackingNo) + '</strong> → 货架位 <strong>' + esc(res.parcel.slot) + '</strong>' +
-        (res.parcel.goodsNo ? ' · 货号 <strong>' + esc(res.parcel.goodsNo) + '</strong>' : '') +
-        (res.parcel.serialNo ? ' · 编号 ' + esc(res.parcel.serialNo) : '') +
-        (pr.items.length ? '，照片 ' + pr.items.length + ' 张' : '') + '，继续扫下一件</div>' +
-        (res.carrierGuessed ? '<div class="li-tip">按单号前缀自动识别为 ' + esc(res.carrierGuessed) + '</div>' : '') +
-        (res.sameCustomer ? '<div class="li-tip">同一尾号还有 ' + res.sameCustomer + ' 件在库，建议放同一货架</div>' : '') +
-        (res.parcel.pickupCode ? '<div class="code-hero"><span>取件码</span><strong>' + esc(res.parcel.pickupCode) + '</strong>' +
-          '<button type="button" class="btn btn-ghost btn-sm" data-copy-code="' + esc(res.parcel.pickupCode) + '"><svg class="ic"><use href="#i-copy"/></svg>复制</button>' +
-          '<button type="button" class="btn btn-outline btn-sm" data-print-label="1"><svg class="ic"><use href="#i-print"/></svg>打印标签</button></div>' : '');
-      /* 本地 TTS 只念货号/货位，不联网、不发短信、不拨号 */
-      if (assistant && store.settings().voiceEnabled) {
-        assistant.speak('货号 ' + (res.parcel.goodsNo || '无') + '，货架位 ' + res.parcel.slot +
-          '，取件码 ' + (res.parcel.pickupCode || '无'), true);
-      }
+      if (!r.ok) { feedback('error'); toast(r.error, 'err'); return; }
+      S.lastIn = r.parcel; S.lastInBatchId = '';
+      var txt = R.feedbackText('in', r.parcel);
+      feedback('in', txt);
       clearInForm(true);
-      clearFiles('in');
-      afterWrite('入库成功 · ' + res.parcel.slot);
-      reportPhotoResult(pr);
-      $('inTracking').focus();
-    });
-    $('btnInCamera').onclick = function () { takePhoto('in'); };
-    $('btnInPhotos').onclick = function () { $('inPhotos').removeAttribute('capture'); $('inPhotos').click(); };
-    $('inPhotos').addEventListener('change', function () { addFiles('in', this.files); this.value = ''; });
-    $('inPhotoPreview').addEventListener('click', function (e) {
-      var b = e.target.closest('[data-remove]');
-      if (!b) return;
-      state.inFiles.splice(Number(b.dataset.remove), 1);
-      renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
-      renderPhotoStatus();
-    });
-    $('lastIn').addEventListener('click', function (e) {
-      var cp = e.target.closest('[data-copy-code]');
-      if (cp) { copyText(cp.dataset.copyCode); return; }
-      if (e.target.closest('[data-print-label]') && state.lastParcel) printLabelDialog(state.lastParcel);
-    });
-    $('inPickupCode').addEventListener('input', function () { this.dataset.manual = '1'; });
-    $('inSlot').addEventListener('input', function () { refreshCodePreview(); });
-    $('btnRecode').onclick = function () { refreshCodePreview(true); toast('取件码已按当前货架位重算'); };
-    $('btnReslot').onclick = function () {
-      $('inSlot').value = store.suggestSlot($('inZone').value || store.settings().zones[0]);
-      refreshCodePreview();
-      $('inTracking').focus();
-    };
-    $('inZone').onchange = function () {
-      $('inSlot').value = store.suggestSlot(this.value);
-      refreshCodePreview();
-    };
-
-    /* 出库 */
-    $('outSearch').addEventListener('input', function () {
-      state.outKeyword = this.value;
-      renderOutbound();
-    });
-    $('outSearch').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && Object.keys(state.selected).length) doCheckout();
-    });
-    $('outResults').addEventListener('click', function (e) {
-      var card = e.target.closest('.pick-card');
-      if (!card) return;
-      var id = card.dataset.id;
-      if (state.selected[id]) delete state.selected[id]; else state.selected[id] = true;
-      renderOutbound();
-    });
-    $('outSelectAll').onclick = function () {
-      var rows = state.outKeyword.trim() ? store.listParcels({ status: 'in', keyword: state.outKeyword.trim() }) : [];
-      rows.forEach(function (p) { state.selected[p.id] = true; });
-      renderOutbound();
-      if (rows.length) toast('已选中本次搜索的 ' + rows.length + ' 件');
-    };
-    $('outClear').onclick = function () {
-      $('outSearch').value = ''; state.outKeyword = '';
-      state.selected = {}; clearFiles('proof'); renderOutbound(); $('outSearch').focus();
-    };
-    $('outClearSel').onclick = function () {
-      state.selected = {}; renderOutbound();
-    };
-    $('btnScanPickup').onclick = function () {
-      state.scan.userClosed = false;
-      capturePickup(false);
-    };
-    $('scanCandidates').addEventListener('click', function (e) {
-      var b = e.target.closest('[data-scan-id]');
-      if (b) applyScanChoice(b.dataset.scanId);
-    });
-    $('btnProof').onclick = function () { takePhoto('proof'); };
-    $('btnProofPick').onclick = function () { $('outProof').removeAttribute('capture'); $('outProof').click(); };
-    $('outProof').addEventListener('change', function () {
-      var list = Array.from(this.files || []);
-      this.value = '';
-      /* 系统相机回传的单张照片同样走「识别 → 自动选中 → 自动命名」 */
-      if (state.scan.pickIntent && list.length === 1) {
-        state.scan.pickIntent = false;
-        handlePickupPhoto(list[0]);
-      } else {
-        state.scan.pickIntent = false;
-        addFiles('proof', list);
-      }
-    });
-    $('btnCheckout').onclick = doCheckout;
-
-    /* 在库台账 */
-    ['invKeyword', 'invCarrier', 'invZone', 'invStatus', 'invOverdue', 'invSort'].forEach(function (id) {
-      var el = $(id);
-      el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', function () {
-        state.invLimit = 50; renderInventory();
-      });
-    });
-    $('btnInvMore').onclick = function () { state.invLimit += 50; renderInventory(); };
-    $('btnInvExport').onclick = function () {
-      downloadFile('包裹台账-' + dateStamp() + '.csv', store.exportCSV($('invStatus').value === 'in' ? 'instock' : 'all'), 'text/csv;charset=utf-8');
-      toast('台账已导出');
-    };
-    $('invBody').addEventListener('click', async function (e) {
-      var pv = e.target.closest('[data-photos]');
-      if (pv) { openPhotoViewer(pv.dataset.photos); return; }
-      var ed = e.target.closest('[data-edit]');
-      var del = e.target.closest('[data-del]');
-      var undo = e.target.closest('[data-undo-in]');
-      if ((ed || del || undo) && !guard('write')) return;
-      if (undo) {
-        var up = store.getDB().parcels.find(function (x) { return x.id === undo.dataset.undoIn; });
-        if (!up) return;
-        var uok = await confirmDialog('撤销入库？',
-          '将移除 ' + up.trackingNo + ' 的入库记录，并单独记一条「撤销入库」流水（和直接删除记录区分开）。',
-          '确认撤销', true);
-        if (!uok) return;
-        store.removeParcel(up.id, { undo: true });
-        afterWrite('已撤销入库 · ' + up.trackingNo);
-        return;
-      }
-      if (ed) {
-        var p = store.getDB().parcels.find(function (x) { return x.id === ed.dataset.edit; });
-        if (!p) return;
-        var patch = await editDialog(p);
-        if (!patch) return;
-        var r = store.updateParcel(p.id, patch);
-        if (!r.ok) toast(r.error, 'err'); else afterWrite('资料已更新');
-      }
-      if (del) {
-        var item = store.getDB().parcels.find(function (x) { return x.id === del.dataset.del; });
-        if (!item) return;
-        var ok = await confirmDialog('删除这条记录？', '将永久删除 ' + item.trackingNo + ' 的包裹记录，此操作不可撤销。建议先导出备份。', '确认删除', true);
-        if (!ok) return;
-        store.removeParcel(item.id);
-        afterWrite('记录已删除');
-      }
-    });
-
-    /* 流水 */
-    $('logKeyword').addEventListener('input', renderLogs);
-    $('logType').addEventListener('change', renderLogs);
-    $('btnLogExport').onclick = function () {
-      downloadFile('操作流水-' + dateStamp() + '.csv', store.exportCSV('logs'), 'text/csv;charset=utf-8');
-      toast('流水已导出');
-    };
-    $('btnLogClear').onclick = async function () {
-      var ok = await confirmDialog('清空操作流水？', '所有历史动作记录将被删除，包裹台账不受影响。建议先导出流水 CSV。', '确认清空', true);
-      if (!ok) return;
-      store.clearLogs(); renderLogs(); toast('流水已清空');
-    };
-    $('logList').addEventListener('click', function (e) {
-      if (!e.target.closest('[data-restore-batch]') && !e.target.closest('[data-restore]')) return;
-      if (!guard('write')) return;
-      var bb = e.target.closest('[data-restore-batch]');
-      if (bb) {
-        var rb = store.restoreBatch(bb.dataset.restoreBatch);
-        if (!rb.ok) toast(rb.error, 'err');
-        else afterWrite('整批撤销 ' + rb.count + ' 件，已恢复在库');
-        return;
-      }
-      var b = e.target.closest('[data-restore]');
-      if (!b) return;
-      var r = store.restoreParcel(b.dataset.restore);
-      if (!r.ok) toast(r.error, 'err'); else afterWrite('已撤销出库，包裹恢复在库');
-    });
-
-    /* 图片存储 */
-    $('phMode').addEventListener('change', togglePhotoBoxes);
-    $('phProvider').addEventListener('change', function () { refreshProviderUI(true); });
-    ['phBase', 'phProxyBase'].forEach(function (id) {
-      $(id).addEventListener('input', function () { refreshProviderUI(false); });
-    });
-    $('btnGhFromSync').onclick = function () {
-      var s = (typeof StationSync !== 'undefined' && StationSync) ? StationSync.config() : null;
-      if (!s || !s.repo) { toast('「GitHub 同步」里还没填仓库，先在下面填 token 和 owner/repo', 'err'); return; }
-      $('ghRepo').value = s.repo;
-      $('ghBranch').value = s.branch || 'main';
-      if (!$('ghDir').value.trim()) $('ghDir').value = 'photos';
-      $('phMode').value = 'github';
-      togglePhotoBoxes();
-      savePhotoForm();
-      toast('已取用 ' + s.repo + ' @ ' + (s.branch || 'main') + '，点「测试连接」确认能写');
-    };
-    $('btnGhClearCache').onclick = async function () {
-      var r = await photos.clearCache();
-      renderCacheState();
-      toast(r.ok ? '已清空照片缓存，下次打开会重新从 GitHub 拉' : ('清除失败：' + r.error), r.ok ? 'ok' : 'err');
-    };
-    $('ghCache').onchange = function () {
-      savePhotoForm();
-      renderCacheState();
-      toast($('ghCache').checked ? '已开启本机缓存' : '已关闭本机缓存：每张照片都会重新下载');
-    };
-    $('btnPhPick').onclick = async function () {
-      var r = await photos.pickDirectory();
-      renderPhotoStatus();
-      toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
-    };
-    /* 123 云盘砍掉 WebDAV 后的三条退路，点一下就把表单切过去 */
-    $('btnUseNutstore').onclick = function () {
-      $('phMode').value = 'webdav';
-      $('phProvider').value = 'nutstore';
-      togglePhotoBoxes();
-      refreshProviderUI(true);
-      $('phProviderRoute').scrollIntoView({ block: 'center', behavior: 'smooth' });
-      toast('已切到坚果云：填注册邮箱 + 应用密码，再填 Worker 地址后点「测试连接」');
-    };
-    $('btnUseLocal').onclick = function () {
-      $('phMode').value = 'local';
-      togglePhotoBoxes();
-      renderPhotoStatus();
-      toast('已切到本机文件夹：点「选择本机文件夹」，选 123 云盘客户端挂载的盘符目录（选择器里看不到就改用坚果云）');
-    };
-    $('btnUseBrowser').onclick = function () {
-      $('phMode').value = 'browser';
-      togglePhotoBoxes();
-      renderPhotoStatus();
-      toast('已切到浏览器暂存：照片只在当前设备，换设备不跟随');
-    };
-    $('btnPhSave').onclick = function () {
-      savePhotoForm();
-      toast('图片存储设置已保存');
-    };
-    $('btnPhTest').onclick = async function () {
-      savePhotoForm();
-      toast('正在测试图片存储…');
-      var r = await photos.test();
-      renderPhotoStatus();
-      toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
-    };
-
-    /* 设置 */
-    $('formSettings').addEventListener('submit', function (e) {
-      e.preventDefault();
-      var warn = Number($('setWarn').value), danger = Number($('setDanger').value);
-      if (danger <= warn) { toast('严重超期天数要大于滞留提醒天数', 'err'); return; }
-      var split = function (v) { return v.split(/[,，、]/).map(function (x) { return x.trim(); }).filter(Boolean); };
-      var carriers = split($('setCarriers').value), zones = split($('setZones').value);
-      if (!carriers.length || !zones.length) { toast('快递公司和货架区至少各填一项', 'err'); return; }
-      store.updateSettings({
-        stationName: $('setName').value.trim(), operator: $('setOperator').value.trim(),
-        warnDays: warn, dangerDays: danger, carriers: carriers, zones: zones,
-        shelvesPerZone: Number($('setShelves').value), levelsPerShelf: Number($('setLevels').value),
-        codeMode: $('setCodeMode').value,
-        stationAddress: $('setAddress').value.trim(), stationPhone: $('setStationPhone').value.trim(),
-        goodsNoMode: $('setGoodsMode').value, serialStart: Number($('setSerialStart').value) || 1,
-        carrierRules: $('setCarrierRules').value.trim(),
-        blocked: $('setBlocked').value.trim(), blockEnabled: $('setBlockEnabled').checked,
-        voiceEnabled: $('setVoiceEnabled').checked, scanAutoOut: $('setScanAutoOut').checked
-      });
-      /* 「下一个连续编号」保存即生效，免得改了设置却还从旧流水继续编 */
-      store.setSerialStart(Number($('setSerialStart').value) || 1);
-      afterWrite('设置已保存');
-    });
-
-    /* 数据管理 */
-    document.querySelectorAll('[data-export]').forEach(function (b) {
-      b.onclick = function () {
-        var kind = b.dataset.export;
-        if (kind === 'json') {
-          downloadFile('驿站备份-' + dateStamp() + '.json', store.exportJSON(), 'application/json;charset=utf-8');
-          toast('全量备份已导出');
-        } else {
-          var names = { all: '全部包裹', instock: '在库件', logs: '操作流水' };
-          downloadFile(names[kind] + '-' + dateStamp() + '.csv', store.exportCSV(kind), 'text/csv;charset=utf-8');
-          toast(names[kind] + '已导出');
-        }
-      };
-    });
-    $('btnImport').onclick = function () { $('importFile').click(); };
-    $('importFile').addEventListener('change', async function () {
-      var file = this.files && this.files[0];
-      if (!file) return;
-      var text = await file.text();
-      var mode = $('importMode').value;
-      if (mode === 'replace') {
-        var ok = await confirmDialog('覆盖现有数据？', '当前浏览器里的全部包裹和流水会被备份文件替换，此操作不可撤销。', '确认覆盖', true);
-        if (!ok) { this.value = ''; return; }
-      }
-      var r = store.importJSON(text, mode);
-      this.value = '';
-      if (!r.ok) toast(r.error, 'err');
-      else {
-        fillSettings();
-        afterWrite('导入完成，处理 ' + r.count + ' 条记录' +
-          (r.accounts && r.accounts.ok ? ' · 账号库已恢复' : ''));
-        /* 备份里的账号库替换了本机账号，需要重新登录 */
-        if (!auth.current()) showGate('login');
-      }
-    });
-    $('btnClearAll').onclick = async function () {
-      var ok = await confirmDialog('清空全部数据？', '所有包裹、流水和设置都会恢复到初始状态，此操作不可撤销。请务必先导出 JSON 备份。', '我确认清空', true);
-      if (!ok) return;
-      store.clearAll(); fillSettings(); afterWrite('数据已清空');
-    };
-    $('btnDemo').onclick = async function () {
-      var ok = await confirmDialog('载入演示数据？', '会写入一批示例包裹用于预览统计效果，可在用完后再清空。', '载入演示', false);
-      if (!ok) return;
-      var r = store.seedDemo();
-      if (!r.ok) toast(r.error, 'err'); else afterWrite('已载入 ' + r.count + ' 条演示数据');
-    };
-
-    /* GitHub 同步 */
-    function readSyncInputs() {
-      return sync.saveConfig({
-        token: $('syncToken').value.trim(), repo: $('syncRepo').value.trim(),
-        branch: $('syncBranch').value.trim(), path: $('syncPath').value.trim(),
-        auto: $('syncAuto').checked
-      });
-    }
-    $('btnSyncSave').onclick = function () {
-      var c = readSyncInputs();
-      $('syncRepo').value = c.repo; $('syncBranch').value = c.branch; $('syncPath').value = c.path;
-      renderSyncState(); toast('同步配置已保存在本机浏览器');
-    };
-    $('btnSyncTest').onclick = async function () {
-      readSyncInputs();
-      if (!sync.isConfigured()) { toast('请先填写 token 和仓库', 'err'); return; }
-      toast('正在连接 GitHub…');
-      var r = await sync.test();
-      renderSyncState(); toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
-    };
-    $('btnSyncPush').onclick = async function () {
-      readSyncInputs();
-      if (!sync.isConfigured()) { toast('请先填写 token 和仓库', 'err'); return; }
-      toast('正在上传…');
-      var r = await sync.push(store.exportJSON());
-      renderSyncState(); toast(r.ok ? r.message : r.error, r.ok ? 'ok' : 'err');
-    };
-    $('btnSyncPull').onclick = async function () {
-      readSyncInputs();
-      if (!sync.isConfigured()) { toast('请先填写 token 和仓库', 'err'); return; }
-      var ok = await confirmDialog('拉取并覆盖本机数据？', '远端仓库里的台账会覆盖当前浏览器的全部包裹与流水，请先导出备份。', '确认拉取', true);
-      if (!ok) return;
-      toast('正在拉取…');
-      var r = await sync.pull();
-      if (!r.ok) { renderSyncState(); toast(r.error, 'err'); return; }
-      var imp = store.importJSON(r.text, 'replace');
-      renderSyncState();
-      if (!imp.ok) toast(imp.error, 'err');
-      else {
-        fillSettings();
-        afterWrite('已拉取 ' + imp.count + ' 条记录' +
-          (imp.accounts && imp.accounts.ok ? ' · 账号库已同步' : ''));
-        if (!auth.current()) showGate('login');
-      }
-    };
-    bindAssistant();
+      S.lastIn = r.parcel;
+      afterWrite('已入库 ' + r.parcel.trackingNo + ' → ' + r.parcel.goodsNo + ' / ' + r.parcel.slot);
+    }).catch(function (err) { btn.disabled = false; toast('照片保存失败：' + err.message, 'err'); });
   }
-
-  /* 出库留证：开启「必须拍凭证」且尚未拍照时，自动调起摄像头，拍完继续出库 */
-  async function ensureProof() {
-    if (state.proofFiles.length) return true;
-    if (!photos.config().requireProof) return true;
-    if (!camera || !camera.supported()) {
-      toast('已开启「出库必须拍凭证」，请先点「拍取件凭证」；也可到设置里关闭', 'err');
-      return false;
-    }
-    var files = await camera.open({ single: true, title: '取件凭证 · 拍照后自动出库' });
-    if (camera.lastError) toast(camera.lastError, 'err');
-    if (!files || !files.length) { toast('未拍照，已取消出库', 'err'); return false; }
-    addFiles('proof', files);
+  function quickAdd(noText, tail) {
+    if (!guard('inbound')) return;
+    var parts = String(noText).split(/[,，\s]+/).filter(Boolean);
+    var no = R.upper(parts[0]) || '';
+    var t = tail || (parts[1] && /^\d{4}$/.test(parts[1]) ? parts[1] : '') || R.tail4($('quickTail').value);
+    var r = store.addParcel({ trackingNo: no, phoneTail: t });
+    if (!r.ok) { feedback('error'); toast(r.error, 'err'); return false; }
+    S.quickList.unshift(r.parcel); S.lastIn = r.parcel; S.lastInBatchId = '';
+    feedback('in', R.feedbackText('in', r.parcel));
+    $('quickHint').textContent = '已入库 ' + r.parcel.goodsNo + ' / ' + r.parcel.slot + '，继续扫下一件';
+    renderInbound();
     return true;
   }
 
-  async function doCheckout() {
-    if (!guard('write')) return;
-    var ids = Object.keys(state.selected);
+  /* ---------------- 出库 ---------------- */
+  function renderOutbound() {
+    var set = store.settings();
+    var eng = Media.engines();
+    $('outEngine').textContent = '本机识别：' +
+      (eng.barcode ? '条码 ✔ ' : '条码 ✘ ') + (eng.text ? '文字 ✔' : '文字 ✘') +
+      ' · 不支持时照片仍自动命名，手输货号即可出库';
+    var mode = $('outMode').value || set.queryMode || 'fuzzy';
+    $('outMode').value = mode;
+    $('outReasonBox').hidden = S.outType !== 'refund';
+    var kw = $('outKeyword').value.trim();
+    var list = store.listParcels({ kw: kw, mode: $('outMode').value, status: 'in', limit: 120 });
+    $('outResultCount').textContent = (kw ? '匹配 ' : '在库 ') + list.length + ' 件';
+    var rows = list.map(function (p) {
+      return { id: p.id, cells: [parcelLine(p), esc(p.carrier), esc(p.recipient || '—') + ' <span class="muted">' + esc(p.phoneTail || '') + '</span>',
+        esc(p.slot), esc(R.fmt(p.inAt).slice(5)) + '<div class="td-sub">在库 ' + R.daysBetween(p.inAt, Date.now()) + ' 天</div>',
+        '<input type="checkbox" data-out-check="' + esc(p.id) + '"' + (S.outSelected[p.id] ? ' checked' : '') + '>'] };
+    });
+    table('outTable', ['货号 / 单号', '公司', '收件人', '货架', '入库', '选择'], rows, { empty: '没有匹配的在库包裹' });
+    var n = Object.keys(S.outSelected).filter(function (k) { return S.outSelected[k]; }).length;
+    $('outSelected').textContent = '已选 ' + n + ' 件';
+    $('btnOutSubmit').textContent = S.outType === 'refund' ? '确认退件出库' : (n > 1 ? '合并出库 ' + n + ' 件' : '确认出库');
+    $('outPhotoState') && ($('outPhotoState').textContent = '');
+    renderPhotos('outPhotoPreview', S.outFiles, S.outUrls, 'out');
+    if (S.lastOut) {
+      $('lastOutCard').hidden = false;
+      $('lastOut').innerHTML = '<div class="strip-item"><b>' + esc(S.lastOut.batchId) + '</b><span class="grow">' +
+        S.lastOut.parcels.map(function (p) { return esc(p.goodsNo); }).join('、') + '</span>' +
+        '<button class="btn btn-outline btn-sm" data-act="undoBatch" data-id="' + esc(S.lastOut.batchId) + '">撤销本次出库</button></div>';
+    }
+  }
+  function setOutTab(tab) {
+    S.outTab = tab; S.outType = tab;
+    document.querySelectorAll('#outTabs .tab').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === tab); });
+    $('outKeyword').placeholder = tab === 'phone' ? '输入手机后四位' : tab === 'scan' ? '扫描货号 / 条码后回车即出库' : '货号 / 编号 / 单号 / 尾号 / 收件人';
+    renderOutbound();
+  }
+  function toggleOutCheck(id, on) {
+    if (on) S.outSelected[id] = true; else delete S.outSelected[id];
+    renderOutbound();
+  }
+  function outIds() {
+    return Object.keys(S.outSelected).filter(function (k) { return S.outSelected[k]; });
+  }
+  function doCheckout(type) {
+    if (!guard('outbound')) return;
+    var ids = outIds();
     if (!ids.length) { toast('请先选择包裹', 'err'); return; }
-    var usedScan = state.scan.photoIndex >= 0;
-    var outType = $('outType').value === 'refund' ? 'refund' : 'pickup';
-    var reason = outType === 'refund' ? $('refundReason').value : '';
-    if (outType === 'refund') {
-      var ok = await confirmDialog('确认退件出库 ' + ids.length + ' 件？',
-        '退件原因：' + reason + '。退件会记入台账与统计，可整批撤销，不发送任何通知。', '确认退件', true);
-      if (!ok) return;
-    } else if (!(await ensureProof())) return;
-    var btn = $('btnCheckout');
-    btn.disabled = true;
-    /* 退件不强制拍取件凭证；拍了照样留证 */
-    var pr = state.proofFiles.length ? await savePhotos(state.proofFiles, 'pickup')
-      : { items: [], warnings: [], failed: 0 };
-    var r = store.checkout(ids, $('pickupBy').value, pr.items,
-      { outType: outType, refundReason: reason });
-    btn.disabled = false;
-    if (!r.ok) { toast(r.error, 'err'); renderOutbound(); return; }
-    state.selected = {};
-    $('pickupBy').value = '';
-    $('outSearch').value = ''; state.outKeyword = '';
-    clearFiles('proof');
-    afterWrite((outType === 'refund' ? '退件出库 ' : (r.merged ? '合并出库 ' : '已出库 ')) +
-      r.count + ' 件 · 批次 ' + r.batchId + (reason ? ' · ' + reason : '') +
-      (pr.items.length ? ' · 共用凭证 ' + pr.items.length + ' 张' : ''));
-    reportPhotoResult(pr);
-    if (assistant && store.settings().voiceEnabled) {
-      assistant.speak((outType === 'refund' ? '退件出库 ' : '取件出库 ') + r.count + ' 件', true);
-    }
-    /* 连着取件：只有普通取件 + 拍照取件才自动开下一张；退件不打扰 */
-    if (outType !== 'refund' && usedScan && photos.config().autoCapture && camera && camera.supported() &&
-      !state.scan.userClosed && auth.can('write')) {
-      setTimeout(function () {
-        if (state.view === 'outbound' && !state.scan.busy) capturePickup(true);
-      }, 650);
-    } else {
-      $('outSearch').focus();
-    }
+    type = type || S.outType || 'pickup';
+    var reason = type === 'refund' ? $('outReason').value : '';
+    if (type === 'refund' && !reason) { toast('请选择退件原因', 'err'); return; }
+    var needPhoto = store.settings().photoOut && $('outPhotoPreview').children.length === 0;
+    var run = function () {
+      var p0 = store.getParcel(ids[0]);
+      savePhotos(S.outFiles, 'out', function (f) { return R.outboundPhotoName(p0); }).then(function (photos) {
+        var r = store.checkout(ids, {
+          outType: type, reason: reason, pickupBy: $('outPickupBy').value,
+          note: $('outNote').value, photos: photos
+        });
+        if (!r.ok) { toast(r.error, 'err'); return; }
+        S.lastOut = r; S.outSelected = {}; S.outFiles.forEach(function (_, i) { if (S.outUrls[i]) URL.revokeObjectURL(S.outUrls[i]); });
+        S.outFiles = []; S.outUrls = []; S.outScanPhoto = null;
+        $('outKeyword').value = ''; $('outPickupBy').value = ''; $('outNote').value = '';
+        $('outOcrState').hidden = true; $('outCandidates').innerHTML = '';
+        feedback(type === 'refund' ? 'refund' : 'out', R.feedbackText(type === 'refund' ? 'refund' : 'out', r.parcels[0]));
+        afterWrite((r.merged ? '合并出库 ' : '已出库 ') + r.count + ' 件 · ' + r.batchId);
+        if (S.outTab === 'pickup' && store.settings().autoCapture && Media.supported() && auth.can('outbound')) {
+          setTimeout(function () { if (S.view === 'outbound') capturePickup(true); }, 650);
+        }
+      }).catch(function (e) { toast('凭证保存失败：' + e.message, 'err'); });
+    };
+    if (needPhoto && store.settings().photoAuto && Media.supported()) {
+      captureOutProof().then(function (ok) { if (ok) run(); });
+    } else run();
+  }
+  function captureOutProof() {
+    return Media.capture({ title: '拍出库凭证', max: 6, prefix: 'CK', torch: store.settings().torch }).then(function (r) {
+      if (r.cancelled) { toast('未拍照，已取消出库', 'err'); return false; }
+      S.outFiles = S.outFiles.concat(r.files).slice(0, 12);
+      renderOutbound();
+      return true;
+    });
+  }
+  function capturePickup(auto) {
+    if (!guard('outbound')) return Promise.resolve(false);
+    return Media.capture({ title: '拍照取件 · 对准面单条码', single: true, prefix: 'CK',
+      torch: store.settings().torch }).then(function (r) {
+      if (r.cancelled || !r.files.length) return false;
+      var f = r.files[0];
+      return Media.recognize(f.blob).then(function (d) {
+        var code = R.barcodeOf(d);
+        var st = $('outOcrState'); st.hidden = false;
+        st.className = 'ocr-state ' + (code ? 'busy' : 'err');
+        st.textContent = code ? '识别串：' + code + ' · 正在匹配在库包裹…' : '没读到条码，请手输货号 / 单号，照片仍会按货号自动命名';
+        var hits = code ? store.findByCode(code) : [];
+        if (hits.length === 1) {
+          var p = hits[0];
+          S.outSelected[p.id] = true;
+          $('outKeyword').value = p.goodsNo || code;
+          f.name = R.outboundPhotoName(p);
+          S.outScanPhoto = f;
+          st.className = 'ocr-state ok';
+          st.textContent = '已匹配 ' + p.goodsNo + ' · ' + p.trackingNo + ' · ' + p.slot + '，确认无误后点「确认出库」';
+          $('outCandidates').innerHTML = '';
+        } else if (hits.length > 1) {
+          $('outCandidates').innerHTML = '<span class="muted">多个匹配，请点选：</span>' + hits.map(function (p) {
+            return '<button class="btn btn-outline btn-sm" data-act="pickCandidate" data-id="' + esc(p.id) + '">' +
+              esc(p.goodsNo) + ' · ' + esc(p.trackingNo.slice(-6)) + '</button>';
+          }).join('');
+          st.textContent = '识别到 ' + code + '，有 ' + hits.length + ' 件匹配，请手动点选，不会自动出库';
+        } else {
+          $('outCandidates').innerHTML = '';
+          S.outScanPhoto = null;
+        }
+        if (S.outScanPhoto) {
+          S.outFiles = [S.outScanPhoto].concat(S.outFiles.filter(function (x) { return x !== S.outScanPhoto; })).slice(0, 12);
+        } else {
+          S.outFiles = [f].concat(S.outFiles).slice(0, 12);
+        }
+        renderOutbound();
+        return true;
+      });
+    });
   }
 
-  function init() {
-    /* 账号库随台账 JSON 备份 / GitHub 同步一起迁移 */
-    store.registerAccountsProvider(auth);
-    bind();            /* 事件只绑定一次，登录/退出只切换门与重新渲染 */
-    bindAuth();
-    bindIdle();
-    bindAccounts();
-    fillSettings();
-    if (auth.current()) enterApp();
-    else showGate(wantSetup() ? 'setup' : 'login');
-    /* 恢复本地目录句柄放后台：IndexedDB 不可用时也不能拖住登录与业务界面 */
-    photos.init().catch(function () { /* 照片模块会回退到 WebDAV / 浏览器暂存 */ });
+  /* ---------------- 查件 / 台账 ---------------- */
+  function queryArgs() {
+    return {
+      kw: $('qKw').value.trim(), mode: $('qMode').value, status: $('qStatus').value,
+      carrier: $('qCarrier').value, slot: $('qSlot').value.trim(), label: $('qLabel').value,
+      from: $('qFrom').value, to: $('qTo').value, warnDays: store.settings().warnDays
+    };
   }
-  init();
+  function parcelRows(list, extraActions) {
+    return list.map(function (p) {
+      var acts = [['detail', '详情', p.id], ['photos', '照片(' + (p.photos || []).length + ')', p.id], ['label', '标签', p.id]];
+      if (p.status === 'in') acts.push(['edit', '修改', p.id], ['out', '出库', p.id]);
+      else if (p.status === 'out') acts.push(['undoOut', '撤销出库', p.id]);
+      if (extraActions) acts = acts.concat(extraActions(p));
+      return { id: p.id, cells: [
+        parcelLine(p), esc(p.serial || '—'), statusTag(p), esc(p.recipient || '—') + '<div class="td-sub">' + esc(p.phoneTail || '') + '</div>',
+        esc(p.slot), esc(R.fmt(p.inAt).slice(5)), p.outAt ? esc(R.fmt(p.outAt).slice(5)) : '—',
+        esc(p.carrier), esc(p.label || ''), ops(acts)
+      ] };
+    });
+  }
+  var COLS = ['货号 / 单号', '编号', '状态', '收件人', '货架', '入库', '出库', '公司', '标签', '操作'];
+  function renderQuery() {
+    fillSelect('qCarrier', ['all'].concat(store.listCompanies().map(function (c) { return c.name; })),
+      $('qCarrier').value || 'all', function (x) { return x === 'all' ? '全部公司' : x; });
+    fillSelect('qLabel', [''].concat(store.listLabels()), $('qLabel').value, function (x) { return x || '全部标签'; });
+    var q = queryArgs();
+    q.status = q.status === 'overdue' ? 'overdue' : q.status;
+    S.qResult = store.listParcels(q).slice(0, 300);
+    $('qCount').textContent = '共 ' + S.qResult.length + ' 条' + (S.qResult.length >= 300 ? '（仅显示前 300 条）' : '');
+    table('queryTable', COLS, parcelRows(S.qResult), { empty: '无查询结果' });
+  }
+  function renderInventory() {
+    var status = $('invStatus').value, kw = $('invKw').value.trim();
+    var q = { kw: kw, status: status === 'overdue' ? 'in' : status, warnDays: 999 };
+    var list = store.listParcels(q);
+    if (status === 'overdue') list = list.filter(function (p) { return R.daysBetween(p.inAt, Date.now()) >= store.settings().warnDays; });
+    var sort = $('invSort').value;
+    if (sort === 'old') list.sort(function (a, b) { return new Date(a.inAt) - new Date(b.inAt); });
+    if (sort === 'days') list.sort(function (a, b) { return new Date(a.inAt) - new Date(b.inAt); });
+    if (sort === 'goods') list.sort(function (a, b) { return (a.goodsNo || '').localeCompare(b.goodsNo || ''); });
+    S.invResult = list.slice(0, 300);
+    var days = S.invResult.filter(function (p) { return p.status === 'in'; })
+      .map(function (p) { return R.daysBetween(p.inAt, Date.now()); });
+    $('invSummary').textContent = '共 ' + S.invResult.length + ' 条 · 在库 ' +
+      S.invResult.filter(function (p) { return p.status === 'in'; }).length + ' 件' +
+      (days.length ? ' · 平均在库 ' + (days.reduce(function (a, b) { return a + b; }, 0) / days.length).toFixed(1) + ' 天' : '');
+    table('invTable', COLS, parcelRows(S.invResult), { check: true, selected: S.invSelected, empty: '台账为空' });
+  }
+  function invIds() { return Object.keys(S.invSelected).filter(function (k) { return S.invSelected[k]; }); }
+
+  /* ---------------- 收件任务 ---------------- */
+  function renderCollections() {
+    fillSelect('colCarrier', store.listCompanies().map(function (c) { return c.name; }), $('colCarrier').value);
+    var list = store.listCollections({ status: $('colFilter').value });
+    renderStrip('colList', list, function (c) {
+      return '<div class="strip-item"><b>' + esc(c.no) + '</b><span class="grow">' + esc(c.recipient || '—') +
+        ' · ' + esc(c.phone || '') + ' · ' + esc(c.carrier || '') + '</span>' +
+        '<span class="tag ' + (c.status === 'done' ? 'tag-out' : 'tag-in') + '">' +
+        esc({ pending: '待取', picked: '已取', sent: '已发出', done: '完成' }[c.status] || c.status) + '</span>' +
+        ops([['colStatus', '流转', c.id], ['colDel', '删除', c.id]]) + '</div>';
+    }, '暂无收件任务');
+  }
+
+  /* ---------------- 客户管理 ---------------- */
+  var TYPE_LABEL = { normal: '普通', vip: 'VIP', old: '老客户', black: '黑名单' };
+  function renderCustomers() {
+    var list = store.listCustomers({ kw: $('cusKw').value.trim(), type: $('cusFilter').value });
+    $('cusCount').textContent = '共 ' + list.length + ' 位客户';
+    table('cusTable', ['客户', '电话', '尾号', '类型', '星标', '备注', '件数', '操作'],
+      list.map(function (c) {
+        return { id: c.id, cells: [
+          esc(c.name || '—'), esc(R.maskPhone(c.phone) || '—'), '<span class="code-chip">' + esc(c.tail || '') + '</span>',
+          '<span class="tag ' + (c.type === 'black' ? 'tag-danger' : c.type === 'vip' ? 'tag-warn' : 'tag-in') + '">' +
+            esc(TYPE_LABEL[c.type] || c.type) + '</span>', esc(c.star || '—'), esc(c.remark || ''),
+          String(c.count || 0), ops([['customerEdit', '编辑', c.id], ['customerDel', '删除', c.id]])
+        ] };
+      }), { empty: '暂无客户，入库时会按尾号自动归档' });
+    $('interceptList').innerHTML = store.listIntercepts().map(function (x) {
+      return '<button class="chip" data-act="interceptDel" data-id="' + esc(x.id) + '" title="点击移除">⨯ ' +
+        esc(x.no) + ' · ' + esc(x.reason) + '</button>';
+    }).join('') || '<span class="muted">暂无拦截单号</span>';
+  }
+
+  /* ---------------- 业务统计 ---------------- */
+  function statsRange() {
+    return R.dateRange(S.statPreset, $('statFrom').value, $('statTo').value);
+  }
+  function renderStats() {
+    fillSelect('statPreset', R.PRESETS.map(function (p) { return p.id; }), S.statPreset,
+      function (x) { return (R.PRESETS.filter(function (p) { return p.id === x; })[0] || {}).label || x; });
+    $('statTab').value = S.statTab;
+    var range = statsRange(), s = store.stats(range);
+    $('statRangeLabel').textContent = range.label + '（' + range.fromDay + ' ~ ' + range.toDay + '）';
+    $('statKpi').innerHTML = [
+      ['入库数', s.inCount], ['出库数', s.outCount], ['取件数', s.pickupCount],
+      ['退件数', s.refundCount], ['在库数', s.inStock], ['出库率', s.outRate + '%']
+    ].map(function (x) { return '<div class="kpi"><div class="k">' + x[0] + '</div><div class="v">' + x[1] + '</div></div>'; }).join('');
+    var max = Math.max(1, s.outCount, s.nonOut);
+    $('statRate').innerHTML = [
+      ['出库数', s.outCount], ['非出库数', s.nonOut]
+    ].map(function (x) {
+      return '<div class="bar-row"><span class="b-label">' + x[0] + '</span><span class="bar-track">' +
+        '<span class="bar-fill" style="width:' + (x[1] / max * 100) + '%"></span></span><span class="b-num">' + x[1] + '</span></div>';
+    }).join('') + '<div class="muted">出库率 = 出库数 / 入库数 = ' + s.outRate + '%，撤销入库 ' + s.undoIn + ' 次，撤销出库 ' + s.undoOut + ' 次</div>';
+    $('statRateBox').hidden = S.statTab !== 'rate';
+    $('statWorkBox').hidden = S.statTab !== 'work';
+    var names = Object.keys(s.byOperator);
+    table('statWork', ['操作人', '入库', '出库', '退件', '撤销'],
+      names.map(function (n) {
+        var o = s.byOperator[n];
+        return { cells: [esc(n), String(o.inCount), String(o.outCount), String(o.refundCount), String(o.undo)] };
+      }), { empty: '该时间段没有操作记录' });
+    table('statDaily', ['日期', '入库数', '出库数', '取件数', '退件数', '操作'],
+      s.daily.map(function (d) {
+        return { cells: ['<b>' + esc(d.day) + '</b>', String(d.inCount), String(d.outCount),
+          String(d.pickupCount), String(d.refundCount),
+          '<button class="btn btn-ghost btn-sm" data-act="statDay" data-id="' + esc(d.day) + '">当日明细</button>'] };
+      }), { empty: '该时间段无数据' });
+  }
+
+  /* ---------------- 货号标签 / 打印 ---------------- */
+  var LABEL_FIELDS = [
+    ['station', '驿站名称'], ['goods', '货号'], ['slot', '货架号'], ['serial', '编号'],
+    ['recipient', '收件人'], ['tail', '手机尾号'], ['carrier', '快递公司'], ['date', '入库时间'],
+    ['tracking', '运单号'], ['barcode', 'Code39 条码'], ['label', '快递标签'], ['note', '备注']
+  ];
+  function renderPrint() {
+    var set = store.settings();
+    $('labelFields').innerHTML = LABEL_FIELDS.map(function (f) {
+      return '<label class="switch"><input type="checkbox" data-label-field="' + f[0] + '"' +
+        (set.labelFields.indexOf(f[0]) >= 0 ? ' checked' : '') + '>' + esc(f[1]) + '</label>';
+    }).join('');
+    $('labelW').value = set.labelWidth || 80; $('labelH').value = set.labelHeight || 50;
+    var kw = $('printKw').value.trim();
+    var list = store.listParcels({ kw: kw, status: 'all', limit: 20 });
+    $('printList').innerHTML = list.map(function (p) {
+      return '<label class="strip-item"><input type="checkbox" data-print-check="' + esc(p.id) + '"' +
+        (S.printSelected[p.id] ? ' checked' : '') + '><b>' + esc(p.goodsNo) + '</b><span class="grow">' +
+        esc(p.trackingNo) + ' · ' + esc(p.slot) + '</span></label>';
+    }).join('') || '<div class="muted">没有匹配的包裹</div>';
+    var chosen = Object.keys(S.printSelected).filter(function (k) { return S.printSelected[k]; })
+      .map(function (k) { return store.getParcel(k); }).filter(Boolean);
+    $('printCount').textContent = chosen.length + ' 张标签';
+    $('printPreview').innerHTML = chosen.length ? chosen.map(function (p) {
+      return '<div style="width:' + (set.labelWidth || 80) + 'mm;min-height:' + (set.labelHeight || 50) + 'mm">' +
+        R.labelHTML(p, set) + '</div>';
+    }).join('') : '<div class="muted">勾选左边的包裹，这里会显示打印预览</div>';
+  }
+  function printParcels(list) {
+    list = (list || []).filter(Boolean);
+    if (!list.length) { toast('请先选择要打印的包裹', 'err'); return; }
+    var set = store.settings();
+    $('printRoot').innerHTML = list.map(function (p) { return R.labelHTML(p, set); }).join('');
+    toast('已生成 ' + list.length + ' 张标签，调起系统打印', 'ok');
+    setTimeout(function () { window.print(); }, 150);
+  }
+
+  /* ---------------- 同步记录 ---------------- */
+  function renderSync() {
+    var list = store.listUploads({ state: $('syncState').value, kw: $('syncKw').value.trim() });
+    $('syncCount').textContent = '共 ' + list.length + ' 条';
+    table('syncTable', ['时间', '货号', '单号', '动作', '状态', '说明', '操作'],
+      list.slice(0, 300).map(function (u) {
+        return { cells: [esc(R.fmt(u.at)), esc(u.goodsNo || ''), esc(u.trackingNo || ''),
+          esc({ in: '入库', out: '出库', refund: '退件', move: '移库' }[u.action] || u.action),
+          '<span class="tag ' + (u.state === 'done' ? 'tag-in' : u.state === 'pending' ? 'tag-warn' : 'tag-out') + '">' +
+            esc({ local: '本机记录', pending: '待同步', done: '已标记' }[u.state] || u.state) + '</span>',
+          esc(u.note || ''), ops([['uploadRetry', '重新标记', u.id]])] };
+      }), { empty: '暂无同步记录' });
+  }
+
+  /* ---------------- 设置 ---------------- */
+  function renderSettings() {
+    var set = store.settings();
+    fillSelect('setSerialMode', R.SERIAL_MODES.map(function (x) { return x.id; }), set.serialMode,
+      function (x) { return (R.SERIAL_MODES.filter(function (m) { return m.id === x; })[0] || {}).label; });
+    fillSelect('setGoodsMode', R.GOODS_MODES.map(function (x) { return x.id; }), set.goodsMode,
+      function (x) { return (R.GOODS_MODES.filter(function (m) { return m.id === x; })[0] || {}).label; });
+    if (!S.settingsFilled) {
+      var map = {
+        setStation: 'stationName', setContact: 'contact', setPhone: 'phone', setProvince: 'province',
+        setAddress: 'address', setSerialStart: 'serialStart', setSerialWidth: 'serialWidth',
+        setGoodsTemplate: 'goodsTemplate', setShelves: 'shelvesPerZone', setLevels: 'levelsPerShelf',
+        setPhoneInput: 'phoneInput', setQueryMode: 'queryMode', setIdle: 'idleMinutes',
+        setWarn: 'warnDays', setDanger: 'dangerDays', setPhotoMode: 'photoOutMode',
+        setInterceptDays: 'interceptDays', setDelay: 'delayUpload', labelW: 'labelWidth', labelH: 'labelHeight'
+      };
+      Object.keys(map).forEach(function (id) { if ($(id)) $(id).value = set[map[id]]; });
+      $('setZones').value = (set.zones || []).join(',');
+      var checks = {
+        setBeepIn: 'beepIn', setBeepOut: 'beepOut', setVibrateIn: 'vibrateIn', setVibrateOut: 'vibrateOut',
+        setVoiceIn: 'voiceIn', setVoiceOut: 'voiceOut', setTorch: 'torch', setAutoCapture: 'autoCapture',
+        setPhotoIn: 'photoIn', setPhotoOut: 'photoOut', setPhotoAuto: 'photoAuto',
+        setBlacklist: 'blacklistBlock', setDuplicate: 'duplicateBlock', setSync: 'syncEnabled'
+      };
+      Object.keys(checks).forEach(function (id) { if ($(id)) $(id).checked = set[checks[id]] !== false; });
+      S.settingsFilled = true;
+    }
+    var ex = store.previewNums({ slot: (set.zones[0] || 'A') + '01-01', tail: '6789', short: 'YT' });
+    $('setNumsPreview').textContent = '示例：编号 ' + ex.serial + ' · 货号 ' + ex.goodsNo +
+      ' · 可用货架位 ' + R.slotList(set).length + ' 个';
+    table('companyTable', ['公司名称', '简称', '单号识别规则', '状态', '操作'],
+      store.listCompanies().map(function (c) {
+        return { cells: [esc(c.name), esc(c.short), '<span class="mono">' + esc(c.rule || '—') + '</span>',
+          c.enabled === false ? '<span class="tag tag-out">停用</span>' : '<span class="tag tag-in">启用</span>',
+          ops([['companyEdit', '编辑', c.id], ['companyToggle', c.enabled === false ? '启用' : '停用', c.id],
+            ['companyDel', '删除', c.id]])] };
+      }), { empty: '还没有快递公司' });
+    $('labelList').innerHTML = store.listLabels().map(function (l) {
+      return '<button class="chip" data-act="labelDel" data-label="' + esc(l) + '" title="点击删除">⨯ ' + esc(l) + '</button>';
+    }).join('') || '<span class="muted">暂无标签</span>';
+  }
+  function readSettings() {
+    return {
+      stationName: $('setStation').value.trim() || '快递驿站', contact: $('setContact').value.trim(),
+      phone: $('setPhone').value.trim(), province: $('setProvince').value.trim(), address: $('setAddress').value.trim(),
+      serialMode: $('setSerialMode').value, serialStart: Number($('setSerialStart').value) || 1,
+      serialWidth: Number($('setSerialWidth').value) || 4, goodsMode: $('setGoodsMode').value,
+      goodsTemplate: $('setGoodsTemplate').value.trim() || '{slot}{serial}',
+      zones: $('setZones').value.split(/[,，]/).map(function (x) { return R.upper(x); }).filter(Boolean),
+      shelvesPerZone: Number($('setShelves').value) || 9, levelsPerShelf: Number($('setLevels').value) || 5,
+      phoneInput: $('setPhoneInput').value, queryMode: $('setQueryMode').value,
+      idleMinutes: Number($('setIdle').value) || 15, warnDays: Number($('setWarn').value) || 2,
+      dangerDays: Number($('setDanger').value) || 5,
+      beepIn: $('setBeepIn').checked, beepOut: $('setBeepOut').checked,
+      vibrateIn: $('setVibrateIn').checked, vibrateOut: $('setVibrateOut').checked,
+      voiceIn: $('setVoiceIn').checked, voiceOut: $('setVoiceOut').checked,
+      torch: $('setTorch').checked, autoCapture: $('setAutoCapture').checked,
+      photoIn: $('setPhotoIn').checked, photoOut: $('setPhotoOut').checked,
+      photoAuto: $('setPhotoAuto').checked, photoOutMode: $('setPhotoMode').value,
+      blacklistBlock: $('setBlacklist').checked, duplicateBlock: $('setDuplicate').checked,
+      syncEnabled: $('setSync').checked, interceptDays: Number($('setInterceptDays').value) || 30,
+      delayUpload: Number($('setDelay').value) || 0
+    };
+  }
+
+  /* ---------------- 子账号 / 流水 / 帮助 ---------------- */
+  var PERM_LABEL = {
+    inbound: '入库', outbound: '出库', query: '查件', inventory: '台账', customers: '客户',
+    collections: '收件任务', stats: '统计', print: '打印', sync: '同步记录', logs: '流水',
+    settings: '设置', accounts: '子账号'
+  };
+  function renderAccounts() {
+    $('accPerms').innerHTML = Auth.PERMS.map(function (p) {
+      return '<label class="switch"><input type="checkbox" data-perm-check="' + p + '">' + esc(PERM_LABEL[p] || p) + '</label>';
+    }).join('');
+    table('accTable', ['账号', '角色', '权限数', '创建时间', '操作'],
+      auth.listAccounts().map(function (a) {
+        return { cells: [esc(a.name) + (a.role === 'owner' ? ' <span class="tag tag-warn">站长</span>' : ''),
+          esc({ owner: '站长', operator: '操作员', viewer: '只读' }[a.role] || a.role),
+          String((a.perms || []).length), esc(R.fmt(a.createdAt, false)),
+          a.role === 'owner' ? '<span class="muted">—</span>' : ops([['accEdit', '编辑', a.id], ['accDel', '删除', a.id]])] };
+      }), { empty: '暂无账号' });
+  }
+  function renderLogs() {
+    var list = store.listLogs({ kw: $('logKw').value.trim(), action: $('logAction').value, limit: 300 });
+    $('logCount').textContent = '共 ' + list.length + ' 条';
+    table('logTable', ['时间', '操作', '内容', '操作人'],
+      list.map(function (l) {
+        return { cells: [esc(R.fmt(l.at)), '<span class="tag tag-out">' + esc(l.action) + '</span>',
+          esc(l.text), esc(l.actor || '')] };
+      }), { empty: '暂无流水' });
+  }
+  var HELP_FEATURES = [
+    ['入库', '手动 / 极速 / 批量 / 扫码枪连录，条码识别按码命名照片，自动识别公司、分配货架与货号'],
+    ['编号货号', '连续 / 按日 / 按货架 / 尾号四种编号模式，五种货号模式 + 自定义模板，批量改号'],
+    ['出库', '取件 / 货号 / 电话 / 扫描 / 退件五种出库，合并出库、出库拍照、出库备注、撤销出库'],
+    ['拍照取件', '进出库页自动开镜头，拍面单自动识别并匹配在库件，连续取件自动开下一张'],
+    ['查件台账', '多条件组合查询、在库天数、滞留筛选、详情、修改、照片、批量移库与打印'],
+    ['移库', '扫描或勾选加入移库列表，换货架号并可重算货号，留移库流水'],
+    ['客户管理', '按尾号自动归档、VIP / 老客户 / 黑名单、星标备注、号码导入导出与去重'],
+    ['入库拦截', '黑名单禁止入库、单号拦截名单、记录按天数自动清理'],
+    ['快递公司', '公司启停、简称、单号正则识别规则，可编辑'],
+    ['收件任务', '上门取件 / 寄件登记与状态流转'],
+    ['业务统计', '出库率 / 工作量统计，13 种时间范围、每日明细与 CSV 导出'],
+    ['货号标签', '模板字段可配、Code39 可扫条码、批量打印（系统打印）'],
+    ['同步记录', '本地等价实现：上传记录、状态标记、重试、导出上行文件'],
+    ['设置与账号', '提醒 / 拍照 / 拦截 / 货架设置、主子账号、逐项权限、锁屏、登录限速'],
+    ['数据', '完整备份 JSON（含照片）、恢复 / 合并、包裹 CSV 导入导出、一键清空']
+  ];
+  var HELP_EXCLUDED = [
+    ['短信类', '群发短信、短信模板 / 签名 / 审核、短信历史、失败短信提醒、扫码发短信'],
+    ['电话类', '直拨 / 回拨 / 隐私号、群呼、群呼历史、通话记录、未接来电、语音通知模板'],
+    ['微信通知', '微信取件通知、公众号绑定、码上取件、永久二维码海报'],
+    ['服务端合作', '驿站代收开通 / 实名认证、物流数据上行到快递公司、延迟上传真实生效'],
+    ['商业与硬件', '充值 / 账单 / 资费、商城、蓝牙打印机厂商 SDK、在线客服与活动奖励'],
+    ['云端能力', '云端 OCR / 在线语音识别引擎（本机用浏览器自带接口，不联网）']
+  ];
+  function renderHelp() {
+    $('helpFeatures').innerHTML = HELP_FEATURES.map(function (x) { return '<div><b>' + esc(x[0]) + '</b><br>' + esc(x[1]) + '</div>'; }).join('');
+    $('helpExcluded').innerHTML = HELP_EXCLUDED.map(function (x) { return '<div><b>' + esc(x[0]) + '</b><br>' + esc(x[1]) + '</div>'; }).join('');
+  }
+
+  /* ---------------- 弹窗动作 ---------------- */
+  function detailDialog(id) {
+    var p = store.getParcel(id); if (!p) return;
+    var rows = [
+      ['货号', p.goodsNo], ['编号', p.serial], ['运单号', p.trackingNo], ['快递公司', p.carrier],
+      ['收件人', p.recipient || '—'], ['联系电话', R.maskPhone(p.phone) || p.phoneTail || '—'],
+      ['货架号', p.slot], ['标签', p.label || '—'], ['件数', p.count], ['备注', p.note || '—'],
+      ['入库时间', R.fmt(p.inAt)], ['出库时间', R.fmt(p.outAt) || '—'],
+      ['在库天数', p.status === 'in' ? R.daysBetween(p.inAt, Date.now()) : (p.outAt ? R.daysBetween(p.inAt, p.outAt) : '—')],
+      ['出库类型', p.outType || '—'], ['退件原因', p.refundReason || '—'], ['取件人', p.pickupBy || '—'],
+      ['状态', p.status === 'in' ? '在库' : p.status === 'out' ? (p.outType === 'refund' ? '已退件' : '已出库') : '已撤销'],
+      ['批次', p.batchId || '—'], ['照片', (p.photos || []).length + ' 张'],
+      ['操作人', p.operatorIn + (p.operatorOut ? ' / ' + p.operatorOut : '')],
+      ['同步状态', { local: '本机记录', pending: '待同步', done: '已标记' }[p.uploadState] || p.uploadState]
+    ];
+    var m = openModal('包裹详情', '<dl class="detail-list">' + rows.map(function (r) {
+      return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(String(r[1])) + '</dd>';
+    }).join('') + '</dl>',
+      '<button class="btn btn-ghost" data-modal="close">关闭</button>' +
+      '<button class="btn btn-outline" data-modal="photos">查看照片</button>' +
+      '<button class="btn btn-primary" data-modal="label">打印标签</button>');
+    m.querySelector('[data-modal="photos"]').onclick = function () { photosDialog(id); };
+    m.querySelector('[data-modal="label"]').onclick = function () { printParcels([p]); };
+  }
+  function photosDialog(id) {
+    var p = store.getParcel(id); if (!p) return;
+    var m = openModal('照片 · ' + (p.goodsNo || p.trackingNo), '<div class="modal-photos" id="modalPhotos">加载中…</div>');
+    Promise.all((p.photos || []).map(function (ph) { return Media.url(ph.id); })).then(function (urls) {
+      var box = $('modalPhotos'); if (!box) return;
+      box.innerHTML = urls.length ? urls.map(function (u, i) {
+        return '<a href="' + u + '" target="_blank" rel="noopener"><img src="' + u + '" alt="' + esc(p.photos[i].name) + '"></a>';
+      }).join('') : '<span class="muted">这件包裹没有照片</span>';
+    });
+  }
+  function editParcelDialog(id) {
+    if (!guard('inventory')) return;
+    var p = store.getParcel(id); if (!p) return;
+    var companies = store.listCompanies().map(function (c) {
+      return '<option value="' + esc(c.name) + '"' + (c.name === p.carrier ? ' selected' : '') + '>' + esc(c.name) + '</option>';
+    }).join('');
+    var labels = [''].concat(store.listLabels()).map(function (l) {
+      return '<option value="' + esc(l) + '"' + (l === p.label ? ' selected' : '') + '>' + esc(l || '无标签') + '</option>';
+    }).join('');
+    var slots = R.slotList(store.settings()).filter(function (s) { return !store.occupied(s, p.id); });
+    var slotOpts = [p.slot].concat(slots).filter(function (v, i, a) { return v && a.indexOf(v) === i; })
+      .map(function (s) { return '<option value="' + esc(s) + '"' + (s === p.slot ? ' selected' : '') + '>' + esc(s) + '</option>'; }).join('');
+    var html = '<div class="form-grid">' +
+      '<label>货号<input class="input mono" id="edGoods" value="' + esc(p.goodsNo) + '"></label>' +
+      '<label>编号<input class="input mono" id="edSerial" value="' + esc(p.serial) + '"></label>' +
+      '<label>运单号<input class="input mono" id="edNo" value="' + esc(p.trackingNo) + '"></label>' +
+      '<label>快递公司<select class="input" id="edCarrier">' + companies + '</select></label>' +
+      '<label>收件人<input class="input" id="edRecipient" value="' + esc(p.recipient) + '"></label>' +
+      '<label>联系电话 / 后四位<input class="input mono" id="edPhone" value="' + esc(p.phone || p.phoneTail) + '"></label>' +
+      '<label>货架号<select class="input" id="edSlot">' + slotOpts + '</select></label>' +
+      '<label>标签<select class="input" id="edLabel">' + labels + '</select></label>' +
+      '<label class="wide">备注<input class="input" id="edNote" value="' + esc(p.note) + '"></label></div>';
+    var m = openModal('修改包裹信息', html,
+      '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">保存</button>');
+    m.querySelector('[data-modal="ok"]').onclick = function () {
+      var r = store.updateParcel(id, {
+        goodsNo: $('edGoods').value, serial: $('edSerial').value, trackingNo: $('edNo').value,
+        carrier: $('edCarrier').value, recipient: $('edRecipient').value, phone: $('edPhone').value,
+        slot: $('edSlot').value, label: $('edLabel').value, note: $('edNote').value
+      });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      closeModal(); afterWrite('包裹信息已保存');
+    };
+  }
+  function companyDialog(id) {
+    var c = id ? store.listCompanies().filter(function (x) { return x.id === id; })[0] : null;
+    var html = '<div class="form-grid">' +
+      '<label>公司名称<input class="input" id="coName" value="' + esc(c ? c.name : '') + '"></label>' +
+      '<label>简称（货号用）<input class="input mono" id="coShort" value="' + esc(c ? c.short : '') + '"></label>' +
+      '<label class="wide">单号识别正则<input class="input mono" id="coRule" placeholder="^(YT|8\\d{11,})" value="' + esc(c ? c.rule : '') + '"></label>' +
+      '</div><label class="switch"><input type="checkbox" id="coEnabled"' + (!c || c.enabled !== false ? ' checked' : '') + '>启用</label>';
+    var m = openModal(c ? '编辑快递公司' : '新增快递公司', html,
+      '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">保存</button>');
+    m.querySelector('[data-modal="ok"]').onclick = function () {
+      var r = store.upsertCompany({ id: id || '', name: $('coName').value, short: $('coShort').value,
+        rule: $('coRule').value, enabled: $('coEnabled').checked });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      closeModal(); afterWrite('快递公司已保存');
+    };
+  }
+  function renumDialog(kind) {
+    if (!guard('inventory')) return;
+    var list = store.listParcels({ status: 'in', limit: 200 });
+    if (!list.length) { toast('没有在库包裹', 'err'); return; }
+    var html = '<label>从哪件开始（后面的都会重新累加）<select class="input" id="rnStart">' +
+      list.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.goodsNo) + ' · ' + esc(p.trackingNo) + '</option>'; }).join('') +
+      '</select></label><label>起始值<input class="input mono" id="rnValue" value="' +
+      esc(list[0][kind === 'goods' ? 'goodsNo' : 'serial'] || '1') + '"></label>';
+    var m = openModal('批量修改' + (kind === 'goods' ? '货号' : '编号'), html,
+      '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">批量修改</button>');
+    m.querySelector('[data-modal="ok"]').onclick = function () {
+      var patch = {}; patch[kind === 'goods' ? 'goodsNo' : 'serial'] = $('rnValue').value.trim();
+      var u = store.updateParcel($('rnStart').value, patch);
+      if (!u.ok) { toast(u.error, 'err'); return; }
+      var r = store.batchRenum($('rnStart').value, kind);
+      closeModal();
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      afterWrite('已重新编号 ' + r.count + ' 件');
+    };
+  }
+  function supplementDialog() {
+    var list = S.quickList.filter(function (p) { return !p.phone || !p.phoneTail; });
+    if (!list.length) list = store.listParcels({ status: 'in', limit: 12 }).filter(function (p) { return !p.phoneTail; });
+    if (!list.length) { toast('没有需要补录号码的包裹', 'ok'); return; }
+    var html = '<div class="muted">未录入号码的件，填完整号码或后四位：</div>' + list.map(function (p) {
+      return '<label>' + esc(p.goodsNo) + ' · ' + esc(p.trackingNo) +
+        '<input class="input mono" data-tail="' + esc(p.id) + '" placeholder="手机号或后四位"></label>';
+    }).join('');
+    var m = openModal('补录号码', html,
+      '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">保存</button>');
+    m.querySelector('[data-modal="ok"]').onclick = function () {
+      var n = 0;
+      m.querySelectorAll('[data-tail]').forEach(function (el) {
+        if (el.value.trim()) {
+          var r = store.updateParcel(el.getAttribute('data-tail'), { phone: el.value.trim() });
+          if (r.ok) n++;
+        }
+      });
+      closeModal(); afterWrite('已补录 ' + n + ' 件号码');
+    };
+  }
+  function statDayDialog(day) {
+    var list = store.listParcels({ from: day, to: day, status: 'all' });
+    var out = store.listParcels({ outFrom: day, outTo: day, status: 'all' });
+    openModal(day + ' 明细',
+      '<div class="muted">入库 ' + list.length + ' 件 · 出库 ' + out.length + ' 件</div>' +
+      '<div class="strip-list" style="margin-top:10px">' + (list.concat(out.filter(function (p) { return list.indexOf(p) < 0; })))
+        .slice(0, 60).map(function (p) {
+          return '<div class="strip-item"><b>' + esc(p.goodsNo) + '</b><span class="grow">' + esc(p.trackingNo) +
+            ' · ' + esc(p.carrier) + '</span>' + statusTag(p) + '</div>';
+        }).join('') + '</div>');
+  }
+  function handleAct(act, el) {
+    var id = el.getAttribute('data-id');
+    if (act === 'detail') detailDialog(id);
+    else if (act === 'photos') photosDialog(id);
+    else if (act === 'label') printParcels([store.getParcel(id)]);
+    else if (act === 'edit') editParcelDialog(id);
+    else if (act === 'out') {
+      if (!guard('outbound')) return;
+      confirmBox('确认出库', '把 ' + (store.getParcel(id) || {}).goodsNo + ' 出库？', function () {
+        var r = store.checkout([id], { outType: 'goods' });
+        if (r.ok) afterWrite('已出库 ' + r.count + ' 件'); else toast(r.error, 'err');
+      });
+    } else if (act === 'undoOut') {
+      if (!guard('outbound')) return;
+      confirmBox('撤销出库', '把这件包裹恢复到在库？', function () {
+        var r = store.undoCheckout([id]);
+        if (r.ok) afterWrite('已撤销出库'); else toast(r.error, 'err');
+      });
+    } else if (act === 'undoBatch') {
+      if (!guard('outbound')) return;
+      var list = store.listParcels({ status: 'all' }).filter(function (p) { return p.batchId === id; });
+      confirmBox('撤销本次出库', '恢复 ' + list.length + ' 件到在库？', function () {
+        var r = store.undoCheckout(list.map(function (p) { return p.id; }));
+        if (r.ok) afterWrite('已撤销 ' + r.count + ' 件出库'); else toast(r.error, 'err');
+      });
+    } else if (act === 'pickCandidate') {
+      var p = store.getParcel(id); if (!p) return;
+      S.outSelected[id] = true; $('outKeyword').value = p.goodsNo;
+      $('outOcrState').className = 'ocr-state ok';
+      $('outOcrState').textContent = '已选 ' + p.goodsNo + ' · ' + p.trackingNo + '，确认后点「确认出库」';
+      $('outCandidates').innerHTML = '';
+      if (S.outFiles.length) S.outFiles[0].name = R.outboundPhotoName(p);
+      renderOutbound();
+    } else if (act === 'customerEdit') {
+      var c = store.listCustomers({}).filter(function (x) { return x.id === id; })[0]; if (!c) return;
+      $('cusId').value = c.id; $('cusName').value = c.name || ''; $('cusPhone').value = c.phone || '';
+      $('cusType').value = c.type; $('cusStar').value = c.star || ''; $('cusRemark').value = c.remark || '';
+      $('cusName').focus();
+    } else if (act === 'customerDel') {
+      confirmBox('删除客户', '确定删除这位客户？包裹记录不受影响。', function () {
+        store.removeCustomer(id); afterWrite('客户已删除');
+      });
+    } else if (act === 'companyEdit') companyDialog(id);
+    else if (act === 'companyToggle') {
+      var co = store.listCompanies().filter(function (x) { return x.id === id; })[0];
+      if (co) { store.upsertCompany({ id: id, name: co.name, short: co.short, rule: co.rule, enabled: co.enabled === false }); afterWrite('公司状态已更新'); }
+    } else if (act === 'companyDel') {
+      confirmBox('删除快递公司', '删除后新入库将不再识别这家公司，已有包裹不受影响。', function () {
+        store.removeCompany(id); afterWrite('公司已删除');
+      });
+    } else if (act === 'accEdit') {
+      var a = auth.listAccounts().filter(function (x) { return x.id === id; })[0]; if (!a) return;
+      $('accId').value = a.id; $('accName').value = a.name; $('accPw').value = '';
+      $('accRole').value = a.role;
+      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+        cb.checked = a.perms.indexOf(cb.getAttribute('data-perm-check')) >= 0;
+      });
+    } else if (act === 'accDel') {
+      confirmBox('删除子账号', '确定删除？该账号将无法再登录。', function () {
+        var r = auth.removeAccount(id); if (r.ok) afterWrite('子账号已删除'); else toast(r.error, 'err');
+      });
+    } else if (act === 'colStatus') {
+      var task = store.listCollections({}).filter(function (x) { return x.id === id; })[0]; if (!task) return;
+      var next = { pending: 'picked', picked: 'sent', sent: 'done', done: 'pending' }[task.status] || 'pending';
+      store.updateCollection(id, { status: next }); afterWrite('任务状态 → ' + next);
+    } else if (act === 'colDel') {
+      store.removeCollection(id); afterWrite('任务已删除');
+    } else if (act === 'uploadRetry') {
+      store.retryUpload(id); afterWrite('已重新标记同步记录');
+    } else if (act === 'interceptDel') { store.removeIntercept(id); afterWrite('拦截已移除'); }
+    else if (act === 'labelDel') {
+      var label = el.getAttribute('data-label');
+      store.setLabels(store.listLabels().filter(function (x) { return x !== label; }));
+      afterWrite('标签已删除');
+    } else if (act === 'statDay') statDayDialog(id);
+  }
+
+  /* ---------------- 事件绑定 ---------------- */
+  function on(id, evt, fn) { var el = $(id); if (el) el.addEventListener(evt, fn); }
+  function readFileText(file, cb) {
+    if (!file) return;
+    var fr = new FileReader();
+    fr.onload = function () { cb(String(fr.result || '')); };
+    fr.readAsText(file);
+  }
+  function bind() {
+    document.querySelectorAll('.nav-item').forEach(function (b) {
+      b.addEventListener('click', function () { if (!b.disabled) switchView(b.getAttribute('data-view')); });
+    });
+    document.addEventListener('click', function (e) {
+      var go = e.target.closest('[data-go]');
+      if (go) { switchView(go.getAttribute('data-go')); return; }
+      var act = e.target.closest('[data-act]');
+      if (act) { e.preventDefault(); handleAct(act.getAttribute('data-act'), act); return; }
+      var mc = e.target.closest('[data-modal="close"]');
+      if (mc) { closeModal(); return; }
+      if (e.target === $('modalMask')) closeModal();
+    });
+    on('btnMenu', 'click', function () {
+      $('sidebar').classList.toggle('open'); $('sideShade').classList.toggle('on');
+    });
+    on('sideShade', 'click', function () { $('sidebar').classList.remove('open'); $('sideShade').classList.remove('on'); });
+    on('btnLock', 'click', function () { auth.lock(); showGate(); });
+    on('btnLogout', 'click', function () { auth.logout(); showGate(); });
+
+    /* 入库 */
+    on('formIn', 'submit', submitInbound);
+    on('inNo', 'input', syncCarrier);
+    on('btnInScan', 'click', function () {
+      Media.capture({ title: '扫描面单条码', single: true, prefix: 'RK', torch: store.settings().torch }).then(function (r) {
+        if (r.cancelled || !r.files.length) return;
+        var f = r.files[0];
+        return Media.recognize(f.blob).then(function (d) {
+          var code = R.barcodeOf(d);
+          if (code) { $('inNo').value = code; syncCarrier(); }
+          f.name = R.inboundPhotoName(code);
+          S.inFiles.push(f);
+          $('inOcrState').hidden = false;
+          $('inOcrState').className = 'ocr-state ' + (code ? 'ok' : 'err');
+          $('inOcrState').textContent = code ? '识别到条码 ' + code + '，已填入运单号，照片按条码命名'
+            : '没读到条码，照片按时间命名，请手输运单号';
+          renderInbound();
+          toast(code ? '已识别 ' + code : '未识别到条码', code ? 'ok' : 'err');
+        });
+      });
+    });
+    on('btnInVoice', 'click', function () {
+      Media.listen().then(function (r) {
+        if (!r.ok) { toast(r.error, 'err'); return; }
+        $('inPhone').value = r.text; syncCarrier(); toast('已录入 ' + r.text, 'ok');
+      });
+    });
+    on('btnInCamera', 'click', function () {
+      Media.capture({ title: '入库面单拍照', max: 12, prefix: 'RK', torch: store.settings().torch })
+        .then(function (r) { if (!r.cancelled && r.files.length) return nameInFiles(r.files); });
+    });
+    on('btnInAlbum', 'click', function () { $('inPhotos').click(); });
+    on('inPhotos', 'change', function () {
+      var files = Array.prototype.slice.call(this.files).map(function (f) { return { blob: f, name: f.name, type: f.type }; });
+      if (files.length) nameInFiles(files); this.value = '';
+    });
+    ['inPhotoPreview', 'outPhotoPreview'].forEach(function (boxId) {
+      on(boxId, 'click', function (e) {
+        var img = e.target.closest('[data-photo]'); if (!img) return;
+        var which = img.getAttribute('data-photo'), idx = Number(img.getAttribute('data-index'));
+        var arr = which === 'in' ? S.inFiles : S.outFiles;
+        var f = arr[idx]; if (!f) return;
+        var m = openModal(f.name, '<img src="' + img.src + '" style="width:100%;border-radius:9px">',
+          '<button class="btn btn-ghost" data-modal="close">关闭</button>' +
+          '<button class="btn btn-outline" data-modal="remove">移除这张</button>');
+        m.querySelector('[data-modal="remove"]').onclick = function () {
+          var urls = which === 'in' ? S.inUrls : S.outUrls;
+          if (urls[idx]) URL.revokeObjectURL(urls[idx]);
+          arr.splice(idx, 1); urls.splice(idx, 1);
+          closeModal(); renderAll();
+        };
+      });
+    });
+    document.querySelectorAll('#inTabs .tab').forEach(function (b) {
+      b.addEventListener('click', function () {
+        S.inTab = b.getAttribute('data-tab');
+        document.querySelectorAll('#inTabs .tab').forEach(function (x) { x.classList.toggle('on', x === b); });
+        ['manual', 'quick', 'batch', 'scan'].forEach(function (t) { $('inPane-' + t).hidden = t !== S.inTab; });
+        if (S.inTab === 'quick') $('quickNo').focus();
+        if (S.inTab === 'scan') $('scanInNo').focus();
+      });
+    });
+    on('btnUndoLastIn', 'click', function () {
+      if (!guard('inbound')) return;
+      var target = S.lastInBatchId || (S.lastIn && S.lastIn.id);
+      if (!target) { toast('没有可撤销的入库记录', 'err'); return; }
+      confirmBox('撤销本次入库', '撤销后记录标记为已撤销，可在台账里查看。', function () {
+        var r = store.undoInbound(target);
+        if (r.ok) { S.lastIn = null; afterWrite('已撤销入库 ' + r.count + ' 件'); }
+        else toast(r.error, 'err');
+      });
+    });
+    on('btnInBatchNum', 'click', function () { renumDialog('serial'); });
+    on('quickNo', 'keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (quickAdd(this.value, R.tail4($('quickTail').value))) { this.value = ''; $('quickTail').value = ''; }
+      this.focus();
+    });
+    on('btnQuickSupplement', 'click', supplementDialog);
+    on('btnQuickEnd', 'click', function () {
+      toast('本次入库结束，共 ' + S.quickList.length + ' 件', 'ok');
+      S.quickList = []; renderInbound();
+    });
+    on('scanInNo', 'keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      var v = this.value.trim(); if (!v) return;
+      var parts = v.split(/[,，\s]+/).filter(Boolean);
+      var r = store.addParcel({ trackingNo: parts[0], phoneTail: parts[1] || '' });
+      S.scanInList.unshift({ goodsNo: r.ok ? r.parcel.goodsNo : '失败', text: v + (r.ok ? '' : ' · ' + r.error) });
+      S.scanInList = S.scanInList.slice(0, 40);
+      if (r.ok) { feedback('in', R.feedbackText('in', r.parcel)); S.lastIn = r.parcel; }
+      else feedback('error');
+      this.value = ''; renderInbound(); this.focus();
+    });
+    on('btnBatchPreview', 'click', function () {
+      var res = R.parseBatch($('batchText').value);
+      S.batchRows = res.rows; S.batchErrors = res.errors;
+      $('batchPreview').innerHTML = '<div class="muted">解析 ' + res.total + ' 行：可导入 ' + res.rows.length +
+        ' 行，失败 ' + res.errors.length + ' 行</div>' +
+        (res.rows.length ? '<div class="strip-list" style="margin-top:8px">' + res.rows.slice(0, 8).map(function (r) {
+          return '<div class="strip-item"><b>' + esc(r.trackingNo) + '</b><span class="grow">' +
+            esc([r.carrier, r.phone, r.slot, r.note].filter(Boolean).join(' · ')) + '</span></div>';
+        }).join('') + '</div>' : '') +
+        (res.errors.length ? '<div class="ocr-state err" style="margin-top:8px">' +
+          res.errors.map(function (x) { return '第 ' + x.line + ' 行：' + esc(x.text) + '（' + esc(x.reason) + '）'; }).join('<br>') + '</div>' : '');
+    });
+    on('btnBatchCsv', 'click', function () { $('batchCsvFile').click(); });
+    on('batchCsvFile', 'change', function () {
+      readFileText(this.files[0], function (t) { $('batchText').value = t; $('btnBatchPreview').click(); });
+      this.value = '';
+    });
+    on('btnBatchImport', 'click', function () {
+      if (!guard('inbound')) return;
+      var res = R.parseBatch($('batchText').value);
+      if (!res.rows.length) { toast('没有可导入的行', 'err'); return; }
+      var r = store.batchAdd(res.rows);
+      S.lastInBatchId = r.batchId;
+      var remain = r.failed.map(function (f) {
+        return [f.row.trackingNo, f.row.carrier, f.row.phone, f.row.slot, f.row.note].filter(Boolean).join(',');
+      });
+      $('batchText').value = remain.join('\n');
+      $('batchPreview').innerHTML = '<div class="ocr-state ok">成功 ' + r.count + ' 件，失败 ' + r.failed.length +
+        ' 件（失败行已回留在输入框）</div>' + (r.failed.length ? '<div class="ocr-state err">' +
+          r.failed.map(function (f) { return esc(f.row.trackingNo) + '：' + esc(f.error); }).join('<br>') + '</div>' : '');
+      feedback('in', '批量入库 ' + r.count + ' 件');
+      afterWrite('批量入库 ' + r.count + ' 件' + (r.failed.length ? '，失败 ' + r.failed.length + ' 件' : ''));
+    });
+
+    /* 出库 */
+    document.querySelectorAll('#outTabs .tab').forEach(function (b) {
+      b.addEventListener('click', function () { setOutTab(b.getAttribute('data-tab')); });
+    });
+    on('outKeyword', 'input', renderOutbound);
+    on('outKeyword', 'keydown', function (e) {
+      if (e.key !== 'Enter' || S.outTab !== 'scan') return;
+      e.preventDefault();
+      var hits = store.findByCode(this.value.trim());
+      if (hits.length === 1) { S.outSelected = {}; S.outSelected[hits[0].id] = true; doCheckout('scan'); this.value = ''; }
+      else { toast(hits.length ? '一个码对应 ' + hits.length + ' 件，请手动点选' : '未匹配到在库包裹', 'err'); renderOutbound(); }
+    });
+    on('btnOutSearch', 'click', renderOutbound);
+    on('btnOutSelectAll', 'click', function () {
+      store.listParcels({ kw: $('outKeyword').value.trim(), mode: $('outMode').value, status: 'in', limit: 120 })
+        .forEach(function (p) { S.outSelected[p.id] = true; });
+      renderOutbound();
+    });
+    on('btnOutClear', 'click', function () { S.outSelected = {}; $('outKeyword').value = ''; renderOutbound(); });
+    on('btnOutPhoto', 'click', captureOutProof);
+    on('btnOutMerge', 'click', function () {
+      var ids = outIds(); if (!ids.length) { toast('先选一件，再按同尾号合并', 'err'); return; }
+      var t = (store.getParcel(ids[0]) || {}).phoneTail;
+      var same = store.listParcels({ status: 'in' }).filter(function (p) { return p.phoneTail && p.phoneTail === t; });
+      same.forEach(function (p) { S.outSelected[p.id] = true; });
+      toast(t ? '已合并同尾号 ' + same.length + ' 件' : '这件没有尾号，无法按尾号合并', same.length > 1 ? 'ok' : 'err');
+      renderOutbound();
+      doCheckout('merge');
+    });
+    on('btnOutSubmit', 'click', function () { doCheckout(S.outType); });
+    on('btnUndoLastOut', 'click', function () {
+      if (!guard('outbound')) return;
+      if (!S.lastOut) { toast('没有可撤销的本次出库', 'err'); return; }
+      confirmBox('撤销本次出库', '恢复 ' + S.lastOut.count + ' 件到在库？', function () {
+        var r = store.undoCheckout(S.lastOut.parcels.map(function (p) { return p.id; }));
+        if (r.ok) { S.lastOut = null; afterWrite('已撤销出库 ' + r.count + ' 件'); }
+        else toast(r.error, 'err');
+      });
+    });
+    on('btnOutCamera', 'click', function () { capturePickup(false); });
+    on('btnOutCameraNow', 'click', function () { capturePickup(false); });
+    $('outTable').addEventListener('change', function (e) {
+      var cb = e.target.closest('[data-out-check]');
+      if (cb) toggleOutCheck(cb.getAttribute('data-out-check'), cb.checked);
+    });
+
+    /* 查件 / 台账 */
+    ['qKw', 'qMode', 'qStatus', 'qCarrier', 'qSlot', 'qLabel', 'qFrom', 'qTo'].forEach(function (id) {
+      on(id, 'change', renderQuery); on(id, 'input', renderQuery);
+    });
+    on('btnQuery', 'click', renderQuery);
+    on('btnQueryReset', 'click', function () {
+      ['qKw', 'qSlot', 'qFrom', 'qTo'].forEach(function (id) { $(id).value = ''; });
+      $('qStatus').value = 'all'; $('qCarrier').value = 'all'; $('qLabel').value = '';
+      $('qMode').value = store.settings().queryMode; renderQuery();
+    });
+    on('btnQueryExport', 'click', function () { download('查件结果-' + R.dayKey() + '.csv', store.exportCSV('parcels', queryArgs()), 'text/csv'); });
+    ['invKw', 'invStatus', 'invSort'].forEach(function (id) { on(id, 'change', renderInventory); on(id, 'input', renderInventory); });
+    on('btnInvExport', 'click', function () {
+      download('库存台账-' + R.dayKey() + '.csv', store.exportCSV('parcels', { kw: $('invKw').value.trim(), status: $('invStatus').value }), 'text/csv');
+    });
+    on('btnInvAll', 'click', function () { S.invResult.forEach(function (p) { S.invSelected[p.id] = true; }); renderInventory(); });
+    $('invTable').addEventListener('change', function (e) {
+      var cb = e.target.closest('[data-check]');
+      if (cb) { if (cb.checked) S.invSelected[cb.getAttribute('data-check')] = true; else delete S.invSelected[cb.getAttribute('data-check')]; }
+    });
+    on('btnInvMove', 'click', function () {
+      if (!guard('inventory')) return;
+      var ids = invIds(); if (!ids.length) { toast('请先勾选包裹', 'err'); return; }
+      var slot = $('invMoveSlot').value.trim();
+      if (!slot) { toast('请填移库后货架号', 'err'); return; }
+      var r = store.moveSlots(ids, slot, { regenGoods: $('invRegen').checked, mode: store.settings().goodsMode });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      S.invSelected = {}; afterWrite('已移库 ' + r.count + ' 件 → ' + R.upper(slot));
+    });
+    on('btnInvRenumSerial', 'click', function () { renumDialog('serial'); });
+    on('btnInvRenumGoods', 'click', function () { renumDialog('goods'); });
+    on('btnInvPrint', 'click', function () { printParcels(invIds().map(function (id) { return store.getParcel(id); })); });
+    on('btnInvOut', 'click', function () {
+      if (!guard('outbound')) return;
+      var ids = invIds(); if (!ids.length) { toast('请先勾选包裹', 'err'); return; }
+      S.outSelected = {}; ids.forEach(function (id) { S.outSelected[id] = true; });
+      switchView('outbound');
+    });
+    on('btnInvDel', 'click', function () {
+      if (!guard('inventory')) return;
+      var ids = invIds(); if (!ids.length) { toast('请先勾选包裹', 'err'); return; }
+      confirmBox('删除记录', '彻底删除 ' + ids.length + ' 条记录？此操作不可撤销。', function () {
+        ids.forEach(function (id) { store.removeParcel(id); });
+        S.invSelected = {}; afterWrite('已删除 ' + ids.length + ' 条记录');
+      });
+    });
+
+    /* 收件任务 */
+    on('formCollection', 'submit', function (e) {
+      e.preventDefault(); if (!guard('collections')) return;
+      var r = store.addCollection({ sender: $('colSender').value, senderPhone: $('colSenderPhone').value,
+        recipient: $('colRecipient').value, phone: $('colPhone').value, address: $('colAddress').value,
+        carrier: $('colCarrier').value, weight: $('colWeight').value, fee: $('colFee').value, note: $('colNote').value });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      ['colSender', 'colSenderPhone', 'colRecipient', 'colPhone', 'colAddress', 'colWeight', 'colFee', 'colNote'].forEach(function (id) { $(id).value = ''; });
+      afterWrite('收件任务 ' + r.collection.no + ' 已创建');
+    });
+    on('colFilter', 'change', renderCollections);
+
+    /* 客户 */
+    on('formCustomer', 'submit', function (e) {
+      e.preventDefault(); if (!guard('customers')) return;
+      var r = store.upsertCustomer({ id: $('cusId').value, name: $('cusName').value, phone: $('cusPhone').value,
+        type: $('cusType').value, star: $('cusStar').value, remark: $('cusRemark').value });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      $('btnCusClear').click(); afterWrite('客户已保存');
+    });
+    on('btnCusClear', 'click', function () {
+      ['cusId', 'cusName', 'cusPhone', 'cusRemark'].forEach(function (id) { $(id).value = ''; });
+      $('cusType').value = 'normal'; $('cusStar').value = '';
+    });
+    ['cusKw', 'cusFilter'].forEach(function (id) { on(id, 'change', renderCustomers); on(id, 'input', renderCustomers); });
+    on('btnCusImport', 'click', function () {
+      var nums = $('cusNumbers').value.split(/[,，\s]+/).map(function (x) { return x.replace(/\D/g, ''); }).filter(Boolean);
+      var ok = 0, bad = [];
+      nums.forEach(function (n) {
+        if (!R.phoneOk(n)) { bad.push(n); return; }
+        var r = store.upsertCustomer({ phone: n }); if (r.ok) ok++;
+      });
+      $('cusImportState').textContent = '导入 ' + ok + ' 个号码' + (bad.length ? '，不规则号码已跳过：' + bad.join('、') : '');
+      $('cusNumbers').value = bad.join('\n');
+      afterWrite('已导入 ' + ok + ' 个客户号码');
+    });
+    on('btnCusDedup', 'click', function () {
+      var seen = {}, dup = [];
+      store.listCustomers({}).forEach(function (c) {
+        var k = c.phone || c.tail;
+        if (k && seen[k]) dup.push(c.id); else seen[k] = 1;
+      });
+      dup.forEach(function (id) { store.removeCustomer(id); });
+      afterWrite('已删除 ' + dup.length + ' 条重复客户');
+    });
+    on('btnCusExport', 'click', function () { download('客户名单-' + R.dayKey() + '.csv', store.exportCSV('customers'), 'text/csv'); });
+    on('btnInterceptAdd', 'click', function () {
+      var r = store.addIntercept($('interceptNo').value.trim(), '手动添加');
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      $('interceptNo').value = ''; afterWrite('已添加入库拦截');
+    });
+
+    /* 统计 / 打印 / 同步 */
+    on('statPreset', 'change', function () { S.statPreset = this.value; renderStats(); });
+    ['statFrom', 'statTo'].forEach(function (id) { on(id, 'change', function () { S.statPreset = 'custom'; renderStats(); }); });
+    on('statTab', 'change', function () { S.statTab = this.value; renderStats(); });
+    on('btnStatsExport', 'click', function () {
+      download('每日统计-' + R.dayKey() + '.csv', store.exportCSV('stats', { range: statsRange() }), 'text/csv');
+    });
+    on('labelW', 'change', function () { store.updateSettings({ labelWidth: Number(this.value) || 80 }); renderPrint(); });
+    on('labelH', 'change', function () { store.updateSettings({ labelHeight: Number(this.value) || 50 }); renderPrint(); });
+    $('labelFields').addEventListener('change', function (e) {
+      var cb = e.target.closest('[data-label-field]'); if (!cb) return;
+      var arr = store.settings().labelFields.slice();
+      var k = cb.getAttribute('data-label-field');
+      arr = cb.checked ? arr.concat([k]).filter(function (x, i, a) { return a.indexOf(x) === i; }) : arr.filter(function (x) { return x !== k; });
+      store.updateSettings({ labelFields: arr }); renderPrint();
+    });
+    on('printKw', 'input', renderPrint);
+    on('btnPrintRecent', 'click', function () {
+      $('printKw').value = ''; S.printSelected = {};
+      store.listParcels({ status: 'all', limit: 10 }).forEach(function (p) { S.printSelected[p.id] = true; });
+      renderPrint();
+    });
+    on('btnPrintAll', 'click', function () {
+      store.listParcels({ kw: $('printKw').value.trim(), status: 'all', limit: 20 }).forEach(function (p) { S.printSelected[p.id] = true; });
+      renderPrint();
+    });
+    $('printList').addEventListener('change', function (e) {
+      var cb = e.target.closest('[data-print-check]'); if (!cb) return;
+      var id = cb.getAttribute('data-print-check');
+      if (cb.checked) S.printSelected[id] = true; else delete S.printSelected[id];
+      renderPrint();
+    });
+    on('btnDoPrint', 'click', function () {
+      printParcels(Object.keys(S.printSelected).filter(function (k) { return S.printSelected[k]; })
+        .map(function (k) { return store.getParcel(k); }));
+    });
+    ['syncState', 'syncKw'].forEach(function (id) { on(id, 'change', renderSync); on(id, 'input', renderSync); });
+    on('btnSyncExport', 'click', function () {
+      var rows = [['时间', '货号', '运单号', '动作', '状态', '说明']];
+      store.listUploads({}).forEach(function (u) {
+        rows.push([R.fmt(u.at), u.goodsNo, u.trackingNo, u.action, u.state, u.note]);
+      });
+      download('上行文件-' + R.dayKey() + '.csv', '\ufeff' + R.toCSV(rows), 'text/csv');
+    });
+
+    /* 设置 */
+    on('formSettings', 'submit', function (e) {
+      e.preventDefault(); if (!guard('settings')) return;
+      store.updateSettings(readSettings());
+      $('topStation').textContent = store.settings().stationName;
+      S.settingsFilled = false;
+      afterWrite('设置已保存');
+    });
+    ['setSerialMode', 'setGoodsMode', 'setGoodsTemplate', 'setZones', 'setShelves', 'setLevels'].forEach(function (id) {
+      on(id, 'change', function () {
+        var set = store.settings();
+        var preview = R.goodsNumber($('setGoodsMode').value, {
+          seq: Number($('setSerialStart').value) || 1, width: Number($('setSerialWidth').value) || 4,
+          slot: (($('setZones').value.split(',')[0] || 'A') + '01-01'), tail: '6789', short: 'YT',
+          template: $('setGoodsTemplate').value
+        });
+        $('setNumsPreview').textContent = '示例货号：' + preview + '（保存后生效）';
+      });
+    });
+    on('btnCompanyAdd', 'click', function () { companyDialog(''); });
+    on('btnLabelAdd', 'click', function () {
+      var v = $('labelNew').value.trim(); if (!v) return;
+      store.setLabels(store.listLabels().concat([v])); $('labelNew').value = '';
+      afterWrite('标签已添加');
+    });
+    on('btnBackup', 'click', function () {
+      toast('正在打包照片，请稍候…');
+      Media.exportAll().then(function (photos) {
+        var snap = store.exportSnapshot(); snap.photos = photos;
+        download('驿站备份-' + R.dayKey() + '.json', JSON.stringify(snap), 'application/json');
+        toast('备份已导出（含 ' + photos.length + ' 张照片）', 'ok');
+      });
+    });
+    on('btnRestore', 'click', function () { $('restoreFile').click(); });
+    on('restoreFile', 'change', function () {
+      var self = this;
+      readFileText(this.files[0], function (t) {
+        var obj; try { obj = JSON.parse(t); } catch (e) { toast('备份文件无法解析', 'err'); return; }
+        confirmBox('恢复备份', '覆盖当前全部数据？取消则关闭；如需合并请用 README 说明的合并方式。', function () {
+          var r = store.restoreSnapshot(obj, 'replace');
+          if (!r.ok) { toast(r.error, 'err'); return; }
+          if (obj.photos) Media.importAll(obj.photos);
+          S.settingsFilled = false;
+          store.setActor(auth.status().user || '未登录');
+          afterWrite('已恢复 ' + r.parcels + ' 条记录');
+          $('topStation').textContent = store.settings().stationName;
+          if (!auth.status().logged) showGate();
+        });
+      });
+      self.value = '';
+    });
+    on('btnImportCsv', 'click', function () { $('importCsvFile').click(); });
+    on('importCsvFile', 'change', function () {
+      readFileText(this.files[0], function (t) {
+        var rows = R.parseCSV(t).slice(1).map(function (c) {
+          return { trackingNo: c[0], carrier: c[1], phone: c[2], slot: c[3], note: c[4] };
+        }).filter(function (r) { return r.trackingNo; });
+        if (!rows.length) { toast('CSV 里没有数据行', 'err'); return; }
+        var r = store.batchAdd(rows);
+        afterWrite('CSV 导入 ' + r.count + ' 件，失败 ' + r.failed.length + ' 件');
+      });
+      this.value = '';
+    });
+    on('btnExportCsv', 'click', function () { download('包裹台账-' + R.dayKey() + '.csv', store.exportCSV('parcels', {}), 'text/csv'); });
+    on('btnPhotoExport', 'click', function () {
+      Media.exportAll().then(function (photos) {
+        download('照片数据-' + R.dayKey() + '.json', JSON.stringify(photos), 'application/json');
+        toast('已导出 ' + photos.length + ' 张照片数据', 'ok');
+      });
+    });
+    on('btnClearAll', 'click', function () {
+      confirmBox('清空全部数据', '包裹、客户、账号、照片引用、流水都会被清空，且不可撤销。建议先导出备份！', function () {
+        store.clearAll(); S.settingsFilled = false; S.invSelected = {}; S.outSelected = {};
+        auth.logout(); showGate();
+        toast('已清空，请重新初始化本站', 'ok');
+      });
+    });
+
+    /* 账号 / 流水 */
+    on('formAccount', 'submit', function (e) {
+      e.preventDefault(); if (!guard('accounts')) return;
+      var perms = [];
+      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+        if (cb.checked) perms.push(cb.getAttribute('data-perm-check'));
+      });
+      var id = $('accId').value;
+      var r = id ? auth.updateAccount(id, { password: $('accPw').value || undefined, role: $('accRole').value, perms: perms })
+        : auth.addAccount({ name: $('accName').value, password: $('accPw').value, role: $('accRole').value, perms: perms });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      $('btnAccClear').click(); afterWrite('子账号已保存');
+    });
+    on('btnAccClear', 'click', function () {
+      ['accId', 'accName', 'accPw'].forEach(function (id) { $(id).value = ''; });
+      $('accRole').value = 'operator';
+      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+        cb.checked = Auth.OPERATOR_DEFAULT.indexOf(cb.getAttribute('data-perm-check')) >= 0;
+      });
+    });
+    on('btnMyPw', 'click', function () {
+      var me = auth.current(); if (!me) return;
+      var r = auth.updateAccount(me.id, { password: $('myPw').value });
+      if (!r.ok) { toast(r.error, 'err'); return; }
+      $('myPw').value = ''; toast('密码已修改', 'ok');
+    });
+    on('btnDiag2', 'click', function () {
+      var d = auth.diag();
+      d.storage = { db: DB.KEY, ok: store.storageOk(), parcels: store.listParcels({ status: 'all' }).length };
+      d.media = Media.engines();
+      $('appDiag').hidden = false; $('appDiag').textContent = JSON.stringify(d, null, 2);
+    });
+    ['logKw', 'logAction'].forEach(function (id) { on(id, 'change', renderLogs); on(id, 'input', renderLogs); });
+    on('btnLogExport', 'click', function () {
+      download('操作流水-' + R.dayKey() + '.csv',
+        store.exportCSV('logs', { kw: $('logKw').value.trim(), action: $('logAction').value }), 'text/csv');
+    });
+
+    /* 键盘遮挡：把软键盘高度写进 CSS 变量 */
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', function () {
+        var kb = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+        document.documentElement.style.setProperty('--kb', kb + 'px');
+      });
+    }
+    ['click', 'keydown', 'touchstart'].forEach(function (evt) {
+      document.addEventListener(evt, function () { S.lastActive = Date.now(); }, { passive: true });
+    });
+  }
+
+  function bindIdle() {
+    if (S.idleTimer) clearInterval(S.idleTimer);
+    S.idleTimer = setInterval(function () {
+      var m = Number(store.settings().idleMinutes) || 15;
+      if (auth.status().logged && Date.now() - S.lastActive > m * 60000) {
+        auth.lock(); showGate(); toast('闲置超时，已锁屏');
+      }
+    }, 30000);
+  }
+
+  /* ---------------- 启动 ---------------- */
+  bindGate();
+  bind();
+  if (auth.status().logged) enterApp(); else showGate();
+  window.StationApp = {
+    store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
+    rules: R, media: Media, version: '2.0.0'
+  };
 })();
