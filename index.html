@@ -473,29 +473,43 @@
       <section class="view" id="view-settings">
         <div class="card">
           <div class="card-head"><h3>图片存储 · 云盘</h3><span class="muted" id="photoStatus"></span></div>
-          <p class="hint"><b>推荐坚果云 + Cloudflare Worker</b>：不用 NAS / Docker，一个应用密码即可；出库凭证单独归档到 <b>express-station/出库凭证/年-月/</b>，入库照片放到 <b>express-station/入库照片/年-月/</b>，云盘里一眼可分。云盘接口必须由服务端中转（浏览器跨域会被拦），另一条路是阿里云盘 + AList WebDAV。凭据只填在这里和自己的 Worker / AList 后台，绝不写进公开仓库。GitHub Pages 是 https，WebDAV 地址也必须是 https。</p>
+          <p class="hint"><b>推荐 123 云盘 + Cloudflare Worker</b>：免费 2TB、不限速，不用 NAS / Docker，一个应用密码即可。出库凭证单独归档到 <b>express-station/出库凭证/年-月/</b>，入库照片放到 <b>express-station/入库照片/年-月/</b>，云盘里一眼可分。123 云盘与坚果云的 WebDAV 都没有 CORS 头，浏览器无法直连，需要 <b>deploy/webdav-proxy.js</b> 做一次中转；AList 自带 CORS，可直连。凭据只填在这里和自己的 Worker / AList 后台，绝不写进公开仓库。</p>
           <div class="field-row">
             <div class="field">
               <label for="phMode">写入方式</label>
               <select id="phMode" class="input">
-                <option value="webdav">WebDAV（坚果云 / 阿里云盘 AList，推荐）</option>
-                <option value="local">阿里云盘 PC 客户端同步文件夹</option>
+                <option value="webdav">云盘 WebDAV（123 云盘 / 坚果云，推荐）</option>
+                <option value="local">云盘客户端同步文件夹</option>
                 <option value="browser">仅暂存浏览器（不写入云盘）</option>
               </select>
             </div>
             <div class="field"><label for="phDir">云盘内目录名</label><input id="phDir" class="input" placeholder="express-station"></div>
           </div>
           <div id="phWebdavBox" class="ph-box">
-            <div class="field"><label for="phBase">WebDAV 地址（须 https）</label><input id="phBase" class="input" placeholder="https://xxx.workers.dev 或 https://dav.example.com/dav" autocomplete="off"></div>
             <div class="field-row">
-              <div class="field"><label for="phUser">账号（坚果云填注册邮箱）</label><input id="phUser" class="input" autocomplete="off"></div>
+              <div class="field">
+                <label for="phProvider">云盘服务</label>
+                <select id="phProvider" class="input">
+                  <option value="pan123">123 云盘（免费 2TB，推荐）</option>
+                  <option value="nutstore">坚果云</option>
+                  <option value="custom">自定义 / AList</option>
+                </select>
+              </div>
+              <div class="field"><label for="phBase">WebDAV 上游地址（选服务后自动填）</label><input id="phBase" class="input" placeholder="https://webdav.123pan.cn/webdav" autocomplete="off"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="phProxyBase">CORS 代理地址（Cloudflare Worker）</label><input id="phProxyBase" class="input" placeholder="https://xxx.workers.dev，结尾不带 /pan123" autocomplete="off"></div>
+              <div class="field"><label for="phProxyKey">代理密钥（可选）</label><input id="phProxyKey" class="input" placeholder="仅当 Worker 里设置了 PROXY_KEY 时才填" autocomplete="off"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="phUser" id="phUserLabel">账号</label><input id="phUser" class="input" autocomplete="off"></div>
               <div class="field"><label for="phPass">应用密码 / WebDAV 密码</label><input id="phPass" class="input" type="password" autocomplete="off"></div>
             </div>
-            <div class="field"><label for="phProxyKey">代理密钥（可选）</label><input id="phProxyKey" class="input" placeholder="仅当 Worker 里设置了 PROXY_KEY 时才填" autocomplete="off"></div>
           </div>
           <div class="ph-box nut-tip">
-            <b>用坚果云：三步就够</b>
-            <p>① 坚果云网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加<b>应用密码</b>；② 把仓库里的 <b>deploy/nutstore-worker.js</b> 粘贴部署成 Cloudflare Worker（它只负责补 CORS 头，不用服务器）；③ 上面 WebDAV 地址填 <b>Worker 根地址</b>（结尾不要带 /dav），账号填坚果云邮箱，密码填应用密码，点「测试连接」。<b>不要把 https://dav.jianguoyun.com/dav 直接填进来</b>——坚果云不返回 CORS 头，浏览器会拦掉上传。免费版每月上传 1GB / 下载 3GB，照片量大就把「图片最长边」调到 1200 或升级专业版。若测试连接正常但上传报 409，先在坚果云网页端手工建好 <b>express-station</b> 文件夹，必要时再建 <b>出库凭证</b> 子目录。出库凭证只写这个目录，不会和入库照片混在一起。</p>
+            <b id="phProviderTitle">用 123 云盘：三步就够</b>
+            <p id="phProviderHint"></p>
+            <p class="muted" id="phProviderRoute"></p>
           </div>
           <div id="phLocalBox" class="ph-box" hidden>
             <button class="btn btn-outline btn-sm" id="btnPhPick">选择阿里云盘同步文件夹</button>
@@ -595,9 +609,10 @@
             <div><h4>账号与权限</h4><p>首次打开注册站长账号，之后在「账号管理」里给店员开子账号。站长可改设置、导入备份、管账号；操作员可入库出库与改台账；只读访客只能查件和看板。每条流水都记录操作人，可在流水页按姓名搜索。账号随 JSON 全量备份 / GitHub 同步迁移，换设备打开后点登录页「导入备份恢复」即可。</p></div>
             <div><h4>数据在哪</h4><p>台账与账号都保存在浏览器 localStorage，无需服务器。开启 GitHub 同步后，台账与账号库会一起写入指定仓库的 JSON 文件；<b>仓库必须是私有</b>，里面含账号密码哈希与收件人后四位。Pages 站点本身不要放任何令牌。</p></div>
             <div><h4>GitHub Pages</h4><p>把本仓库推送到 GitHub 后，在 Settings → Pages 选择分支 main、目录 /（root）即可获得在线地址。纯静态，无构建步骤。</p></div>
-            <div><h4>照片存云盘：坚果云（推荐）</h4><p>入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库取件凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间，按日期就能在云盘里翻到凭证。坚果云不用 NAS：网页版生成<b>应用密码</b> → 把 <b>deploy/nutstore-worker.js</b> 部署成 Cloudflare Worker → 在「图片存储」填 Worker 根地址 + 邮箱 + 应用密码。坚果云本身没有 CORS 头，直接填 dav.jianguoyun.com 会被浏览器拦，这个 Worker 就是补这一步。免费版每月上传 1GB / 下载 3GB；只拍出库凭证、把「图片最长边」设为 1200 更省额度。</p></div>
-            <div><h4>照片存云盘：阿里云盘（AList）</h4><p>用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList：管理 → 存储 → 添加 → 选「阿里云盘 Open」→ 刷新令牌填云盘 token、根文件夹 ID 填 root、WebDAV 策略选「本机代理」→ 在设置里开启 WebDAV。把 <b>https://你的域名/dav</b> 和管理员账号填进「图片存储」。AList 自带 CORS 头，但仍是 https：内网 http 地址会被 Pages 拦截，可用 Cloudflare Tunnel / Nginx 反代。</p></div>
-            <div><h4>安全提醒</h4><p>手机号只保留后四位。坚果云应用密码只存在本机浏览器、随请求头透传给自己的 Worker，Worker 代码里不写任何账号密码；云盘 token 只填 AList 后台。本机 <b>deploy/.env</b> 与 <b>deploy/data/</b> 已被 .gitignore 排除，绝不提交到公开仓库。建议在 Worker 里配置 ALLOWED_ORIGINS / PROXY_KEY，避免地址泄露后被他人借用额度。</p></div>
+            <div><h4>照片存云盘：123 云盘（推荐）</h4><p>免费 2TB、不限速、单文件 100GB，适合长期存面单与取件凭证。入库照片写入 <b>express-station/入库照片/年-月/</b>（RK- 前缀），出库凭证写入 <b>express-station/出库凭证/年-月/</b>（CK- 前缀），文件名带拍摄时间，按日期就能翻到。开通 WebDAV：网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制<b>应用密码</b>（只显示一次）。123 云盘的 WebDAV 不返回 CORS 头，浏览器不能直连，所以要把 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker，把 Worker 根地址填进「CORS 代理地址」，上游地址保持默认 <b>https://webdav.123pan.cn/webdav</b>；账号填手机号/邮箱，密码填应用密码。若后台给的是专属域名，在 Worker 里设环境变量 UPSTREAM_PAN123 覆盖。</p></div>
+            <div><h4>照片存云盘：坚果云</h4><p>同样是 WebDAV 路线：网页版生成<b>应用密码</b> → 同一个 Worker（路由 <b>/nutstore</b>）→ 「云盘服务」选坚果云、填 Worker 地址 + 邮箱 + 应用密码。坚果云也不返回 CORS 头，直连 dav.jianguoyun.com 会被拦。免费版每月上传 1GB / 下载 3GB；照片量大就把「图片最长边」设为 1200，或换 123 云盘。</p></div>
+            <div><h4>照片存云盘：自定义 / AList</h4><p>用 <b>deploy/docker-compose.yml</b> 在 NAS 上启动 AList 挂其它网盘，开启 WebDAV 后把 <b>https://你的域名/dav</b> 填进上游地址。AList 自带 CORS 头，可以直连、不必填代理；但必须是 https，内网 http 地址会被 Pages 拦截，可用 Cloudflare Tunnel / Nginx 反代。Worker 的 <b>/webdav</b> 路由配合环境变量 UPSTREAM_CUSTOM 也能代理无 CORS 的自建服务。</p></div>
+            <div><h4>安全提醒</h4><p>手机号只保留后四位。云盘应用密码只存在本机浏览器、随请求头透传给自己的 Worker，Worker 代码里不写任何账号密码；第三方网盘 token 只填 AList 后台。本机 <b>deploy/.env</b> 与 <b>deploy/data/</b> 已被 .gitignore 排除，绝不提交到公开仓库。建议在 Worker 里配置 ALLOWED_ORIGINS / PROXY_KEY，避免地址泄露后被他人借用额度。</p></div>
           </div>
         </div>
       </section>

@@ -258,11 +258,48 @@
     $('phWebdavBox').hidden = m !== 'webdav';
     $('phLocalBox').hidden = m !== 'local';
   }
+  function currentProvider() {
+    var key = $('phProvider').value;
+    var list = photos.providers();
+    for (var i = 0; i < list.length; i++) if (list[i].key === key) return list[i];
+    return list[0];
+  }
+  /* 切换云盘服务时带出官方地址，并实时预览真正会请求的根地址 */
+  function refreshProviderUI(applyPreset) {
+    var p = currentProvider();
+    var all = photos.providers();
+    var cur = $('phBase').value.trim();
+    var isPreset = all.some(function (x) { return x.upstream && x.upstream === cur; });
+    if (applyPreset ? (!cur || isPreset) : (!cur && p.upstream)) $('phBase').value = p.upstream || '';
+
+    $('phUserLabel').textContent = '账号（' + p.account + '）';
+    $('phProviderTitle').textContent = p.upstream ? '用 ' + p.name + '：三步就够' : '自定义 WebDAV（AList 等）';
+    $('phProviderHint').innerHTML = p.hint +
+      (p.upstream
+        ? ' ③ 把仓库里的 <b>deploy/webdav-proxy.js</b> 部署成 Cloudflare Worker（只补 CORS 头，不需要服务器），' +
+          '把 <b>Worker 根地址</b>填到「CORS 代理地址」，下面的上游地址保持默认即可。' +
+          (p.key === 'pan123'
+            ? '123 云盘免费 2TB、单文件 100GB，照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。'
+            : '坚果云免费版每月上传 1GB，照片多就把「图片最长边」调到 1200。')
+        : '');
+    var ep = photos.endpoint({
+      provider: $('phProvider').value,
+      baseUrl: $('phBase').value.trim(),
+      proxyBase: $('phProxyBase').value.trim()
+    });
+    $('phProviderRoute').textContent = !ep
+      ? '实际请求：未配置'
+      : $('phProxyBase').value.trim()
+        ? '实际请求：' + ep + '（经 Worker 转发到 ' + ($('phBase').value.trim() || '上游') + '）'
+        : '实际请求：' + ep + (p.upstream ? ' · 直连没有 CORS 头，浏览器会拦，务必填代理地址' : '');
+  }
   function fillPhotoSettings() {
     var c = photos.config();
     $('phMode').value = c.mode;
     $('phDir').value = c.dirName;
+    $('phProvider').value = c.webdav.provider || 'nutstore';
     $('phBase').value = c.webdav.baseUrl;
+    $('phProxyBase').value = c.webdav.proxyBase;
     $('phUser').value = c.webdav.user;
     $('phPass').value = c.webdav.pass;
     $('phProxyKey').value = c.webdav.proxyKey;
@@ -270,6 +307,7 @@
     $('phQuality').value = c.quality;
     $('phRequireProof').checked = c.requireProof !== false;
     togglePhotoBoxes();
+    refreshProviderUI(false);
     renderPhotoStatus();
   }
   function savePhotoForm() {
@@ -277,7 +315,9 @@
       mode: $('phMode').value,
       dirName: $('phDir').value.trim(),
       webdav: {
+        provider: $('phProvider').value,
         baseUrl: $('phBase').value.trim(),
+        proxyBase: $('phProxyBase').value.trim(),
         user: $('phUser').value,
         pass: $('phPass').value,
         proxyKey: $('phProxyKey').value.trim()
@@ -1229,6 +1269,10 @@
 
     /* 图片存储 */
     $('phMode').addEventListener('change', togglePhotoBoxes);
+    $('phProvider').addEventListener('change', function () { refreshProviderUI(true); });
+    ['phBase', 'phProxyBase'].forEach(function (id) {
+      $(id).addEventListener('input', function () { refreshProviderUI(false); });
+    });
     $('btnPhPick').onclick = async function () {
       var r = await photos.pickDirectory();
       renderPhotoStatus();

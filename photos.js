@@ -10,12 +10,39 @@
   var S_META = 'meta';
   var dirHandleRecord = null;
 
+  /* 云盘服务预设：upstream 是官方 WebDAV 根地址，proxyPath 是 Worker 里的路由前缀。
+     两者都缺 CORS 头，必须经自建 Worker 中转；AList 自带 CORS，可直连。 */
+  var PROVIDERS = {
+    nutstore: {
+      name: '坚果云',
+      upstream: 'https://dav.jianguoyun.com/dav',
+      proxyPath: '/nutstore',
+      account: '注册邮箱',
+      hint: '坚果云网页版 → 账户信息 → 安全选项 → 第三方应用管理 → 添加「应用密码」。账号填注册邮箱，密码填应用密码。'
+    },
+    pan123: {
+      name: '123 云盘',
+      upstream: 'https://webdav.123pan.cn/webdav',
+      proxyPath: '/pan123',
+      account: '手机号 / 邮箱',
+      hint: '123 云盘网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（权限勾「读写」）→ 复制应用密码。账号填 123 云盘登录手机号或邮箱，密码填应用密码；服务器地址以后台显示的那串为准。'
+    },
+    custom: {
+      name: '自定义 / AList',
+      upstream: '',
+      proxyPath: '/webdav',
+      account: 'WebDAV 账号',
+      hint: 'AList 自带 CORS，可直连 https://你的域名/dav；其它无 CORS 头的服务同样需要 Worker 中转。'
+    }
+  };
+  var PROVIDER_KEYS = ['nutstore', 'pan123', 'custom'];
+
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function defaults() {
     return {
       mode: 'webdav',
       dirName: 'express-station',
-      webdav: { baseUrl: '', user: '', pass: '', proxyKey: '' },
+      webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '', user: '', pass: '', proxyKey: '' },
       maxSide: 1600,
       quality: 0.82,
       requireProof: true
@@ -39,7 +66,12 @@
         c.mode = ['local', 'webdav', 'browser'].indexOf(p.mode) >= 0 ? p.mode : c.mode;
         c.dirName = String(p.dirName || c.dirName).replace(/[\\/:*?"<>|]/g, '-').trim() || c.dirName;
         c.webdav = {
+          provider: PROVIDER_KEYS.indexOf(p.webdav && p.webdav.provider) >= 0
+            ? p.webdav.provider
+            /* 旧配置没有 provider：填了 Worker 或自定义地址的一律按自定义处理 */
+            : (p.webdav && p.webdav.baseUrl ? 'custom' : 'nutstore'),
           baseUrl: String((p.webdav && p.webdav.baseUrl) || '').trim().replace(/\/+$/, ''),
+          proxyBase: String((p.webdav && p.webdav.proxyBase) || '').trim().replace(/\/+$/, ''),
           user: String((p.webdav && p.webdav.user) || ''),
           pass: String((p.webdav && p.webdav.pass) || ''),
           proxyKey: String((p.webdav && p.webdav.proxyKey) || '')
@@ -171,35 +203,46 @@
     });
     return out;
   }
+  function provider(w) { return PROVIDERS[(w && w.provider)] || PROVIDERS.custom; }
+  /* 真正发请求的根地址：填了 CORS 代理就走代理前缀，否则直连上游地址 */
+  function endpoint(w) {
+    var p = provider(w);
+    var upstream = String((w && w.baseUrl) || p.upstream || '').replace(/\/+$/, '');
+    var proxy = String((w && w.proxyBase) || '').replace(/\/+$/, '');
+    if (proxy) return proxy + p.proxyPath;
+    return upstream;
+  }
   function wdSegments(w, rel) {
     return [config().dirName || 'express-station', rel || ''];
   }
   async function mkcol(w, segments) {
     try {
-      await fetch(joinUrl(w.baseUrl, segments), {
+      await fetch(joinUrl(endpoint(w), segments), {
         method: 'MKCOL', headers: wdHeaders(w)
       });
     } catch (e) { /* 目录已存在或跨域预检被拒，交给 PUT 给出真实错误 */ }
   }
   async function webdavPut(rel, blob, w) {
-    if (!w.baseUrl) throw new Error('未填写 WebDAV 地址');
+    var base = endpoint(w);
+    if (!base) throw new Error('未配置 WebDAV / 云盘代理地址');
     var segs = wdSegments(w, rel);
     var parts = rel.split('/');
     await mkcol(w, [segs[0]]);
-    /* 出库凭证多一层目录，逐层 MKCOL，避免坚果云返回 409 */
+    /* 出库凭证多一层目录，逐层 MKCOL，避免坚果云 / 123 云盘返回 409 */
     for (var i = 0; i < parts.length - 1; i++) {
       await mkcol(w, [segs[0], parts.slice(0, i + 1).join('/')]);
     }
-    var url = joinUrl(w.baseUrl, segs);
+    var url = joinUrl(base, segs);
     var res = await fetch(url, {
       method: 'PUT',
       headers: wdHeaders(w, { 'Content-Type': 'image/jpeg' }),
       body: blob
     });
     if (!res.ok) {
-      var extra = res.status === 401 ? '（账号或应用密码错误，坚果云要用「应用密码」而非登录密码）'
+      var name = provider(w).name;
+      var extra = res.status === 401 ? '（' + name + ' 的账号或应用密码不对，要用「应用密码」而非登录密码）'
         : res.status === 403 ? '（无写入权限、跨域被拒绝或代理密钥不对）'
-          : res.status === 409 ? '（上级目录不存在，请先在云盘网页端建好目录）' : '';
+          : res.status === 409 ? '（上级目录不存在，请先在云盘网页端建好首层目录）' : '';
       throw new Error('HTTP ' + res.status + extra);
     }
   }
@@ -321,7 +364,7 @@
     }
     if (String(ref).indexOf('webdav:') === 0) {
       var rel = String(ref).slice(7);
-      var url = joinUrl(c.webdav.baseUrl, wdSegments(c.webdav, rel));
+      var url = joinUrl(endpoint(c.webdav), wdSegments(c.webdav, rel));
       var res = await fetch(url, { headers: wdHeaders(c.webdav) });
       if (!res.ok) throw new Error('WebDAV 读取失败 HTTP ' + res.status);
       return URL.createObjectURL(await res.blob());
@@ -344,24 +387,37 @@
         return { ok: false, error: '写入测试失败：' + (e.message || e) };
       }
     }
-    if (!c.webdav.baseUrl) return { ok: false, error: '请先填写 WebDAV 地址' };
+    var p = provider(c.webdav);
+    var base = endpoint(c.webdav);
+    if (!base) return { ok: false, error: '请先填写 WebDAV 地址或云盘代理地址' };
     try {
-      var res = await fetch(joinUrl(c.webdav.baseUrl, []), {
+      var res = await fetch(joinUrl(base, []), {
         method: 'PROPFIND',
         headers: wdHeaders(c.webdav, { 'Depth': '0' })
       });
-      if (res.status === 401) return { ok: false, error: '账号或密码错误（401）· 坚果云请填「应用密码」' };
-      if (!res.ok && res.status !== 207) return { ok: false, error: 'WebDAV 返回 HTTP ' + res.status };
-      return { ok: true, message: 'WebDAV 可访问（' + c.webdav.baseUrl + '）' };
+      if (res.status === 401) return { ok: false, error: p.name + ' 账号或应用密码错误（401）· 请用「应用密码」而不是登录密码' };
+      if (!res.ok && res.status !== 207) return { ok: false, error: p.name + ' WebDAV 返回 HTTP ' + res.status };
+      return { ok: true, message: p.name + ' 可访问（' + base + '）' };
     } catch (e) {
-      return { ok: false, error: '连不上 WebDAV：' + (e.message || e) + '。坚果云不能用 dav.jianguoyun.com 直连（无 CORS 头），请部署 deploy/nutstore-worker.js 并填 Worker 地址；AList 若是 http 内网地址，也会被 https 页面拦截。' };
+      return {
+        ok: false,
+        error: '连不上 ' + p.name + '：' + (e.message || e) +
+          '。' + p.name + ' WebDAV 没有 CORS 头，浏览器无法直连，请把 deploy/webdav-proxy.js 部署成 Cloudflare Worker，' +
+          '在「CORS 代理地址」填 Worker 根地址（结尾不带 /' + p.proxyPath.replace(/^\//, '') + '）；AList 若是 http 内网地址也会被 https 页面拦截。'
+      };
     }
   }
 
   function status() {
     var c = config();
     if (c.mode === 'browser') return '浏览器暂存模式 · 图片不写入云盘';
-    if (c.mode === 'webdav') return c.webdav.baseUrl ? 'WebDAV · ' + c.webdav.baseUrl : 'WebDAV 未填地址 · 照片暂存浏览器';
+    if (c.mode === 'webdav') {
+      var p = provider(c.webdav);
+      var base = endpoint(c.webdav);
+      if (!base) return p.name + ' 未填地址 · 照片暂存浏览器';
+      var viaProxy = !!c.webdav.proxyBase;
+      return p.name + (viaProxy ? '（经 Worker）' : '') + ' · ' + base.replace(/^https?:\/\//, '');
+    }
     if (!isLocalSupported()) return '当前浏览器不支持文件夹授权，请改用 WebDAV';
     return dirHandleRecord && dirHandleRecord.handle
       ? '已授权同步文件夹 · ' + (dirHandleRecord.handle.name || '') + '/' + c.dirName
@@ -371,7 +427,18 @@
   var api = {
     config: config, saveConfig: saveConfig, init: init,
     isLocalSupported: isLocalSupported, pickDirectory: pickDirectory,
-    put: put, getUrl: getUrl, test: test, status: status, buildRel: buildRel
+    put: put, getUrl: getUrl, test: test, status: status, buildRel: buildRel,
+    providers: function () {
+      return PROVIDER_KEYS.map(function (k) {
+        return {
+          key: k, name: PROVIDERS[k].name, upstream: PROVIDERS[k].upstream,
+          proxyPath: PROVIDERS[k].proxyPath, account: PROVIDERS[k].account, hint: PROVIDERS[k].hint
+        };
+      });
+    },
+    endpoint: function (patch) {
+      return endpoint(Object.assign(config().webdav, patch || {}));
+    }
   };
   global.StationPhotos = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

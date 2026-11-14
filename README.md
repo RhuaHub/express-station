@@ -1,6 +1,6 @@
 # 快递驿站 · 入库出库管理
 
-本地优先的快递驿站管理系统。纯静态、零依赖、零后端：数据存在浏览器里，照片可存坚果云 WebDAV 或本地同步目录，需要跨设备时再用 GitHub 同步台账 JSON。
+本地优先的快递驿站管理系统。纯静态、零依赖、零后端：数据存在浏览器里，照片写到 123 云盘 / 坚果云 WebDAV 或本地同步目录，需要跨设备时再用 GitHub 同步台账 JSON。
 
 同时提供三种使用方式：
 
@@ -20,6 +20,7 @@
 - **操作流水**：谁在什么时候做了什么，支持撤销出库 / 整批撤销
 - **账号体系**：站长 / 操作员 / 只读访客三级权限，站长可开子账号、重置密码
 - **备份**：JSON 全量导出导入，可自动同步到 GitHub 仓库
+- **照片存储**：123 云盘 / 坚果云 / 自建 AList（WebDAV），或云盘客户端同步目录
 
 ## 目录
 
@@ -36,10 +37,27 @@ manifest.webmanifest  PWA 清单
 sw.js                 离线缓存（仅同源 GET）
 icons/                PWA 与桌面图标
 android/              安卓 App 壳（WebView）与打包脚本
-deploy/               坚果云 CORS 中转 Worker、AList 容器配置
-tests/smoke.js        回归测试（51 项）
+deploy/               WebDAV CORS 代理 Worker、AList 容器配置
+tests/smoke.js        回归测试（52 项）
 tools/                图标生成、无头浏览器探针等辅助脚本
 ```
+
+## 照片存哪儿
+
+入库照片与出库凭证都只存引用，文件本体写到云盘，按 `入库照片/年-月/RK-*.jpg`、`出库凭证/年-月/CK-*.jpg` 归档，文件名带拍摄时间。
+
+| 方案 | 需要什么 | 说明 |
+| --- | --- | --- |
+| **123 云盘** | 应用密码 + 一个 Cloudflare Worker | 免费 2TB、不限速、单文件 100GB，推荐 |
+| 坚果云 | 应用密码 + 同一个 Worker | 免费版每月上传 1GB |
+| 自定义 / AList | AList 的 WebDAV 地址 | AList 自带 CORS，可直连 |
+| 同步文件夹 | 桌面版 Chrome / Edge | 用云盘客户端把目录同步上去 |
+
+**为什么必须有个 Worker**：123 云盘与坚果云的 WebDAV 都不返回 `Access-Control-Allow-Origin`（实测连 OPTIONS 预检都直接 401），浏览器会拦掉上传。`deploy/webdav-proxy.js` 只做转发和补 CORS 头，不存任何账号密码，免费额度足够个人使用。
+
+配置路径：123 云盘网页版 → 工具中心 → 第三方挂载 → WebDAV 授权管理 → 添加应用（勾「读写」）→ 复制**应用密码**（只显示一次）。然后部署 Worker，在「设置 → 图片存储」把云盘服务选「123 云盘」、CORS 代理地址填 Worker 根地址，账号填手机号/邮箱、密码填应用密码，点「测试连接」。
+
+Worker 路由：`/pan123` → 123 云盘，`/nutstore` → 坚果云，`/webdav` → 自定义上游（配 `UPSTREAM_CUSTOM`）。123 若给的是专属 WebDAV 域名，用环境变量 `UPSTREAM_PAN123` 覆盖。
 
 ## 使用
 

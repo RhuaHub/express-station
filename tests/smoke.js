@@ -473,17 +473,51 @@ check('photos.js 可加载且导出完整接口', () => {
   p.saveConfig({ requireProof: true });
 });
 
-check('坚果云 CORS 代理 Worker 存在且不含硬编码凭据', () => {
-  const worker = fs.readFileSync(path.join(root, 'deploy', 'nutstore-worker.js'), 'utf8');
-  ['export default', 'dav.jianguoyun.com/dav', 'Access-Control-Allow-Origin',
-    'Access-Control-Allow-Methods', 'MKCOL', 'PROPFIND', 'X-Proxy-Key']
+check('WebDAV CORS 代理 Worker：多上游路由且不含硬编码凭据', () => {
+  const worker = fs.readFileSync(path.join(root, 'deploy', 'webdav-proxy.js'), 'utf8');
+  ['export default', 'dav.jianguoyun.com/dav', 'webdav.123pan.cn/webdav', '/pan123', '/nutstore',
+    'Access-Control-Allow-Origin', 'Access-Control-Allow-Methods', 'MKCOL', 'PROPFIND', 'X-Proxy-Key',
+    'UPSTREAM_PAN123', 'resolveUpstream']
     .forEach(k => assert.ok(worker.includes(k), 'Worker 缺少 ' + k));
+  // 上游必须来自常量或环境变量，绝不能取自请求
+  assert.ok(!/new URL\([^)]*\)\.(host|hostname|origin)/.test(worker), 'Worker 不应从请求里取上游地址');
   assert.ok(!/(?:password|token|secret)\s*=\s*['"][^'"]{8,}['"]/i.test(worker), 'Worker 里疑似写死凭据');
 });
 
-check('页面含坚果云配置入口与代理密钥字段', () => {
+check('123 云盘：服务预设、地址与代理前缀解析正确', () => {
+  const p = require('../photos.js');
+  const list = p.providers().map(x => x.key);
+  assert.deepStrictEqual(list.sort(), ['custom', 'nutstore', 'pan123'], '缺少云盘服务预设：' + list);
+  const pan = p.providers().find(x => x.key === 'pan123');
+  assert.strictEqual(pan.upstream, 'https://webdav.123pan.cn/webdav');
+  assert.strictEqual(pan.proxyPath, '/pan123');
+  assert.ok(/应用密码/.test(pan.hint), '123 云盘提示应说明用应用密码');
+
+  // 直连：上游地址原样使用
+  assert.strictEqual(p.endpoint({ provider: 'pan123', baseUrl: '', proxyBase: '' }), 'https://webdav.123pan.cn/webdav');
+  // 经 Worker：Worker 根地址 + 服务前缀
+  assert.strictEqual(p.endpoint({ provider: 'pan123', baseUrl: '', proxyBase: 'https://x.workers.dev/' }),
+    'https://x.workers.dev/pan123');
+  // 自定义上游 + 代理
+  assert.strictEqual(p.endpoint({ provider: 'custom', baseUrl: 'https://dav.example.com/dav', proxyBase: 'https://w.dev' }),
+    'https://w.dev/webdav');
+
+  const saved = p.saveConfig({ webdav: { provider: 'pan123', proxyBase: 'https://x.workers.dev' } });
+  assert.strictEqual(saved.webdav.provider, 'pan123');
+  assert.strictEqual(saved.webdav.proxyBase, 'https://x.workers.dev');
+  // 旧配置（只有 baseUrl）应按自定义处理，不能误判成 123 云盘
+  p.saveConfig({ webdav: { provider: 'custom', baseUrl: 'https://dav.jianguoyun.com/dav', proxyBase: '' } });
+  assert.strictEqual(p.config().webdav.provider, 'custom');
+  p.saveConfig({ webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '' } });
+});
+
+check('页面含云盘服务选择与 CORS 代理入口', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  ['phProxyKey', 'nut-tip', 'nutstore-worker.js', '应用密码'].forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  ['phProvider', 'phProxyBase', 'phProxyKey', 'phUserLabel', 'phProviderHint', 'phProviderRoute',
+    'webdav-proxy.js', '应用密码', '123 云盘'].forEach(k => assert.ok(html.includes(k), '页面缺少 ' + k));
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/function refreshProviderUI/.test(app), '缺少服务切换时的地址预填逻辑');
+  assert.ok(/photos\.providers\(\)/.test(app), '页面未读取服务预设');
 });
 
 check('代理密钥配置可写入并回读', () => {
