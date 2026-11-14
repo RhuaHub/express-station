@@ -1,4 +1,4 @@
-/* 取件拍照识别：把照片里的条码 / 数字 / 取件码读出来，匹配在库包裹，并生成可归档的文件名。
+/* 拍照识别：把照片里的条码 / 数字 / 取件码读出来，匹配在库包裹；入库按条码命名、出库按取件码命名。
    纯前端零依赖：
    - 优先用浏览器自带的 BarcodeDetector（面单一维码、二维码，识别率最高）
    - 有 TextDetector 的平台再叠加文字检测（打印的取件标签大字）
@@ -119,6 +119,37 @@
   }
   api.match = match;
 
+  /* ---------- 纯函数：入库条码 → 可直接当运单号 / 文件名的干净串 ---------- */
+  function cleanBarcode(raw) {
+    var s = String(raw == null ? '' : raw).toUpperCase()
+      .replace(/\s+/g, '').replace(/[^0-9A-Z\-]/g, '').replace(/^-+|-+$/g, '');
+    if (!s || s.length < 6 || s.length > 32) return '';
+    /* 二维码里常是网址 / 年份，那不是运单号 */
+    if (/^(HTTP|HTTPS|WWW|19\d{2}|20\d{2})/.test(s)) return '';
+    return s;
+  }
+  api.cleanBarcode = cleanBarcode;
+
+  function barcodeOf(res) {
+    var list = (res && res.barcodes) || [];
+    var valid = [];
+    for (var i = 0; i < list.length; i++) {
+      var c = cleanBarcode(list[i]);
+      if (c && valid.indexOf(c) < 0) valid.push(c);
+    }
+    if (valid.length) {
+      valid.sort(function (a, b) { return b.length - a.length; });
+      return valid[0];                       /* 多个条码时取最长的，通常是完整运单号 */
+    }
+    /* 没有条码引擎结果时，退回文字识别里最长的一串数字/字母数字 */
+    var ts = tokens((res && res.texts) || []);
+    for (var j = 0; j < ts.length; j++) {
+      if (ts[j].length >= 8 && /[0-9]/.test(ts[j]) && cleanBarcode(ts[j])) return cleanBarcode(ts[j]);
+    }
+    return '';
+  }
+  api.barcodeOf = barcodeOf;
+
   /* ---------- 纯函数：按识别结果给凭证命名，方便在仓库里按码取证 ---------- */
   function safeName(name) {
     var s = String(name == null ? '' : name)
@@ -154,6 +185,18 @@
     return safeName(bits.join('_') + '.jpg');
   }
   api.fileName = fileName;
+
+  /* 入库照片直接以条码命名：RK_日期-时间_运单号_随机.jpg
+     后面仍带时间与随机串，同一单号补拍多张不会互相覆盖。 */
+  function inboundName(code, at) {
+    var d = at ? new Date(at) : new Date();
+    if (isNaN(d.getTime())) d = new Date();
+    var ts = '' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' +
+      pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+    var c = cleanBarcode(code);
+    return safeName(['RK', ts, c || '未识别', Math.random().toString(36).slice(2, 5)].join('_') + '.jpg');
+  }
+  api.inboundName = inboundName;
 
   /* ---------- 浏览器侧：调用系统识别能力 ---------- */
   async function toSource(file) {
@@ -207,24 +250,28 @@
 
   async function detect(file) {
     var eng = engines();
-    var res = { supported: eng.any, engines: eng, texts: [], error: '' };
+    /* barcodes 与 texts 分开：出库靠全部候选去查件，入库只认条码当运单号 / 文件名 */
+    var res = { supported: eng.any, engines: eng, texts: [], barcodes: [], error: '' };
     if (!eng.any) return res;
     var src;
     try { src = await toSource(file); }
     catch (e) { res.error = e.message || '无法读取照片'; return res; }
     try {
       var jobs = [];
-      if (eng.barcode) jobs.push(runBarcode(src));
-      if (eng.text) jobs.push(runText(src));
+      if (eng.barcode) jobs.push(runBarcode(src).then(function (list) { return { kind: 'barcode', list: list }; }));
+      if (eng.text) jobs.push(runText(src).then(function (list) { return { kind: 'text', list: list }; }));
       var all = await Promise.all(jobs);
       var seen = {};
-      all.forEach(function (list) {
-        list.forEach(function (t) {
+      all.forEach(function (group) {
+        (group.list || []).forEach(function (t) {
           var k = String(t).toUpperCase();
           if (!seen[k]) { seen[k] = 1; res.texts.push(String(t)); }
+          if (group.kind === 'barcode' && res.barcodes.indexOf(String(t)) < 0) {
+            res.barcodes.push(String(t));
+          }
         });
       });
-      if (!res.texts.length) res.error = '照片里没读到条码或数字，请对准面单再拍一次，或直接手输取件码';
+      if (!res.texts.length) res.error = '照片里没读到条码或数字，请对准面单再拍一次，或手动输入编号';
     } finally {
       if (src && typeof src.close === 'function') {
         try { src.close(); } catch (e) { /* 忽略 */ }
@@ -240,6 +287,8 @@
     m.supported = d.supported;
     m.engineLabel = d.engines.label;
     m.detected = d.texts;
+    m.barcodes = d.barcodes;
+    m.barcode = barcodeOf(d);
     m.readError = d.error;
     return m;
   }

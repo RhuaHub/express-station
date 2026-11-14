@@ -13,7 +13,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=1.0.7">
+<link rel="stylesheet" href="styles.css?v=1.0.8">
 </head>
 <body class="auth-locked">
 
@@ -278,13 +278,14 @@
                 <input id="inNote" name="note" class="input" placeholder="易碎、大件、代收等，选填" autocomplete="off">
               </div>
               <div class="field">
-                <label>面单 / 包裹照片（可选，可多张）</label>
+                <label>面单 / 包裹照片（可选，拍完自动识别条码、按条码命名）</label>
                 <div class="photo-picker">
                   <input type="file" id="inPhotos" accept="image/*" multiple hidden>
                   <button type="button" class="btn btn-outline btn-sm" data-perm="write" id="btnInCamera"><svg class="ic"><use href="#i-camera"/></svg>打开摄像头</button>
                   <button type="button" class="btn btn-ghost btn-sm" data-perm="write" id="btnInPhotos">从相册选图</button>
                   <span class="muted" id="inPhotoState"></span>
                 </div>
+                <div class="in-ocr" id="inOcrState" hidden></div>
                 <div class="photo-preview" id="inPhotoPreview"></div>
               </div>
               <div class="form-foot">
@@ -700,13 +701,13 @@
 <div id="cameraRoot"></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
-<script src="store.js?v=1.0.7"></script>
-<script src="auth.js?v=1.0.7"></script>
-<script src="photos.js?v=1.0.7"></script>
-<script src="camera.js?v=1.0.7"></script>
-<script src="recognize.js?v=1.0.7"></script>
-<script src="sync.js?v=1.0.7"></script>
-<script src="app.js?v=1.0.7"></script>
+<script src="store.js?v=1.0.8"></script>
+<script src="auth.js?v=1.0.8"></script>
+<script src="photos.js?v=1.0.8"></script>
+<script src="camera.js?v=1.0.8"></script>
+<script src="recognize.js?v=1.0.8"></script>
+<script src="sync.js?v=1.0.8"></script>
+<script src="app.js?v=1.0.8"></script>
 <script>
 /* 仅 http(s) 下注册 Service Worker：file:// 直接双击打开时跳过，不影响使用 */
 (function () {

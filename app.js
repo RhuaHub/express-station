@@ -33,7 +33,9 @@
     inFiles: [], proofFiles: [], lastParcel: null,
     /* 拍照取件：一次拍照 → 识别 → 自动选中 → 自动命名凭证的全过程状态 */
     scan: { status: 'idle', message: '', candidates: [], fileName: '', engine: '',
-      photoIndex: -1, busy: false, autoTried: false, userClosed: false, pickIntent: false } };
+      photoIndex: -1, busy: false, autoTried: false, userClosed: false, pickIntent: false },
+    /* 入库照片还在识别条码时，提交必须等它完成，否则照片会漏存 */
+    inOcrPending: null };
   var syncTimer = null;
   var inPreviewUrls = [];
   var proofPreviewUrls = [];
@@ -208,6 +210,7 @@
     if (which === 'in') {
       state.inFiles = []; $('inPhotos').value = '';
       renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
+      renderInOcr('', '');
     } else {
       state.proofFiles = []; $('outProof').value = '';
       renderFilePreview('proofPreview', state.proofFiles, proofPreviewUrls, false);
@@ -217,9 +220,50 @@
       renderScan();
     }
   }
-  function addFiles(which, fileList) {
+  /* 入库识别状态条：拍照/选图后告诉用户读到了哪个条码、有没有自动填单号 */
+  function renderInOcr(status, message) {
+    var el = $('inOcrState');
+    if (!el) return;
+    el.className = 'in-ocr' + (status ? ' ' + status : '');
+    el.textContent = message || '';
+    el.hidden = !message;
+  }
+  /* 入库照片逐张读条码：文件名写成 RK_时间_条码_随机.jpg，条码同时可当运单号。
+     只有运单号输入框为空时才自动填，绝不覆盖扫码枪 / 手输的内容。 */
+  async function nameInboundFiles(files) {
+    renderInOcr('busy', '正在识别 ' + files.length + ' 张照片里的条码…');
+    var out = [], codes = [];
+    for (var i = 0; i < files.length; i++) {
+      var d = null;
+      try { d = recognize ? await recognize.detect(files[i]) : null; }
+      catch (e) { d = null; }
+      var code = d && recognize && recognize.barcodeOf ? recognize.barcodeOf(d) : '';
+      if (code && codes.indexOf(code) < 0) codes.push(code);
+      var name = recognize && recognize.inboundName ? recognize.inboundName(code) : '';
+      out.push(name ? renameFile(files[i], name) : files[i]);
+    }
+    if (codes.length) {
+      var input = $('inTracking');
+      var filled = false;
+      if (input && !input.value.trim()) { input.value = codes[0]; filled = true; }
+      var list = codes.slice(0, 3).join('、') + (codes.length > 3 ? ' 等 ' + codes.length + ' 个' : '');
+      renderInOcr('ok', '识别到条码 ' + list + ' · 照片已按条码命名' +
+        (filled ? ' · 已自动填入运单号' : '（运单号已填，未覆盖）'));
+      toast(filled ? '识别到条码 ' + codes[0] + '，已填入运单号' : '识别到条码，照片已按条码命名');
+    } else {
+      renderInOcr('err', '没读到条码 · 照片按时间命名，运单号请扫码或手输');
+    }
+    return out;
+  }
+  async function addFiles(which, fileList) {
     var files = Array.from(fileList || []).filter(function (f) { return /^image\//.test(f.type); }).slice(0, 12);
     if (!files.length) { toast('请选择图片文件', 'err'); return; }
+    if (which === 'in') {
+      var task = nameInboundFiles(files);
+      state.inOcrPending = task;
+      try { files = await task; }
+      finally { if (state.inOcrPending === task) state.inOcrPending = null; }
+    }
     if (which === 'in') {
       state.inFiles = state.inFiles.concat(files).slice(0, 12);
       renderFilePreview('inPhotoPreview', state.inFiles, inPreviewUrls, true);
@@ -1535,6 +1579,12 @@
       e.preventDefault();
       if (!guard('write')) return;
       var btn = $('formIn').querySelector('button[type="submit"]');
+      /* 等条码识别跑完再读运单号、存照片：识别会自动填单号，提交不能抢在它前面 */
+      if (state.inOcrPending) {
+        btn.disabled = true;
+        try { await state.inOcrPending; } catch (err) { /* 识别失败仍按手输继续 */ }
+        btn.disabled = false;
+      }
       var tn = $('inTracking').value.trim();
       var exists = store.getDB().parcels.some(function (p) {
         return p.status === 'in' && p.trackingNo.toUpperCase() === tn.toUpperCase();

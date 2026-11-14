@@ -1058,6 +1058,7 @@ checkAsync('拍照取件：没有浏览器识别接口时如实降级，不假�
   if (!r.engines().any) {
     assert.strictEqual(d.supported, false);
     assert.deepStrictEqual(d.texts, []);
+    assert.deepStrictEqual(d.barcodes, []);
   } else {
     assert.ok(Array.isArray(d.texts));
   }
@@ -1099,22 +1100,97 @@ check('拍照取件：首屏结构、自动开镜头与连续取件流程齐全'
   assert.ok(/subtitle/.test(cam) && /startWatch/.test(cam), '相机缺少拍照取件副标题 / 黑屏兜底');
 });
 
-check('1.0.7 版本清单：脚本、SW、安卓资源与 APK 同步', () => {
+/* ---------- 入库：识别条码并按条码命名（1.0.8） ---------- */
+check('入库条码：清洗、优先取条码、按条码生成 RK_ 文件名', () => {
+  const r = require('../recognize.js');
+  assert.strictEqual(r.cleanBarcode(' YT 100001 '), 'YT100001');
+  assert.strictEqual(r.cleanBarcode('1234'), '', '太短的串不能当运单号');
+  assert.strictEqual(r.cleanBarcode('https://example.com/a'), '', '二维码里的网址不是运单号');
+  assert.strictEqual(r.cleanBarcode('2026'), '', '年份不是运单号');
+  assert.strictEqual(r.barcodeOf({ barcodes: ['1234', 'YT100001'], texts: [] }), 'YT100001');
+  assert.strictEqual(r.barcodeOf({ barcodes: [], texts: ['运单号 YT999888777'] }), 'YT999888777',
+    '没有条码结果时应退回文字识别里最长的一串');
+  assert.strictEqual(r.barcodeOf({ barcodes: [], texts: ['2026 0000'] }), '');
+  const name = r.inboundName('YT100001', new Date(2026, 10, 14, 20, 5, 6));
+  assert.ok(/^RK_20261114-200506_YT100001_[a-z0-9]{1,3}\.jpg$/.test(name), '入库文件名格式不对：' + name);
+  assert.ok(r.inboundName('').includes('未识别'), '读不到条码也要按时间命名');
+});
+
+checkAsync('入库条码：detect 把条码与文字结果分开，barcodeOf 优先用条码', async () => {
+  const r = require('../recognize.js');
+  const keys = ['BarcodeDetector', 'TextDetector', 'createImageBitmap'];
+  const saved = {};
+  keys.forEach(k => { saved[k] = globalThis[k]; });
+  globalThis.BarcodeDetector = class {
+    static async getSupportedFormats() { return ['code_128']; }
+    async detect() { return [{ rawValue: 'YT100001' }]; }
+  };
+  globalThis.TextDetector = class {
+    async detect() { return [{ rawValue: '取件码 A011' }]; }
+  };
+  globalThis.createImageBitmap = async () => ({});
+  try {
+    const d = await r.detect({});
+    assert.deepStrictEqual(d.barcodes, ['YT100001']);
+    assert.ok(d.texts.includes('YT100001') && d.texts.includes('取件码 A011'),
+      '出库查件仍要拿到全部候选文本');
+    assert.strictEqual(r.barcodeOf(d), 'YT100001');
+  } finally {
+    keys.forEach(k => {
+      if (saved[k] === undefined) delete globalThis[k];
+      else globalThis[k] = saved[k];
+    });
+  }
+});
+
+check('入库条码：文件名能一路透传到 photos.buildRel', () => {
+  const r = require('../recognize.js');
+  const p = require('../photos.js');
+  const name = r.inboundName('YT100001');
+  assert.strictEqual(p.safeCustomName(name), name, '合法文件名不该被改写');
+  const rel = p.buildRel('inbound', name);
+  assert.ok(rel.indexOf('入库照片/') === 0, '入库目录仍按 入库照片/年-月 归档');
+  assert.ok(rel.endsWith('/' + name), '自定义文件名未生效');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/savePhotos\(state\.inFiles, 'inbound'\)/.test(app), '入库提交仍要走 inbound 类型');
+});
+
+check('入库条码：页面状态条、自动填单号与等待识别后提交', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  assert.ok(!/\?v=1\.0\.6/.test(html), '页面还有旧版本号，手机会一直跑旧 JS');
-  assert.ok((html.match(/\?v=1\.0\.7/g) || []).length >= 8, '资源版本号数量不足');
+  assert.ok(html.includes('id="inOcrState"'), '入库页缺少识别状态条');
+  assert.ok(html.includes('拍完自动识别条码、按条码命名'), '入库照片区未说明条码命名');
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  ['nameInboundFiles', 'renderInOcr', 'recognize.barcodeOf', 'recognize.inboundName',
+    'inOcrPending', 'await state.inOcrPending', 'input.value = codes[0]']
+    .forEach(k => assert.ok(app.includes(k), 'app.js 缺少 ' + k));
+  assert.ok(/if \(input && !input\.value\.trim\(\)\)/.test(app), '自动填单号必须只在输入框为空时生效');
+  const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+  assert.ok(/\.in-ocr\.ok/.test(css) && /\.in-ocr\.err/.test(css), '识别状态条缺少配色');
+});
+
+check('入库条码：降级路径不阻塞入库，且不会覆盖已有单号', () => {
+  const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+  assert.ok(/没读到条码/.test(app), '读不到条码时要有明确提示');
+  assert.ok(/识别失败仍按手输继续/.test(app), '识别失败不能卡住提交');
+  assert.ok(/运单号已填，未覆盖/.test(app), '应说明已有单号不会被覆盖');
+});
+
+check('1.0.8 版本清单：脚本、SW、安卓资源与 APK 同步', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  assert.ok(!/\?v=1\.0\.7/.test(html), '页面还有旧版本号，手机会一直跑旧 JS');
+  assert.ok((html.match(/\?v=1\.0\.8/g) || []).length >= 8, '资源版本号数量不足');
   const sw = fs.readFileSync(path.join(root, 'sw.js'), 'utf8');
-  assert.ok(/BUILD\s*=\s*'1\.0\.7'/.test(sw) && /station-shell-v8/.test(sw));
+  assert.ok(/BUILD\s*=\s*'1\.0\.8'/.test(sw) && /station-shell-v9/.test(sw));
   assert.ok(/\.\/recognize\.js\?v=' \+ BUILD/.test(sw), 'SW 预缓存清单漏了识别模块');
   const sh = fs.readFileSync(path.join(root, 'android/build-apk.sh'), 'utf8');
   const listed = (sh.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
   assert.ok(listed.includes('recognize.js'), '打包脚本漏掉 recognize.js');
-  assert.ok(/--version-name 1\.0\.7/.test(sh) && /express-station-1\.0\.7\.apk/.test(sh));
+  assert.ok(/--version-name 1\.0\.8/.test(sh) && /express-station-1\.0\.8\.apk/.test(sh));
   const mf = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
-  assert.ok(/versionCode="8"/.test(mf) && /versionName="1\.0\.7"/.test(mf));
+  assert.ok(/versionCode="9"/.test(mf) && /versionName="1\.0\.8"/.test(mf));
   const dist = path.join(root, 'android/dist');
-  const apks = fs.readdirSync(dist).filter(f => /^express-station-1\.0\.7\.apk$/.test(f));
-  assert.ok(apks.length, '1.0.7 APK 未构建');
+  const apks = fs.readdirSync(dist).filter(f => /^express-station-1\.0\.8\.apk$/.test(f));
+  assert.ok(apks.length, '1.0.8 APK 未构建');
   const bin = fs.readFileSync(path.join(dist, apks[0])).toString('latin1');
   assert.ok(bin.includes('assets/recognize.js'), 'APK 里没有打包识别模块');
 });

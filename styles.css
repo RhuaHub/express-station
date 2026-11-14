@@ -314,6 +314,11 @@ select.input { appearance: none; background-image: linear-gradient(45deg, transp
 /* ---------- photos ---------- */
 .photo-picker { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .photo-preview { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+/* 入库条码识别状态：读到哪个条码、有没有自动填单号、照片怎么命名 */
+.in-ocr { margin-top: 8px; padding: 8px 11px; border-radius: 8px; font-size: 12.5px; background: var(--line-soft); color: var(--sub); word-break: break-all; }
+.in-ocr.ok { background: var(--ok-bg); color: var(--ok); }
+.in-ocr.err { background: var(--danger-bg); color: var(--danger); }
+.in-ocr.busy { background: var(--warn-bg); color: var(--warn); }
 .photo-preview:empty, .proof-preview:empty { display: none; }
 .proof-preview { display: flex; gap: 6px; align-items: center; }
 .thumb { position: relative; width: 74px; height: 74px; border-radius: 9px; overflow: hidden; border: 1px solid var(--line); background: var(--line-soft); flex: none; }
