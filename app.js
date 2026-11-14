@@ -281,7 +281,8 @@
           (p.key === 'pan123'
             ? '照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。注意：123 云盘自 2026-11-04 起新账号/新会员已不含 WebDAV，' +
               '后台看不到「WebDAV 授权管理」就说明这个账号没有该权益，别在这儿耗时间，改用坚果云或本机文件夹。'
-            : '坚果云免费版每月上传 1GB，照片多就把「图片最长边」调到 1200。')
+            : '照片按 <b>入库照片/出库凭证 + 年-月</b> 自动分目录。坚果云免费版就有 WebDAV，每月上传 1GB / 下载 3GB，' +
+              '存出库凭证够用；照片量大就把「图片最长边」调到 1200，或升级套餐。')
         : '');
     var ep = photos.endpoint({
       provider: $('phProvider').value,
@@ -298,7 +299,7 @@
     var c = photos.config();
     $('phMode').value = c.mode;
     $('phDir').value = c.dirName;
-    $('phProvider').value = c.webdav.provider || 'pan123';
+    $('phProvider').value = c.webdav.provider || 'nutstore';
     $('phBase').value = c.webdav.baseUrl;
     $('phProxyBase').value = c.webdav.proxyBase;
     $('phUser').value = c.webdav.user;

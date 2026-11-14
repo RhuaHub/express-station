@@ -18,6 +18,9 @@ Thumbs.db
 .vscode/
 *.swp
 
+# 无头浏览器探针临时页（tools/probe-*.js 生成）
+index-probe.html
+
 # 依赖与构建产物（本项目零依赖，留作后续扩展）
 node_modules/
 dist/

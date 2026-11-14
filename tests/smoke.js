@@ -517,6 +517,7 @@ check('photos.js 可加载且导出完整接口', () => {
     assert.strictEqual(typeof p[k], 'function', '缺少接口 ' + k);
   });
   assert.strictEqual(p.config().mode, 'webdav');
+  assert.strictEqual(p.config().webdav.provider, 'nutstore', '默认云盘服务应为坚果云（免费版就含 WebDAV）');
   assert.strictEqual(p.config().requireProof, true, '出库凭证默认应为必拍');
   assert.strictEqual(p.saveConfig({ requireProof: false }).requireProof, false);
   p.saveConfig({ requireProof: true });
@@ -557,6 +558,9 @@ check('123 云盘：服务预设、地址与代理前缀解析正确', () => {
   // 旧配置（只有 baseUrl）应按自定义处理，不能误判成 123 云盘
   p.saveConfig({ webdav: { provider: 'custom', baseUrl: 'https://dav.jianguoyun.com/dav', proxyBase: '' } });
   assert.strictEqual(p.config().webdav.provider, 'custom');
+  // 连 provider 都没有的空配置，回退到坚果云
+  assert.ok(/\? 'custom' : 'nutstore'/.test(fs.readFileSync(path.join(root, 'photos.js'), 'utf8')),
+    '旧配置回退应为坚果云');
   p.saveConfig({ webdav: { provider: 'nutstore', baseUrl: '', proxyBase: '' } });
 });
 
@@ -677,8 +681,10 @@ check('安卓壳：WebView 关键实现齐全（https 资源域、JS 对话框�
 });
 
 check('安卓壳：APK 已构建且资源路径正确', () => {
-  const apkPath = path.join(root, 'android/dist/express-station-1.0.0.apk');
-  assert.ok(fs.existsSync(apkPath), 'APK 不存在，先运行 android/build-apk.sh');
+  const distDir = path.join(root, 'android/dist');
+  const apks = fs.existsSync(distDir) ? fs.readdirSync(distDir).filter(f => /^express-station-[\d.]+\.apk$/.test(f)) : [];
+  assert.ok(apks.length, 'APK 不存在，先运行 android/build-apk.sh');
+  const apkPath = path.join(distDir, apks.sort().pop());
   const buf = fs.readFileSync(apkPath);
   assert.ok(buf.length > 50000, 'APK 体积异常：' + buf.length);
   const text = buf.toString('latin1');
@@ -709,7 +715,7 @@ check('123 云盘 WebDAV 权益变化有兜底出口', () => {
   ['btnUseNutstore', 'btnUseLocal', 'btnUseBrowser'].forEach(id => {
     assert.ok(new RegExp("\\$\\('" + id + "'\\)\\.onclick").test(app), '未绑定 ' + id);
   });
-  assert.ok(/\|\| 'pan123'/.test(app), '设置页回填默认云盘服务应为 123');
+  assert.ok(/\|\| 'nutstore'/.test(app), '设置页回填默认云盘服务应为坚果云');
 });
 
 console.log('\n全部通过：' + passed + ' 项');
