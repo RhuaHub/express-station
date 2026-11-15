@@ -33,7 +33,7 @@ mkdir -p "$BUILD/gen" "$BUILD/classes" "$BUILD/dex" "$BUILD/assets" "$DIST"
 
 # assets 只放根级文件：aapt2 在 Windows 下会把子目录写成反斜杠，AssetManager 读不到
 echo "==> 同步网页资源"
-for f in index.html styles.css rules.js db.js auth.js media.js app.js manifest.webmanifest sw.js; do
+for f in index.html styles.css rules.js ocr.js db.js auth.js media.js app.js manifest.webmanifest sw.js; do
   cp "$ROOT/$f" "$BUILD/assets/$f"
 done
 mkdir -p "$BUILD/stage/assets/icons"
@@ -49,8 +49,8 @@ echo "==> aapt2 compile / link"
   --java "$(W "$BUILD/gen")" \
   --min-sdk-version 21 \
   --target-sdk-version 34 \
-  --version-code 16 \
-  --version-name 2.0.5 \
+  --version-code 17 \
+  --version-name 2.0.6 \
   "$(W "$BUILD/res.zip")"
 
 echo "==> javac"
@@ -84,7 +84,7 @@ if [ ! -f "$KS" ]; then
     -dname "CN=Station Assistant, OU=Rhua, O=Rhua, L=Beijing, ST=Beijing, C=CN" >/dev/null 2>&1
 fi
 
-APK="$DIST/station-assistant-2.0.5.apk"
+APK="$DIST/station-assistant-2.0.6.apk"
 echo "==> apksigner"
 "$BT/apksigner.bat" sign \
   --ks "$(W "$KS")" --ks-pass pass:station2024 --key-pass pass:station2024 \

@@ -4,6 +4,7 @@
   'use strict';
 
   var R = global.StationRules || (typeof require !== 'undefined' ? require('./rules.js') : null);
+  var OCR = global.StationOcr || (typeof require !== 'undefined' ? require('./ocr.js') : null);
   var DB_NAME = 'station-media-v2', STORE = 'photos';
   var memFallback = {};   /* IndexedDB 不可用时，至少保证当前会话内能看 */
   var dbPromise = null;
@@ -137,7 +138,9 @@
     return Promise.all(jobs).then(function (r) { return r.filter(Boolean).length; });
   }
 
-  /* ---------- 浏览器原生识别（条码 / 文字） ---------- */
+  /* ---------- 识别：浏览器原生（可选）+ 内置离线 OCR（必有） ----------
+     安卓 WebView 基本没有 BarcodeDetector / TextDetector，2.0.6 起由 ocr.js 兜底：
+     照片只在画布里解码，不联网、不上传。任何异常都吞掉，永不 reject。 */
   var engCache = null;
   function engines() {
     /* 部分 WebView 里这些属性本身就会抛 SecurityError，或 getSupportedFormats 不可用；
@@ -149,56 +152,121 @@
     if (BD && typeof BD.getSupportedFormats === 'function') {
       try { formats = BD.getSupportedFormats() || formats; } catch (e2) { }
     }
-    engCache = { barcode: !!BD, text: !!TD, any: !!(BD || TD), formats: formats };
+    engCache = { barcode: !!BD, text: !!TD, any: !!(BD || TD), js: !!OCR,
+      offline: !!OCR, formats: formats };
     return engCache;
   }
   function canvasOf(blob) {
     return new Promise(function (resolve, reject) {
-      var u = URL.createObjectURL(blob), img = new Image();
+      var u, img;
+      try { u = URL.createObjectURL(blob); img = new Image(); }
+      catch (e) { reject(new Error('无法读取照片')); return; }
       img.onload = function () {
-        var scale = Math.min(1, 1800 / Math.max(img.width, img.height));
-        var c = document.createElement('canvas');
-        c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        URL.revokeObjectURL(u); resolve(c);
+        try {
+          var scale = Math.min(1, 1400 / Math.max(img.width, img.height));
+          var c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(img.width * scale));
+          c.height = Math.max(1, Math.round(img.height * scale));
+          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+          URL.revokeObjectURL(u); resolve(c);
+        } catch (e2) { try { URL.revokeObjectURL(u); } catch (e3) { } reject(e2); }
       };
       img.onerror = function () { URL.revokeObjectURL(u); reject(new Error('无法读取照片')); };
-      img.src = u;
+      try { img.src = u; } catch (e4) { reject(e4); }
     });
+  }
+  function pushRes(arr, s) {
+    s = String(s || '');
+    if (!s) return;
+    for (var i = 0; i < arr.length; i++) if (arr[i] === s) return;
+    arr.push(s);
+  }
+  function mergeOCR(res, r) {
+    if (!r) return;
+    var i;
+    for (i = 0; i < (r.barcodes || []).length; i++) pushRes(res.barcodes, r.barcodes[i]);
+    for (i = 0; i < (r.texts || []).length; i++) pushRes(res.texts, r.texts[i]);
+    if (r.format) res.format = r.format;
+    if (r.confidence && r.confidence > res.confidence) res.confidence = r.confidence;
+    if (r.barcodes && r.barcodes.length) res.offlineHit = true;
+    if (r.engine) res.offlineEngine = r.engine;
+  }
+  function finish(res, nativeHit) {
+    if (res.barcodes.length || res.texts.length) {
+      if (nativeHit && res.offlineHit) res.engine = '原生 + 离线 OCR';
+      else if (nativeHit) res.engine = '浏览器原生识别';
+      else res.engine = res.offlineEngine || '离线 OCR';
+      res.error = '';
+      if (!res.confidence) res.confidence = nativeHit ? 0.9 : 0.8;
+    } else {
+      res.error = res.error || '没读到条码或数字，请对准面单再拍一次，或直接手输';
+    }
+    return res;
   }
   function recognize(blob) {
     var e = engines();
-    var res = { supported: e.any, barcode: e.barcode, text: e.text, barcodes: [], texts: [], error: '' };
-    if (!e.any) {
-      res.error = '当前浏览器不支持本机识别，可直接手输单号 / 货号';
+    var res = { supported: !!(OCR || e.any), barcode: e.barcode, text: e.text, js: !!OCR,
+      barcodes: [], texts: [], engine: '离线 OCR', confidence: 0, format: '', error: '' };
+    if (!OCR && !e.any) {
+      res.error = '识别引擎未加载，请刷新页面；也可直接手输单号 / 货号';
       return Promise.resolve(res);
     }
-    return canvasOf(blob).then(function (canvas) {
-      var jobs = [];
+    function nativeOf(canvas) {
+      if (!e.any || !canvas) return Promise.resolve(false);
+      var jobs = [], hit = false;
       try {
         if (e.barcode) {
-          var bd;
+          var bd = null;
           try {
             bd = new global.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'code_93', 'itf'] });
           } catch (err) { bd = null; }
           if (bd && typeof bd.detect === 'function') {
             jobs.push(Promise.resolve(bd.detect(canvas)).then(function (list) {
-              (list || []).forEach(function (b) { res.barcodes.push(String(b.rawValue || '')); });
+              for (var i = 0; i < (list || []).length; i++) {
+                pushRes(res.barcodes, (list[i] && list[i].rawValue) || ''); hit = true;
+              }
             }).catch(function () { }));
           }
         }
         if (e.text) {
-          var td = new global.TextDetector();
-          jobs.push(Promise.resolve(td.detect(canvas)).then(function (list) {
-            (list || []).forEach(function (t) { res.texts.push(String(t.rawValue || '')); });
-          }).catch(function () { }));
+          try {
+            var td = new global.TextDetector();
+            jobs.push(Promise.resolve(td.detect(canvas)).then(function (list) {
+              for (var i = 0; i < (list || []).length; i++) {
+                pushRes(res.texts, (list[i] && list[i].rawValue) || ''); hit = true;
+              }
+            }).catch(function () { }));
+          } catch (err2) { }
         }
-      } catch (err) { res.error = '识别引擎启动失败，可直接手输单号 / 货号'; }
-      return Promise.all(jobs).then(function () {
-        if (!res.barcodes.length && !res.texts.length) res.error = '没读到条码或数字，请对准面单再拍一次，或直接手输';
-        return res;
+      } catch (err3) { }
+      return Promise.all(jobs).then(function () { return hit; });
+    }
+    function offlineOf(canvas) {
+      if (!OCR) return Promise.resolve();
+      try {
+        /* scanCanvas 是同步的，内部自带 1.5s 预算上限，不会把老 WebView 卡死 */
+        mergeOCR(res, OCR.scanCanvas(canvas, { budget: 1500, maxSide: 1400 }));
+      } catch (err) {
+        res.error = '离线识别未完成，可直接手输单号 / 货号';
+      }
+      return Promise.resolve();
+    }
+    return canvasOf(blob).then(function (canvas) {
+      return nativeOf(canvas).then(function (nativeHit) {
+        return offlineOf(canvas).then(function () { return finish(res, nativeHit); });
       });
-    }).catch(function (err) { res.error = err.message || '识别失败'; return res; });
+    }).catch(function (err) {
+      /* 画布解码失败时再让 OCR 自己解一次 Blob，仍然不抛 */
+      if (!OCR || !OCR.scan) { res.error = (err && err.message) || '识别失败'; return finish(res, false); }
+      return Promise.resolve(OCR.scan(blob, { budget: 1500 })).then(function (r) {
+        mergeOCR(res, r);
+        if (r && r.error && !res.barcodes.length && !res.texts.length) res.error = r.error;
+        return finish(res, false);
+      }).catch(function () {
+        res.error = '照片识别失败，可直接手输单号 / 货号';
+        return finish(res, false);
+      });
+    });
   }
   function barcodeOf(d) { return R.barcodeOf(d); }
 

@@ -1,12 +1,13 @@
 /* 驿站助手（重建版）· PWA 壳缓存
    缓存优先只用于带版本号的本地静态资源；版本号一变，旧缓存整体失效。 */
-var VERSION = 'station-rebuild-v6';
-var BUILD = '2.0.5';
+var VERSION = 'station-rebuild-v7';
+var BUILD = '2.0.6';
 var SHELL = [
   './',
   './index.html',
   './styles.css?v=' + BUILD,
   './rules.js?v=' + BUILD,
+  './ocr.js?v=' + BUILD,
   './db.js?v=' + BUILD,
   './auth.js?v=' + BUILD,
   './media.js?v=' + BUILD,

@@ -59,7 +59,8 @@ styles.css            浅色暖金主题、移动端适配、打印样式
 rules.js              纯函数规则层：公司识别、编号货号、批量解析、查询打分、时间范围、统计、Code39 条码、标签
 db.js                 数据层：localStorage 持久化（禁用时降级内存）、包裹 / 客户 / 公司 / 流水 / 设置、备份恢复
 auth.js               账号：SHA-256 加盐迭代、主子账号、12 项权限、锁屏与登录限速
-media.js              拍照、本机条码 / 文字识别、IndexedDB 照片库、声音振动语音
+ocr.js                离线 OCR 引擎：图像二值化 / 去噪、Code128 / EAN-13 / UPC-A / ITF / Code39 解码、印刷数字模板识别
+media.js              拍照、原生 + 离线双通道识别、IndexedDB 照片库、声音振动语音
 app.js                UI 控制器：14 个视图渲染、全部交互、打印、备份、自检
 sw.js                 PWA 壳缓存（版本号一变旧缓存整体失效）
 manifest.webmanifest  PWA 清单
@@ -82,7 +83,7 @@ node tools/serve.js 8765      # 打开 http://127.0.0.1:8765/index.html
 
 ### 安卓
 ```bash
-bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.5.apk
+bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.6.apk
 ```
 需要 JDK 17 与 Android SDK build-tools / platform。APK 用 `https://appassets.androidplatform.net/` 映射到 assets，保证摄像头、localStorage、IndexedDB 都运行在安全上下文里；首次使用需允许相机权限。
 
@@ -94,9 +95,9 @@ bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.5.apk
 2. **换设备 / 换浏览器**：数据按站点来源隔离，不会自动同步。用「设置 → 数据备份」导出 JSON（默认含照片），在新设备登录页「从备份导入」或设置里「从备份恢复」。旧版 1.x 的备份也能导入（做字段映射）。
 3. **编号 / 货号**：默认连续编号 + `货架号+编号`（如 `A01010023`）。设置里可切「每日重置 / 按货架分组 / 手机尾号」和五种货号模式，或写 `{slot}{serial}{date}{day}{short}{tail}{zone}` 自定义模板。货号结尾必须是数字。
 4. **公司识别**：`圆通=^(YT|8\d{11,})` 这类正则可在「设置 → 快递公司管理」编辑，从上往下匹配，手动选择优先。
-5. **拍照识别**：Chrome / 多数安卓 WebView 支持本机条码识别；iOS Safari 等不支持时页面会明示，照片仍按时间 / 识别串命名，手输单号照常出入库，不会假装识别成功。
+5. **拍照识别**：内置离线 OCR，不依赖 `BarcodeDetector`（安卓 WebView 基本没有）。对准面单条码拍照即可自动填运单号 / 匹配在库件并按码命名照片；没读到时照片按时间命名，手输单号照常出入库，不会假装识别成功。低置信度结果会提示核对。
 6. **权限**：站长全权；操作员默认可用业务页但不能改设置与账号；只读角色仅查件 / 台账 / 统计 / 打印 / 流水。可逐项调整。
-7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.5`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
+7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.6`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
 
 ---
 
@@ -217,3 +218,24 @@ node --check app.js           # 语法检查
 **排查顺序建议**：覆盖安装后先看登录门版本号是不是 `2.0.5 / build 16`；若不是，说明装到的仍是旧包。若版本正确仍异常，取「下载/快递驿站/驿站助手-运行日志.txt」发回，最后一条 `STEP` 就是崩溃前停在的动作。
 
 **版本**：2.0.5 · SW `station-rebuild-v6` · 安卓 versionCode 16。
+
+---
+
+## 十一、2.0.6 · 离线 OCR 识别（不依赖浏览器原生能力）
+
+**问题**：2.0.5 及以前的「拍照识别」只调用 `BarcodeDetector` / `TextDetector`。这两个 API 在绝大多数安卓 WebView 上根本不存在， iOS Safari 也没有，实际表现是「永远提示未支持识别，只能手输」——功能名义存在、实际不可用。
+
+**方案**：新增 `ocr.js`，纯 JS、零依赖、不联网、不上传照片。照片在 canvas 里解码后即丢弃，只把识别出的字符串交给业务层。
+
+- 预处理：最长边 1400 降采样 → 灰度 → 局部均值自适应二值化 → 去孤立黑点 → 三行多数投票 → 游程去毛刺；
+- 条码解码：**Code128（含 Code C 数字压缩）、EAN-13 / UPC-A、ITF（交插二五码）、Code39**，编码表按 ZXing 逐项核对，Code128 / EAN 带校验位验证，无校验码制需多票才认，避免噪点误报；
+- 辅助通道：**印刷数字模板 OCR**（连通域分割 → 等比归一化 → 30 个字形变体匹配），用于货号 / 取件码这类大号数字，带置信度；条码竖线、超长串、单调重复串都会被过滤；
+- 水平 + 垂直扫描线，应对面单横拍 / 条码竖放；多行投票给置信度；
+- 识别链路：原生引擎（若存在）优先 → 无论原生是否成功都跑离线引擎兜底 → 结果去重合并，返回 `engine` / `confidence` / `format`；
+- 稳定性：全程 1.5s 预算上限、`Date.now()` 检查点、ES5 语法、所有异常吞掉且 `recognize()` 永不 reject，老 WebView 不会因识别卡死。
+
+**界面**：入库 / 出库识别状态会显示实际引擎（如「离线条码 · Code128」）与置信度，低于 75% 时提示「请核对」；识别结果仍可直接手输覆盖。帮助页的功能对照表已补上 OCR 条目，排除项里的「云端能力」明确为「不接入云端 OCR 服务」。
+
+**验证**：`tests/smoke.js` 覆盖四种码制的编码→解码往返、合成条码图像端到端识别、噪点鲁棒性、数字 OCR、误报过滤、版本一致性；CDP 真实浏览器加载页面验证 `StationOcr` 与 `Media.recognize` 链路。
+
+**版本**：2.0.6 · SW `station-rebuild-v7` · 安卓 versionCode 17 · `station-assistant-2.0.6.apk`。

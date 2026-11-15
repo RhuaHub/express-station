@@ -67,7 +67,7 @@
     var nativeLog = '';
     try { nativeLog = window.StationNative.crashLog() || ''; } catch (e) { }
     var info = {
-      app: 'station-assistant', version: '2.0.5', build: 16,
+      app: 'station-assistant', version: '2.0.6', build: 17,
       ua: String(navigator.userAgent || ''), time: new Date().toISOString(),
       bootErrors: window.StationBoot ? window.StationBoot.errors() : [],
       storageOk: store.storageOk(), safeMode: !!store.settings().safeMode,
@@ -425,7 +425,7 @@
       return Media.recognize(f.blob).then(function (d) {
         var code = R.barcodeOf(d);
         return { blob: f.blob, type: f.type, name: R.inboundPhotoName(code), code: code,
-          engine: d.supported ? '本机识别' : '未支持识别' };
+          engine: d.engine || '离线 OCR', confidence: d.confidence || 0 };
       });
     });
     S.inOcrPending = Promise.all(jobs).then(function (out) {
@@ -434,12 +434,16 @@
         var hit = out.filter(function (x) { return x.code; })[0];
         if (hit) { $('inNo').value = hit.code; syncCarrier(); }
       }
-      var ok = out.filter(function (x) { return x.code; }).length;
+      var hits = out.filter(function (x) { return x.code; });
+      var ok = hits.length;
+      var eng = out.length ? (out[0].engine || '离线 OCR') : '离线 OCR';
+      var low = out.length && out[0].confidence && out[0].confidence < 0.75;
       var st = $('inOcrState'); st.hidden = false;
       st.className = 'ocr-state ' + (ok ? 'ok' : 'err');
       st.textContent = out.length
-        ? (ok ? '识别到条码 ' + out.filter(function (x) { return x.code; }).map(function (x) { return x.code; }).join('、') + '，照片已按条码命名'
-          : '未识别到条码，照片按时间命名，运单号请手输或扫码枪录入')
+        ? (ok ? '识别到条码 ' + hits.map(function (x) { return x.code; }).join('、') + '（' + eng + '），照片已按条码命名'
+          : '未识别到条码（' + eng + '），照片按时间命名，运单号请手输或扫码枪录入')
+          + (low ? ' · 把握较低，请核对运单号' : '')
         : '';
       renderInbound();
       return out;
@@ -522,7 +526,7 @@
     var set = store.settings();
     /* 切视图时不探测识别引擎：老 WebView 上 BarcodeDetector / getSupportedFormats
        属于原生能力探测，可能在渲染进程里直接抛错。只在真正点拍照时探测。 */
-    $('outEngine').textContent = '本机识别：点「拍照取件」后自动识别货号 / 运单号；不支持时手输货号即可出库';
+    $('outEngine').textContent = '离线 OCR：拍照后本机解码 Code128 / EAN / ITF / Code39 条码与印刷数字，不联网；识别不准可直接手输货号出库';
     var mode = $('outMode').value || set.queryMode || 'fuzzy';
     $('outMode').value = mode;
     $('outReasonBox').hidden = S.outType !== 'refund';
@@ -625,7 +629,11 @@
         var code = R.barcodeOf(d);
         var st = $('outOcrState'); st.hidden = false;
         st.className = 'ocr-state ' + (code ? 'busy' : 'err');
-        st.textContent = code ? '识别串：' + code + ' · 正在匹配在库包裹…' : '没读到条码，请手输货号 / 单号，照片仍会按货号自动命名';
+        var eng = d.engine || '离线 OCR';
+        var low = d.confidence && d.confidence < 0.75;
+        st.textContent = (code ? '识别串：' + code + '（' + eng + '）· 正在匹配在库包裹…'
+          : '没读到条码（' + eng + '），请手输货号 / 单号，照片仍会按货号自动命名')
+          + (low ? ' · 把握较低，请核对' : '');
         var hits = code ? store.findByCode(code) : [];
         if (hits.length === 1) {
           var p = hits[0];
@@ -923,6 +931,7 @@
   }
   var HELP_FEATURES = [
     ['入库', '手动 / 极速 / 批量 / 扫码枪连录，条码识别按码命名照片，自动识别公司、分配货架与货号'],
+    ['OCR 识别', '内置离线引擎：Code128 / EAN-13 / UPC-A / ITF / Code39 条码 + 印刷数字；拍照自动填单号、按码命名照片，照片不上传'],
     ['编号货号', '连续 / 按日 / 按货架 / 尾号四种编号模式，五种货号模式 + 自定义模板，批量改号'],
     ['出库', '取件 / 货号 / 电话 / 扫描 / 退件五种出库，合并出库、出库拍照、出库备注、撤销出库'],
     ['拍照取件', '进出库页自动开镜头，拍面单自动识别并匹配在库件，连续取件自动开下一张'],
@@ -944,7 +953,7 @@
     ['微信通知', '微信取件通知、公众号绑定、码上取件、永久二维码海报'],
     ['服务端合作', '驿站代收开通 / 实名认证、物流数据上行到快递公司、延迟上传真实生效'],
     ['商业与硬件', '充值 / 账单 / 资费、商城、蓝牙打印机厂商 SDK、在线客服与活动奖励'],
-    ['云端能力', '云端 OCR / 在线语音识别引擎（本机用浏览器自带接口，不联网）']
+    ['云端能力', '云端 OCR 接口 / 在线语音识别服务（本机改用内置离线识别引擎与浏览器接口，不联网、不上传照片）']
   ];
   function renderHelp() {
     $('helpFeatures').innerHTML = HELP_FEATURES.map(function (x) { return '<div><b>' + esc(x[0]) + '</b><br>' + esc(x[1]) + '</div>'; }).join('');
@@ -1210,8 +1219,8 @@
           S.inFiles.push(f);
           $('inOcrState').hidden = false;
           $('inOcrState').className = 'ocr-state ' + (code ? 'ok' : 'err');
-          $('inOcrState').textContent = code ? '识别到条码 ' + code + '，已填入运单号，照片按条码命名'
-            : '没读到条码，照片按时间命名，请手输运单号';
+          $('inOcrState').textContent = code ? '识别到条码 ' + code + '（' + (d.engine || '离线 OCR') + '），已填入运单号，照片按条码命名'
+            : '没读到条码（' + (d.engine || '离线 OCR') + '），照片按时间命名，请手输运单号';
           renderInbound();
           toast(code ? '已识别 ' + code : '未识别到条码', code ? 'ok' : 'err');
         });
@@ -1670,7 +1679,7 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.5',
+    rules: R, media: Media, ocr: window.StationOcr, version: '2.0.6',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

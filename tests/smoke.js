@@ -14,6 +14,7 @@ const R = require('../rules.js');
 const DB = require('../db.js');
 const Auth = require('../auth.js');
 const Media = require('../media.js');
+const OCR = require('../ocr.js');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -27,7 +28,7 @@ function isoAt(day, h) { return new Date(day + 'T' + (h || '10:00') + ':00').toI
 
 /* ================= 1. 文件与版本一致性 ================= */
 check('重建版文件齐全', () => {
-  ['index.html', 'styles.css', 'rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js',
+  ['index.html', 'styles.css', 'rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js',
     'manifest.webmanifest', 'README.md', 'tests/smoke.js', 'android/build-apk.sh'].forEach(f => {
       assert.ok(exists(f), '缺文件 ' + f);
     });
@@ -35,38 +36,39 @@ check('重建版文件齐全', () => {
     assert.ok(!exists(f), '旧版文件未作废：' + f);
   });
 });
-check('index.html 脚本版本号统一 2.0.5', () => {
+check('index.html 脚本版本号统一 2.0.6', () => {
   const h = read('index.html');
-  ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css', 'manifest.webmanifest'].forEach(f => {
-    assert.ok(h.includes(f + '?v=2.0.5'), '没有带版本号引用 ' + f);
+  ['rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css', 'manifest.webmanifest'].forEach(f => {
+    assert.ok(h.includes(f + '?v=2.0.6'), '没有带版本号引用 ' + f);
   });
+  assert.ok(h.indexOf('ocr.js') < h.indexOf('media.js'), 'ocr.js 必须在 media.js 之前加载');
   assert.ok(!/\?v=1\./.test(h), '还残留旧版版本号');
 });
 check('SW 缓存清单与 BUILD 同步', () => {
   const sw = read('sw.js');
-  assert.ok(/BUILD\s*=\s*'2\.0\.5'/.test(sw));
-  assert.ok(/station-rebuild-v6/.test(sw));
-  ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css'].forEach(f => {
+  assert.ok(/BUILD\s*=\s*'2\.0\.6'/.test(sw));
+  assert.ok(/station-rebuild-v7/.test(sw));
+  ['rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css'].forEach(f => {
     assert.ok(sw.includes("'./" + f + "?v=' + BUILD"), 'SW 漏缓存 ' + f);
   });
 });
 check('安卓资源清单 / 版本号 / APK 名', () => {
   const sh = read('android/build-apk.sh');
   const listed = (sh.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
-  ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js'].forEach(f => {
+  ['rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js'].forEach(f => {
     assert.ok(listed.includes(f), '打包漏了 ' + f);
   });
-  assert.ok(/--version-name 2\.0\.5/.test(sh) && /--version-code 16/.test(sh));
-  assert.ok(/station-assistant-2\.0\.5\.apk/.test(sh));
+  assert.ok(/--version-name 2\.0\.6/.test(sh) && /--version-code 17/.test(sh));
+  assert.ok(/station-assistant-2\.0\.6\.apk/.test(sh));
   const mf = read('android/app/src/main/AndroidManifest.xml');
-  assert.ok(/versionCode="16"/.test(mf) && /versionName="2\.0\.5"/.test(mf));
+  assert.ok(/versionCode="17"/.test(mf) && /versionName="2\.0\.6"/.test(mf));
   assert.ok(!/SEND_SMS|CALL_PHONE|READ_CONTACTS/.test(mf), '安卓清单出现通知类权限');
 });
 check('安卓 APK 已构建且含全部新脚本', () => {
-  const apk = path.join(root, 'android/dist/station-assistant-2.0.5.apk');
-  assert.ok(fs.existsSync(apk), '2.0.5 APK 未构建');
+  const apk = path.join(root, 'android/dist/station-assistant-2.0.6.apk');
+  assert.ok(fs.existsSync(apk), '2.0.6 APK 未构建');
   const bin = fs.readFileSync(apk).toString('latin1');
-  ['assets/app.js', 'assets/rules.js', 'assets/db.js', 'assets/auth.js', 'assets/media.js'].forEach(f => {
+  ['assets/app.js', 'assets/rules.js', 'assets/ocr.js', 'assets/db.js', 'assets/auth.js', 'assets/media.js'].forEach(f => {
     assert.ok(bin.includes(f), 'APK 缺少 ' + f);
   });
   assert.ok(!bin.includes('assets/store.js'), 'APK 里还带着旧版文件');
@@ -142,7 +144,7 @@ check('登录不再单帧重绘全部视图，原生接管渲染进程崩溃', (
 
 /* ============ 1.4 点出库就退出：老 WebView 兼容 + 相机链路（2.0.5） ============ */
 check('出库视图不再触发启动崩溃或自动开镜头', () => {
-  const frontend = ['index.html', 'app.js', 'rules.js', 'db.js', 'auth.js', 'media.js'];
+  const frontend = ['index.html', 'app.js', 'rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js'];
   frontend.forEach(f => {
     const t = read(f);
     assert.ok(!/querySelectorAll\([^)]*\)\.forEach/.test(t),
@@ -179,7 +181,7 @@ check('出库视图不再触发启动崩溃或自动开镜头', () => {
 /* ============ 1.4 2.0.5 缓存隔离 / 出库零渲染 / 步骤日志 ============ */
 check('点出库就死：缓存隔离、零渲染、步骤日志', () => {
   const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
-  assert.ok(java.includes('index.html?v=2.0.5'), '入口 URL 没带版本号，可能命中旧主文档缓存');
+  assert.ok(java.includes('index.html?v=2.0.6'), '入口 URL 没带版本号，可能命中旧主文档缓存');
   assert.ok(java.includes('web.clearCache(true)'), '启动没有清资源缓存');
   assert.ok(java.includes('WebSettings.LOAD_NO_CACHE'), '没有关闭磁盘缓存');
   assert.ok(java.includes('no-store, no-cache, must-revalidate'), 'assets 响应仍允许缓存');
@@ -200,14 +202,14 @@ check('点出库就死：缓存隔离、零渲染、步骤日志', () => {
 
   const h = read('index.html');
   assert.ok(h.includes('no-cache, no-store, must-revalidate'), '页面缺少 no-store meta');
-  assert.ok(h.includes('id="gateVersion"') && h.includes('build 16'), '登录门没有版本自证');
+  assert.ok(h.includes('id="gateVersion"') && h.includes('build 17'), '登录门没有版本自证');
   assert.ok(h.includes('id="gateSafeMode"') && h.includes('id="btnExportLog"'), '缺少兼容模式 / 导出日志入口');
   assert.ok(read('README.md').includes('## 十、2.0.5'), 'README 没有 2.0.5 修复说明');
 });
 
 /* ================= 2. 排除项：源码里没有通知能力 ================= */
 check('业务代码没有短信 / 电话 / 群呼能力', () => {
-  const files = ['index.html', 'app.js', 'rules.js', 'db.js', 'auth.js', 'media.js',
+  const files = ['index.html', 'app.js', 'rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js',
     'sw.js', 'android/app/src/main/java/com/rhua/expressstation/MainActivity.java'];
   const bad = /tel:|sms:|SmsManager|ACTION_CALL|ACTION_SENDTO|sendSms\(|makePhoneCall|groupCall|CALL_PHONE|SEND_SMS|拨打电话|群发短信接口|语音通知接口/;
   files.forEach(f => {
@@ -621,7 +623,7 @@ check('自检面板信息可用', () => {
   a.setup({ name: 'boss', password: 'abc123456' });
   const d = a.diag();
   assert.strictEqual(d.accounts, 1);
-  assert.strictEqual(d.build, '2.0.5');
+  assert.strictEqual(d.build, '2.0.6');
   assert.ok('storageOk' in d && 'role' in d);
 });
 
@@ -666,18 +668,132 @@ check('媒体模块：识别降级、反馈与照片库接口齐全', () => {
 });
 check('README 写明功能对照、排除项与数据边界', () => {
   const md = read('README.md');
-  ['2.0.5', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39'].forEach(k => {
+  ['2.0.6', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39', 'OCR'].forEach(k => {
     assert.ok(md.includes(k), 'README 漏了 ' + k);
   });
 });
 check('仓库无敏感凭据', () => {
-  const files = ['index.html', 'app.js', 'rules.js', 'db.js', 'auth.js', 'media.js', 'sw.js', 'README.md'];
+  const files = ['index.html', 'app.js', 'rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js', 'sw.js', 'README.md'];
   const bad = /ghp_[A-Za-z0-9]{20}|"access_token"\s*:\s*"[A-Za-z0-9]{20}|refresh_token\s*[:=]\s*"[A-Za-z0-9]{20}|-----BEGIN [A-Z ]+PRIVATE KEY-----/;
   files.forEach(f => assert.ok(!bad.test(read(f)), f + ' 含疑似凭据'));
 });
 
+/* ================= 7. 离线 OCR / 条码识别（2.0.6） ================= */
+function syntheticBarcode(mods, scale, h) {
+  const pad = 24, w = mods.length * scale + pad * 2;
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const k = i * 4; data[k] = 246; data[k + 1] = 246; data[k + 2] = 246; data[k + 3] = 255;
+  }
+  for (let y = 16; y < h - 16; y++) {
+    for (let x = pad; x < pad + mods.length * scale; x++) {
+      if (!mods[Math.floor((x - pad) / scale)]) continue;
+      const k = (y * w + x) * 4; data[k] = 8; data[k + 1] = 8; data[k + 2] = 8;
+    }
+  }
+  return { width: w, height: h, data: data };
+}
+function syntheticDigits(str) {
+  const t = OCR.templates(), glyph = [];
+  for (const ch of str) {
+    for (let i = 0; i < t.length; i++) {
+      if (String(t[i].digit) === ch) { glyph.push(t[i].bits.slice()); break; }
+    }
+  }
+  const GW = 10, GH = 14, sc = 2, cw = GW * sc, gap = 6;
+  const w = glyph.length * (cw + gap) + 20, h = GH * sc + 20;
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const k = i * 4; data[k] = 246; data[k + 1] = 246; data[k + 2] = 246; data[k + 3] = 255;
+  }
+  glyph.forEach((b, gi) => {
+    for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+      if (!b[y * GW + x]) continue;
+      for (let dy = 0; dy < sc; dy++) for (let dx = 0; dx < sc; dx++) {
+        const px = 10 + gi * (cw + gap) + x * sc + dx, py = 10 + y * sc + dy;
+        const k = (py * w + px) * 4; data[k] = 8; data[k + 1] = 8; data[k + 2] = 8;
+      }
+    }
+  });
+  return { width: w, height: h, data: data };
+}
+check('OCR：四种码制编码 → 解码往返', () => {
+  ['123456789012', 'YT9000012345', '780012345678', 'SF1234567890'].forEach(t => {
+    assert.strictEqual(OCR.decode.code128(OCR.modulesToRuns(OCR.encodeCode128(t))), t, 'Code128 ' + t);
+  });
+  ['A12345', 'YT9000'].forEach(t => {
+    assert.strictEqual(OCR.decode.code39(OCR.modulesToRuns(OCR.encodeCode39(t))), t, 'Code39 ' + t);
+  });
+  assert.strictEqual(OCR.decode.ean(OCR.modulesToRuns(OCR.encodeEAN13('6901234567892'))), '6901234567892');
+  ['12345670', '98765432'].forEach(t => {
+    assert.strictEqual(OCR.decode.itf(OCR.modulesToRuns(OCR.encodeITF(t))), t, 'ITF ' + t);
+  });
+});
+check('OCR：合成条码照片端到端识别（含噪点）', () => {
+  const cases = [
+    ['Code128', OCR.encodeCode128('YT9000012345'), 'YT9000012345'],
+    ['Code39', OCR.encodeCode39('A12345'), 'A12345'],
+    ['EAN13', OCR.encodeEAN13('6901234567892'), '6901234567892'],
+    ['ITF', OCR.encodeITF('12345670'), '12345670']
+  ];
+  cases.forEach(([name, mods, want]) => {
+    const r = OCR.scanCanvas(syntheticBarcode(mods, 3, 90));
+    assert.ok(r.barcodes.indexOf(want) >= 0, name + ' 未识别：' + JSON.stringify(r.barcodes));
+    assert.strictEqual(r.supported, true);
+    assert.ok(r.engine.indexOf('离线条码') >= 0, '引擎标注不对：' + r.engine);
+    assert.ok(r.confidence > 0.8);
+  });
+  /* 确定性伪随机噪点，模拟照片颗粒 */
+  const im = syntheticBarcode(OCR.encodeCode128('780012345678'), 3, 90);
+  let seed = 42;
+  for (let i = 0; i < 600; i++) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const x = seed % im.width;
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const y = seed % im.height;
+    const k = (y * im.width + x) * 4;
+    im.data[k] = 200; im.data[k + 1] = 200; im.data[k + 2] = 200;
+  }
+  const noisy = OCR.scanCanvas(im);
+  assert.ok(noisy.barcodes.indexOf('780012345678') >= 0, '带噪点识别失败：' + JSON.stringify(noisy.barcodes));
+});
+check('OCR：印刷数字识别与误报过滤', () => {
+  ['1234', '902381', '6688', '135790'].forEach(s => {
+    const r = OCR.scanCanvas(syntheticDigits(s));
+    assert.ok(r.texts.indexOf(s) >= 0, '数字 ' + s + ' 未识别：' + JSON.stringify(r.texts));
+  });
+  assert.strictEqual(OCR.junkDigitString('111111111111'), true, '条码竖线误报没过滤');
+  assert.strictEqual(OCR.junkDigitString('123'), true, '过短串没过滤');
+  assert.strictEqual(OCR.junkDigitString('902381'), false);
+  const r = OCR.scanCanvas(syntheticBarcode(OCR.encodeCode128('YT9000012345'), 3, 90));
+  assert.ok(!r.texts.some(t => t.length > 20), '条码被误读成超长数字串');
+});
+check('识别链路：原生 + 离线双通道，永不 reject', () => {
+  const m = read('media.js');
+  assert.ok(m.includes("require('./ocr.js')"), 'media.js 没有加载离线引擎');
+  assert.ok(m.includes('OCR.scanCanvas(') && m.includes('function nativeOf('), '缺少双通道');
+  assert.ok(m.includes('budget: 1500'), '离线识别没有耗时上限');
+  assert.ok(m.includes('function finish('), '缺少结果收口');
+  assert.ok(!m.includes('当前浏览器不支持本机识别'), '仍在无原生 API 时直接放弃识别');
+  const e = Media.engines();
+  assert.strictEqual(e.offline, true, '离线引擎没有标记为可用');
+  const app = read('app.js');
+  assert.ok(app.includes('d.engine') && app.includes('d.confidence'), '界面没有显示引擎 / 置信度');
+  assert.ok(app.includes('ocr: window.StationOcr'), '自检没有暴露 OCR 引擎');
+  assert.ok(app.includes('离线 OCR：拍照后本机解码'), '出库页没有说明离线识别');
+});
+check('OCR：不联网、不上传，且兼容老 WebView', () => {
+  const src = read('ocr.js');
+  assert.ok(!/fetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon|upload/.test(src), 'OCR 出现联网 / 上传调用');
+  assert.ok(!/\bfetch\b|\.closest\(|\.classList\.|\.findIndex\(|querySelectorAll\([^)]*\)\.forEach/.test(src));
+  assert.ok(!/\b(let|const|class)\s/.test(src), 'ocr.js 必须保持 ES5 语法');
+  assert.ok(src.includes('Date.now() > deadline'), '缺少耗时截止检查');
+  assert.ok(src.includes('function despeckle(') && src.includes('function denoiseRuns('), '缺少去噪');
+  assert.ok(read('README.md').includes('## 十一、2.0.6'), 'README 没有 OCR 章节');
+});
+
 /* ================= 结果 ================= */
-console.log('\n驿站助手 2.0.5 · 回归测试');
+console.log('\n驿站助手 2.0.6 · 回归测试');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
 if (failures.length) {
   console.log('\n失败明细：');
