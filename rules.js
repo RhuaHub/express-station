@@ -4,7 +4,7 @@
   'use strict';
 
   var api = {};
-  var VERSION = '2.0.4';
+  var VERSION = '2.0.5';
   api.VERSION = VERSION;
 
   function str(v) { return v === null || v === undefined ? '' : String(v); }
@@ -127,7 +127,9 @@
     labelFields: ['station', 'goods', 'slot', 'recipient', 'tail', 'carrier', 'tracking', 'barcode'],
     labelWidth: 80, labelHeight: 50,
     delayUpload: 0, syncEnabled: false,
-    autoCapture: false, idleMinutes: 15
+    autoCapture: false, idleMinutes: 15,
+    /* 老设备兼容模式：延迟渲染、列表减半、跳过语音播报与振动 */
+    safeMode: false
   };
 
   /* ctx: {seq, slot, tail, short, date, template, width, mode} */

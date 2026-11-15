@@ -64,7 +64,10 @@ import java.util.Map;
 public class MainActivity extends Activity {
 
     private static final String HOST = "appassets.androidplatform.net";
-    private static final String START_URL = "https://" + HOST + "/index.html";
+    /* 主文档也带版本号：老 WebView 会缓存 shouldInterceptRequest 的响应，
+       不带版本号时用户覆盖安装后仍可能拿到上一版 index.html（旧 JS 引用），
+       表现正是「改了好几版，点出库还是死」。 */
+    private static final String START_URL = "https://" + HOST + "/index.html?v=2.0.5";
     private static final String TAG = "StationFatal";
     private static final int REQ_FILE = 2001;
     private static final int REQ_CAMERA_PERM = 2002;
@@ -72,6 +75,8 @@ public class MainActivity extends Activity {
     /** attachBaseContext 比 onCreate 更早，供静态崩溃处理器写日志用 */
     private static volatile Context APP_CONTEXT = null;
     private static volatile String LAST_FATAL = null;
+    /** 页面每一步都同步过来；崩溃时诊断屏直接显示「最后停在哪个动作」 */
+    private static volatile String LAST_STEP = "";
 
     static {
         /* 尽可能早地安装：类加载发生在 Activity 实例化时，早于主题解析与 onCreate */
@@ -183,6 +188,52 @@ public class MainActivity extends Activity {
                 os.close();
             }
         } catch (Throwable ignored) { }
+        /* 关键步骤 / 致命异常立刻镜像一份到公共「下载/快递驿站」：
+           Android 11+ 用户进不去 Android/data，私有日志等于拿不到。 */
+        if (line != null && (line.startsWith("STEP ") || line.startsWith("FATAL")
+                || line.startsWith("JS "))) {
+            mirrorPublicLog();
+        }
+    }
+
+    /** 固定文件名覆盖式写入，避免每次生成一堆 (1)(2) 副本 */
+    private void mirrorPublicLog() {
+        final String content = readCrashLog();
+        if (content == null || content.isEmpty()) return;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    final String name = "驿站助手-运行日志.txt";
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        try {
+                            getContentResolver().delete(MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                    MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                                    new String[]{name});
+                        } catch (Throwable ignored) { }
+                        ContentValues cv = new ContentValues();
+                        cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                        cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                        cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                                Environment.DIRECTORY_DOWNLOADS + "/快递驿站");
+                        Uri uri = getContentResolver()
+                                .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                        if (uri == null) return;
+                        OutputStream os = getContentResolver().openOutputStream(uri);
+                        if (os == null) return;
+                        os.write(content.getBytes("UTF-8"));
+                        os.close();
+                    } else {
+                        File dir = new File(
+                                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                                "快递驿站");
+                        if (!dir.exists() && !dir.mkdirs()) return;
+                        FileOutputStream os = new FileOutputStream(new File(dir, name));
+                        os.write(content.getBytes("UTF-8"));
+                        os.close();
+                    }
+                } catch (Throwable ignored) { }
+            }
+        }).start();
     }
 
     /** 崩溃时额外写一份到「下载/快递驿站」，用户用任意文件管理器都能拿到 */
@@ -267,7 +318,8 @@ public class MainActivity extends Activity {
     private void showFatal(final String detail, String title) {
         if (fatalShown) return;
         fatalShown = true;
-        final String info = "版本 2.0.4 · " + Build.MANUFACTURER + " " + Build.MODEL
+        final String info = "版本 2.0.5 · 最后一步：" + (LAST_STEP == null ? "无" : LAST_STEP)
+                + "\n" + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
         writePublicCrash(info + "\n" + title + "\n\n" + detail);
         try {
@@ -371,6 +423,8 @@ public class MainActivity extends Activity {
             return;
         }
         web = created;
+        /* 清掉上一次安装留下的资源缓存；clearCache 不动 localStorage / IndexedDB */
+        try { web.clearCache(true); } catch (Throwable t) { appendCrash("clearCache " + t); }
         web.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(web);
@@ -378,6 +432,12 @@ public class MainActivity extends Activity {
         try {
             WebSettings s = web.getSettings();
             s.setJavaScriptEnabled(true);
+            /* 所有资源只从 assets 拦截现取，绝不复用磁盘缓存 */
+            s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+            /* 反射调用：compileSdk 34 已移除该 API，但老 WebView 仍需要关掉 AppCache */
+            try {
+                s.getClass().getMethod("setAppCacheEnabled", boolean.class).invoke(s, false);
+            } catch (Throwable ignored) { }
             s.setDomStorageEnabled(true);
             s.setDatabaseEnabled(true);
             s.setAllowFileAccess(true);
@@ -450,7 +510,8 @@ public class MainActivity extends Activity {
             if (path.contains("..")) return deny(403);
             InputStream in = getAssets().open(path);
             Map<String, String> headers = new HashMap<>();
-            headers.put("Cache-Control", "no-cache");
+            headers.put("Cache-Control", "no-store, no-cache, must-revalidate");
+            headers.put("Pragma", "no-cache");
             return new WebResourceResponse(mimeOf(path), "UTF-8", 200, "OK", headers, in);
         } catch (Throwable t) {
             appendCrash("资源拦截失败 " + path + " : " + t);
@@ -517,12 +578,10 @@ public class MainActivity extends Activity {
             boolean crashed = detail != null && detail.didCrash();
             appendCrash("FATAL 渲染进程退出 didCrash=" + crashed);
             writePublicCrash("渲染进程退出 didCrash=" + crashed
-                    + " · 版本 2.0.4 · Android " + Build.VERSION.SDK_INT);
-            try {
-                String u = view == null ? null : view.getUrl();
-                int h = u == null ? -1 : u.indexOf('#');
-                lastHash = h >= 0 ? u.substring(h) : "";
-            } catch (Throwable ignored) { }
+                    + " · 版本 2.0.5 · Android " + Build.VERSION.SDK_INT);
+            /* 2.0.5 起页面不再修改 URL（老 WebView 会把它当导航），
+               视图由 StationNative.setView 同步到 lastHash，重建后直接沿用。 */
+            appendCrash("STEP 渲染进程退出前所在视图 " + (lastHash == null ? "" : lastHash));
             long now = System.currentTimeMillis();
             if (now - renderGoneAt > 15000) renderGoneCount = 0;
             renderGoneAt = now;
@@ -534,7 +593,7 @@ public class MainActivity extends Activity {
                 fatalShown = false;
                 showFatal("WebView 渲染进程在 15 秒内连续退出 " + renderGoneCount + " 次。\n"
                         + "常见原因：页面单帧生成过多 DOM、设备内存紧张。\n"
-                        + "2.0.3 已把登录后的一次性全量渲染改为按需渲染，2.0.4 又去掉了老 WebView 不兼容 API 与进入出库页自动开镜头，请把本屏内容发回。",
+                        + "2.0.5 已把点出库改成零数据渲染、不再改 URL、并强制绕开 WebView 缓存。请把本屏内容与「下载/快递驿站/驿站助手-运行日志.txt」一并发回。",
                         "渲染进程连续崩溃");
             } else {
                 runOnUiThread(new Runnable() {
@@ -764,7 +823,22 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "2.0.4";
+            return "2.0.5";
+        }
+
+        /** 页面每做一个关键动作就同步一步，崩溃后能从日志看到最后停在哪 */
+        @JavascriptInterface
+        public void logStep(final String msg) {
+            final String line = String.valueOf(msg);
+            LAST_STEP = line;
+            appendCrash("STEP " + line);
+        }
+
+        /** 页面不写 URL，改由原生记住当前视图，渲染进程重建后恢复 */
+        @JavascriptInterface
+        public void setView(final String name) {
+            try { lastHash = (name == null || name.isEmpty()) ? "" : ("#" + name); }
+            catch (Throwable ignored) { }
         }
 
         /** 导出 CSV / JSON：写入系统「下载/快递驿站」 */

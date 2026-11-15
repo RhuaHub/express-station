@@ -109,7 +109,12 @@ label > .input, label > select, label > textarea { margin-top: 5px; }
 .auth-note .btn { margin: 4px 3px 0; }
 .auth-msg { margin-top: 12px; font-size: 13px; min-height: 18px; color: var(--danger); text-align: center; }
 .auth-msg.ok { color: var(--ok); }
-.auth-foot { margin-top: 18px; text-align: center; font-size: 11px; color: #aaa394; }
+.auth-foot { margin-top: 18px; text-align: center; font-size: 11px; color: #aaa394; line-height: 1.9; }
+.auth-foot > span { display: block; }
+.auth-foot .gate-tools { display: block; margin: 4px 0; }
+.auth-foot .gate-tools label { font-size: 11px; color: #8b8270; }
+.auth-foot .gate-tools input { vertical-align: middle; }
+#gateVersion b { color: #b8860b; font-size: 13px; }
 .diag { background: #26241e; color: #e9e2cc; padding: 12px; border-radius: 9px; font-size: 12px; overflow: auto; max-height: 260px; white-space: pre-wrap; }
 
 /* ---------- 布局 ---------- */

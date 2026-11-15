@@ -50,9 +50,41 @@
     quickList: [], scanInList: [], batchRows: [], batchErrors: [],
     outSelected: {}, invSelected: {}, printSelected: {},
     autoTried: false, manualCaptureUsed: false, outEngine: '', outCandidates: [], outScanPhoto: null,
+    /* 出库页默认不列出在库包裹；只有用户点查询/扫码后才渲染表格（老设备稳定性） */
+    outQueried: false,
     statPreset: 'today', statTab: 'rate', qResult: [], invResult: [],
     photoUrls: {}, idleTimer: null, lastActive: Date.now()
   };
+
+  /* 每一步都写进原生运行日志：即使渲染进程被系统杀掉，也能看到「最后停在哪个动作」。
+     API<26 的老设备没有 onRenderProcessGone，只能靠这份落盘日志定位。 */
+  function step(text) {
+    try {
+      if (window.StationNative && window.StationNative.logStep) window.StationNative.logStep(String(text));
+    } catch (e) { }
+  }
+  function exportRunLog() {
+    var nativeLog = '';
+    try { nativeLog = window.StationNative.crashLog() || ''; } catch (e) { }
+    var info = {
+      app: 'station-assistant', version: '2.0.5', build: 16,
+      ua: String(navigator.userAgent || ''), time: new Date().toISOString(),
+      bootErrors: window.StationBoot ? window.StationBoot.errors() : [],
+      storageOk: store.storageOk(), safeMode: !!store.settings().safeMode,
+      view: S.view, parcels: store.listParcels({ status: 'all' }).length
+    };
+    var text = JSON.stringify(info, null, 2) + '\n\n===== 原生运行日志（最后 4000 字） =====\n' + nativeLog;
+    try {
+      if (window.StationNative && window.StationNative.saveText) {
+        window.StationNative.saveText('驿站助手-运行日志.txt', text, 'text/plain');
+      } else {
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+        a.download = '驿站助手-运行日志.txt';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }
+    } catch (e) { toast('导出日志失败：' + (e.message || e), 'err'); }
+  }
 
   /* ---------------- 通用 ---------------- */
   function toast(msg, kind) {
@@ -75,7 +107,11 @@
       setTimeout(function () { URL.revokeObjectURL(u); if (a.parentNode) a.parentNode.removeChild(a); }, 800);
     } catch (e) { toast('导出失败：' + e.message, 'err'); }
   }
-  function feedback(kind, text) { Media.feedback(kind, text, store.settings()); }
+  function feedback(kind, text) {
+    var set = store.settings();
+    if (set.safeMode) return; /* 老设备兼容模式：不触发语音 / 振动 / 声音 */
+    try { Media.feedback(kind, text, set); } catch (e) { step('反馈失败 ' + e.message); }
+  }
   function guard(perm) {
     if (!auth.can(perm)) { toast('当前账号没有「' + perm + '」权限', 'err'); return false; }
     return true;
@@ -160,6 +196,7 @@
     if (window.StationBoot) window.StationBoot.report(where + '：' + (e && e.message ? e.message : String(e)));
   }
   function enterApp() {
+    step('进入主界面');
     /* 安卓 WebView 上任何一个渲染函数抛错都不允许变成白屏/闪退 */
     $('authGate').hidden = true; $('app').hidden = false;
     var st = auth.status();
@@ -174,12 +211,13 @@
     } catch (e2) { reportBoot('界面绑定失败', e2); }
   }
   function doLogin() {
+    step('点「登录」');
     try {
       var pw = $('loginPw').value;
       var r = auth.status().locked ? auth.unlock(pw) : auth.login($('loginName').value, pw);
       $('authMsg').textContent = r.ok ? '' : r.error;
       $('authMsg').className = 'auth-msg';
-      if (r.ok) { $('loginPw').value = ''; enterApp(); }
+      if (r.ok) { step('登录校验通过'); $('loginPw').value = ''; enterApp(); }
     } catch (e) {
       reportBoot('登录失败', e);
       $('authMsg').textContent = '登录出错：' + (e && e.message ? e.message : String(e));
@@ -187,6 +225,24 @@
   }
   function bindGate() {
     $('btnLogin').onclick = doLogin;
+    try {
+      var sm = $('gateSafeMode');
+      sm.checked = !!store.settings().safeMode;
+      sm.onchange = function () {
+        try { store.updateSettings({ safeMode: sm.checked }); } catch (e) { }
+        step('兼容模式 ' + (sm.checked ? '开' : '关'));
+        $('authMsg').textContent = sm.checked
+          ? '已开启老设备兼容模式：延迟渲染、列表减半、关闭语音播报与振动'
+          : '已关闭兼容模式';
+      };
+    } catch (e) { }
+    try { if ($('btnExportLog')) $('btnExportLog').onclick = exportRunLog; } catch (e) { }
+    /* 版本自证：把原生壳版本也显示出来，一眼确认装到的确实是新 APK */
+    try {
+      if (window.StationNative && window.StationNative.version && $('gateVersion')) {
+        $('gateVersion').appendChild(document.createTextNode(' · 原生 ' + window.StationNative.version()));
+      }
+    } catch (e) { }
     $('loginPw').addEventListener('keydown', function (e) { if (e.key === 'Enter') doLogin(); });
     $('btnSetup').onclick = function () {
       var n = $('setupName').value.trim(), p = $('setupPw').value, p2 = $('setupPw2').value;
@@ -238,6 +294,13 @@
   function switchView(name) {
     if (!$('view-' + name)) name = 'dash';
     S.view = name;
+    step('点击导航 → ' + name);
+    /* 绝不修改 URL：老 WebView 上 history.replaceState / location.hash 会触发
+       shouldOverrideUrlLoading，某些 ROM 还会把它当成一次导航重新加载主文档。
+       视图状态只放内存，并通过原生桥记下来供崩溃重建后恢复。 */
+    try {
+      if (window.StationNative && window.StationNative.setView) window.StationNative.setView(name);
+    } catch (e) { }
     Object.keys(TITLES).forEach(function (v) { var el = $('view-' + v); if (el) el.hidden = v !== name; });
     each('.nav-item', function (b) {
       setOn(b, b.getAttribute('data-view') === name);
@@ -246,12 +309,18 @@
     });
     $('topSub').textContent = TITLES[name];
     setClass($('sidebar'), 'open', false); setClass($('sideShade'), 'on', false);
-    try { history.replaceState(null, '', '#' + name); } catch (e) { }
-    renderCurrent();
-    window.scrollTo(0, 0);
-    if (name === 'inbound' && S.inTab === 'manual') setTimeout(function () { try { $('inNo').focus(); } catch (e) { } }, 100);
-    /* 进入出库页绝不自动开镜头：老 Android WebView 上相机预览 / 权限回调会让渲染进程退出，
-       表现正是「能登录，点出库就退出」。拍照一律由用户点显式按钮触发。 */
+    try { window.scrollTo(0, 0); } catch (e) { }
+    /* 渲染放到下一帧：点击事件立即返回，不在同一帧里既切 hidden 又生成大量 DOM。
+       API<26 的设备没有 onRenderProcessGone，渲染进程一旦被回收系统会直接杀 App。 */
+    var delay = store.settings().safeMode ? 90 : 30;
+    setTimeout(function () {
+      if (S.view !== name) return;
+      step('开始渲染 → ' + name);
+      try { renderCurrent(); } catch (e) { reportBoot('切换视图渲染失败', e); }
+      step('渲染完成 → ' + name);
+    }, delay);
+    if (name === 'inbound' && S.inTab === 'manual') setTimeout(function () { try { $('inNo').focus(); } catch (e) { } }, 150);
+    /* 进入出库页绝不自动开镜头：拍照一律由用户点显式按钮触发。 */
   }
   /* 按需渲染：登录那一刻绝不能一次性重绘 14 个视图。
      低端 Android WebView 在单帧内做大量 innerHTML / 表格 / SVG 生成时，
@@ -266,8 +335,9 @@
   function renderCurrent() {
     if ($('app').hidden) return;
     var name = S.view && RENDERERS[S.view] ? S.view : 'dash';
+    step('渲染视图 → ' + name);
     try { RENDERERS[name](); }
-    catch (e) { reportBoot('渲染「' + name + '」失败', e); }
+    catch (e) { reportBoot('渲染「' + name + '」失败', e); step('渲染异常 → ' + name + ' ' + e.message); }
   }
   /* 数据变更后只刷新当前视图；切到其它视图时由 switchView 单独渲染，
      保证看到的始终是最新数据，同时把登录瞬间的 DOM 峰值降到原来的 1/14。 */
@@ -450,25 +520,30 @@
   /* ---------------- 出库 ---------------- */
   function renderOutbound() {
     var set = store.settings();
-    var eng = Media.engines();
-    $('outEngine').textContent = '本机识别：' +
-      (eng.barcode ? '条码 ✔ ' : '条码 ✘ ') + (eng.text ? '文字 ✔' : '文字 ✘') +
-      ' · 不支持时照片仍自动命名，手输货号即可出库';
+    /* 切视图时不探测识别引擎：老 WebView 上 BarcodeDetector / getSupportedFormats
+       属于原生能力探测，可能在渲染进程里直接抛错。只在真正点拍照时探测。 */
+    $('outEngine').textContent = '本机识别：点「拍照取件」后自动识别货号 / 运单号；不支持时手输货号即可出库';
     var mode = $('outMode').value || set.queryMode || 'fuzzy';
     $('outMode').value = mode;
     $('outReasonBox').hidden = S.outType !== 'refund';
+    /* 点出库这一瞬间绝不生成包裹表格：API<26 的老设备渲染进程被回收后系统会直接杀 App，
+       且没有 onRenderProcessGone 可以接管。必须先点「查询」或扫码，一次最多 20 行。 */
     var kw = $('outKeyword').value.trim();
-    var list = store.listParcels({ kw: kw, mode: $('outMode').value, status: 'in', limit: 60 });
-    $('outResultCount').textContent = (kw ? '匹配 ' : '在库 ') + list.length + ' 件';
+    var cap = set.safeMode ? 10 : 20;
+    var list = S.outQueried
+      ? store.listParcels({ kw: kw, mode: mode, status: 'in', limit: cap })
+      : [];
+    $('outResultCount').textContent = S.outQueried
+      ? ((kw ? '匹配 ' : '在库 ') + list.length + ' 件（最多 ' + cap + '）')
+      : '未查询 · 点「查询」后显示';
     var rows = list.map(function (p) {
       return { id: p.id, cells: [parcelLine(p), esc(p.carrier), esc(p.recipient || '—') + ' <span class="muted">' + esc(p.phoneTail || '') + '</span>',
         esc(p.slot), esc(R.fmt(p.inAt).slice(5)) + '<div class="td-sub">在库 ' + R.daysBetween(p.inAt, Date.now()) + ' 天</div>',
         '<input type="checkbox" data-out-check="' + esc(p.id) + '"' + (S.outSelected[p.id] ? ' checked' : '') + '>'] };
     });
-    table('outTable', ['货号 / 单号', '公司', '收件人', '货架', '入库', '选择'], rows, { empty: '没有匹配的在库包裹' });
-    var n = Object.keys(S.outSelected).filter(function (k) { return S.outSelected[k]; }).length;
-    $('outSelected').textContent = '已选 ' + n + ' 件';
-    $('btnOutSubmit').textContent = S.outType === 'refund' ? '确认退件出库' : (n > 1 ? '合并出库 ' + n + ' 件' : '确认出库');
+    table('outTable', ['货号 / 单号', '公司', '收件人', '货架', '入库', '选择'], rows,
+      { empty: S.outQueried ? '没有匹配的在库包裹' : '输入货号 / 单号 / 手机尾号后点「查询」，或点「拍照取件」' });
+    updateOutSelection();
     $('outPhotoState') && ($('outPhotoState').textContent = '');
     renderPhotos('outPhotoPreview', S.outFiles, S.outUrls, 'out');
     if (S.lastOut) {
@@ -478,15 +553,21 @@
         '<button class="btn btn-outline btn-sm" data-act="undoBatch" data-id="' + esc(S.lastOut.batchId) + '">撤销本次出库</button></div>';
     }
   }
+  function updateOutSelection() {
+    var n = Object.keys(S.outSelected).filter(function (k) { return S.outSelected[k]; }).length;
+    $('outSelected').textContent = '已选 ' + n + ' 件';
+    $('btnOutSubmit').textContent = S.outType === 'refund' ? '确认退件出库' : (n > 1 ? '合并出库 ' + n + ' 件' : '确认出库');
+  }
   function setOutTab(tab) {
-    S.outTab = tab; S.outType = tab;
+    S.outTab = tab; S.outType = tab; S.outQueried = false;
+    step('出库切换页签 → ' + tab);
     each('#outTabs .tab', function (b) { setOn(b, b.getAttribute('data-tab') === tab); });
     $('outKeyword').placeholder = tab === 'phone' ? '输入手机后四位' : tab === 'scan' ? '扫描货号 / 条码后回车即出库' : '货号 / 编号 / 单号 / 尾号 / 收件人';
     renderOutbound();
   }
   function toggleOutCheck(id, on) {
     if (on) S.outSelected[id] = true; else delete S.outSelected[id];
-    renderOutbound();
+    updateOutSelection(); /* 勾选时不再整表重绘 */
   }
   function outIds() {
     return Object.keys(S.outSelected).filter(function (k) { return S.outSelected[k]; });
@@ -507,7 +588,7 @@
           note: $('outNote').value, photos: photos
         });
         if (!r.ok) { toast(r.error, 'err'); return; }
-        S.lastOut = r; S.outSelected = {}; S.outFiles.forEach(function (_, i) { if (S.outUrls[i]) URL.revokeObjectURL(S.outUrls[i]); });
+        S.lastOut = r; S.outSelected = {}; S.outQueried = false; S.outFiles.forEach(function (_, i) { if (S.outUrls[i]) URL.revokeObjectURL(S.outUrls[i]); });
         S.outFiles = []; S.outUrls = []; S.outScanPhoto = null;
         $('outKeyword').value = ''; $('outPickupBy').value = ''; $('outNote').value = '';
         $('outOcrState').hidden = true; $('outCandidates').innerHTML = '';
@@ -1037,7 +1118,7 @@
       });
     } else if (act === 'pickCandidate') {
       var p = store.getParcel(id); if (!p) return;
-      S.outSelected[id] = true; $('outKeyword').value = p.goodsNo;
+      S.outSelected[id] = true; S.outQueried = true; $('outKeyword').value = p.goodsNo;
       $('outOcrState').className = 'ocr-state ok';
       $('outOcrState').textContent = '已选 ' + p.goodsNo + ' · ' + p.trackingNo + '，确认后点「确认出库」';
       $('outCandidates').innerHTML = '';
@@ -1249,7 +1330,8 @@
     each('#outTabs .tab', function (b) {
       b.addEventListener('click', function () { setOutTab(b.getAttribute('data-tab')); });
     });
-    on('outKeyword', 'input', renderOutbound);
+    /* 输入过程不重绘表格：每敲一个字都生成一遍 DOM 是老设备渲染进程崩溃高发点 */
+    on('outKeyword', 'input', function () { S.outQueried = false; });
     on('outKeyword', 'keydown', function (e) {
       if (e.key !== 'Enter' || S.outTab !== 'scan') return;
       e.preventDefault();
@@ -1257,13 +1339,14 @@
       if (hits.length === 1) { S.outSelected = {}; S.outSelected[hits[0].id] = true; doCheckout('scan'); this.value = ''; }
       else { toast(hits.length ? '一个码对应 ' + hits.length + ' 件，请手动点选' : '未匹配到在库包裹', 'err'); renderOutbound(); }
     });
-    on('btnOutSearch', 'click', renderOutbound);
+    on('btnOutSearch', 'click', function () { S.outQueried = true; step('点「查询」'); renderOutbound(); });
     on('btnOutSelectAll', 'click', function () {
-      store.listParcels({ kw: $('outKeyword').value.trim(), mode: $('outMode').value, status: 'in', limit: 60 })
+      S.outQueried = true; step('点「全选」');
+      store.listParcels({ kw: $('outKeyword').value.trim(), mode: $('outMode').value, status: 'in', limit: 20 })
         .forEach(function (p) { S.outSelected[p.id] = true; });
       renderOutbound();
     });
-    on('btnOutClear', 'click', function () { S.outSelected = {}; $('outKeyword').value = ''; renderOutbound(); });
+    on('btnOutClear', 'click', function () { S.outSelected = {}; S.outQueried = false; $('outKeyword').value = ''; renderOutbound(); });
     on('btnOutPhoto', 'click', captureOutProof);
     on('btnOutMerge', 'click', function () {
       var ids = outIds(); if (!ids.length) { toast('先选一件，再按同尾号合并', 'err'); return; }
@@ -1587,7 +1670,7 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.4',
+    rules: R, media: Media, version: '2.0.5',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

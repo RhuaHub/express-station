@@ -1,15 +1,15 @@
-# 安卓壳 · 驿站助手 2.0.4
+# 安卓壳 · 驿站助手 2.0.5
 
 一个 `WebView` 壳，把仓库根目录的静态页面打包进 `assets`，不依赖 Gradle / Android Studio。
 
-- 产物：`android/dist/station-assistant-2.0.4.apk`
+- 产物：`android/dist/station-assistant-2.0.5.apk`
 - 页面入口：`https://appassets.androidplatform.net/index.html`（用 `shouldInterceptRequest` 映射到 assets，保证是安全上下文，摄像头 / localStorage / IndexedDB 才可用）
 - 打包脚本：`bash android/build-apk.sh`（需 JDK 17 + Android SDK platform / build-tools）
-- 版本：`versionName 2.0.4` / `versionCode 15`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
+- 版本：`versionName 2.0.5` / `versionCode 16`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
 
 打包进 assets 的页面文件：`index.html`、`styles.css`、`rules.js`、`db.js`、`auth.js`、`media.js`、`app.js`、`sw.js`、`manifest.webmanifest`。改了前端就要重跑脚本，否则手机还是旧页面。
 
-`StationNative` 提供 `saveText(name, content, mime)`（导出 CSV / JSON）、`toastMsg`、`platform`、`version`、`logError`、`crashLog`、`lastFatal`。JS 对话框、文件选择器、相机权限都有对应处理。
+`StationNative` 提供 `saveText(name, content, mime)`（导出 CSV / JSON）、`toastMsg`、`platform`、`version`、`logError`、`crashLog`、`lastFatal`、`logStep`（步骤日志）、`setView`（记住当前视图）。JS 对话框、文件选择器、相机权限都有对应处理。
 
 ## 崩溃诊断
 
@@ -34,5 +34,13 @@
 - 出库页不再自动 `getUserMedia` 开镜头，拍照改由用户点按钮触发；相机失败自动降级到「从相册选」，15 秒超时收尾。
 - 原生层：相机权限请求 8 秒超时自动 deny；`Activity` 已结束时直接 deny；`onRequestPermissionsResult` 判空；`onActivityResult` 与 `JsResult` 回调整体 `catch (Throwable)`；渲染进程重建时按 `lastHash` 回到用户刚才的视图。
 - 诊断方式不变：异常会停在原生诊断屏，日志副本在「下载/快递驿站」。
+
+## 点出库就死（2.0.5 · 缓存隔离 / 零渲染 / 步骤日志）
+
+- **缓存隔离**：入口 `START_URL` 带 `?v=2.0.5`，主文档不再命中旧缓存；启动 `web.clearCache(true)`（不动 localStorage / IndexedDB）、`LOAD_NO_CACHE`、关 AppCache；assets 响应统一 `no-store, no-cache, must-revalidate`。老 WebView 缓存上一版 `index.html` 会让所有前端修复看起来「没生效」。
+- **API < 26 现实**：`onRenderProcessGone()` 只在 API 26+ 回调，老设备上渲染进程被回收系统会直接杀 App，没有任何 JS/Java 兜底机会。因此出库页改成「点查询才渲染」，切视图瞬间零数据生成，渲染延到下一帧。
+- **不再改 URL**：页面去掉 `history.replaceState`，改由 `StationNative.setView()` 把当前视图同步到 `lastHash`，重建 WebView 后据此恢复。
+- **步骤日志**：原生桥新增 `logStep()` / `setView()`；关键步骤与致命异常自动覆盖写入「下载/快递驿站/驿站助手-运行日志.txt」，诊断屏显示「最后一步」，登录门可一键「导出运行日志」并显示 `2.0.5 · build 16`。
+- **兼容模式**：登录门可勾选「老设备兼容模式」，延迟渲染、列表减半、跳过语音播报与振动。
 
 权限只有 `INTERNET`、`CAMERA`、`READ_MEDIA_IMAGES`（Android 13+）与旧版存储写入；**没有短信、电话、通讯录权限**。

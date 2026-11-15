@@ -1,4 +1,4 @@
-# 驿站助手（重建版 2.0.4）
+# 驿站助手（重建版 2.0.5）
 
 对照 `570665.apk`（`com.touchez.mossp.ezhelper`，2021 年版「驿站助手」）**从零重建**的快递驿站管理系统。纯静态、零依赖、零后端：台账存浏览器 localStorage，照片存 IndexedDB，不上传任何服务器。
 
@@ -82,7 +82,7 @@ node tools/serve.js 8765      # 打开 http://127.0.0.1:8765/index.html
 
 ### 安卓
 ```bash
-bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.4.apk
+bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.5.apk
 ```
 需要 JDK 17 与 Android SDK build-tools / platform。APK 用 `https://appassets.androidplatform.net/` 映射到 assets，保证摄像头、localStorage、IndexedDB 都运行在安全上下文里；首次使用需允许相机权限。
 
@@ -96,7 +96,7 @@ bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.4.apk
 4. **公司识别**：`圆通=^(YT|8\d{11,})` 这类正则可在「设置 → 快递公司管理」编辑，从上往下匹配，手动选择优先。
 5. **拍照识别**：Chrome / 多数安卓 WebView 支持本机条码识别；iOS Safari 等不支持时页面会明示，照片仍按时间 / 识别串命名，手输单号照常出入库，不会假装识别成功。
 6. **权限**：站长全权；操作员默认可用业务页但不能改设置与账号；只读角色仅查件 / 台账 / 统计 / 打印 / 流水。可逐项调整。
-7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.4`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
+7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.5`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
 
 ---
 
@@ -181,3 +181,39 @@ node --check app.js           # 语法检查
 **验证**：CDP 模拟老 WebView（撤掉 `NodeList.forEach` / `Element.closest` / `Array.findIndex`，并让 `getUserMedia` 同步抛错）跑「初始化 → 登录 → 点出库 → 14 视图」，`bootErrors` / 页面异常全空，点侧栏能正常切到出库，自动相机调用 0 次。
 
 **版本**：2.0.4 · SW `station-rebuild-v5` · 安卓 versionCode 15。
+
+---
+
+## 十、2.0.5 · 点出库就死（缓存隔离 + 零渲染 + 步骤日志）
+
+用户反馈 2.0.4 之后「点出库就死」。前几轮都在**全新浏览器 profile** 里验证通过，说明真机跑的很可能不是同一份代码。这次从三个方向同时封死：
+
+**一、强制绕开 WebView 缓存（此前一直没查的盲点）**
+
+老 WebView 会缓存 `shouldInterceptRequest` 返回的响应，而**主文档 `index.html` 此前不带版本号**。覆盖安装新 APK 后，WebView 仍可能从磁盘缓存拿到上一版 `index.html`，进而加载上一版 `app.js`——这正是「改了好几版，症状一点没变」的典型表现。
+
+- 入口 URL 改为 `https://appassets.androidplatform.net/index.html?v=2.0.5`；
+- 启动 `web.clearCache(true)`（不动 localStorage / IndexedDB），`WebSettings.setCacheMode(LOAD_NO_CACHE)`、关闭 AppCache；
+- 所有 assets 响应头改为 `no-store, no-cache, must-revalidate` + `Pragma: no-cache`，页面加 `no-store` meta；
+- **登录门显示 `2.0.5 · build 16`**，装的是不是新版一眼可确认。
+
+**二、点出库那一瞬间零数据渲染**
+
+`onRenderProcessGone()` 是 **API 26+** 才有的回调；而用户的 WebView 老到连 `NodeList.forEach` 都没有（Chromium < 51，通常 Android 5/6/7）。这类设备上渲染进程一旦被系统回收，**没有回调可接管、系统直接杀 App**，前几轮的 try/catch 和诊断屏全都来不及生效。
+
+- 出库页**默认不列出在库包裹**：切过去只写几处文本和一行空表，必须点「查询」或扫码才生成表格，一次最多 20 行（兼容模式 10 行）；
+- 输入过程不再逐字重绘；勾选包裹只更新计数，不重绘整表；切换出库页签、完成出库后回到未查询态；
+- 渲染移到 `setTimeout` 下一帧，点击动作立即返回，不在同一帧里既切 `hidden` 又生成 DOM；
+- `switchView()` **不再调用 `history.replaceState`**：老 WebView 会把它当成导航并回调 `shouldOverrideUrlLoading`，部分 ROM 甚至重新加载主文档；视图状态改由 `StationNative.setView()` 记在原生层，渲染进程重建后据此恢复；
+- 切视图时不再探测 `BarcodeDetector`（原生能力探测在老 WebView 上可能直接抛错），识别引擎只在真正点拍照时探测。
+
+**三、每一步都留痕，不再靠猜**
+
+- 新增原生桥 `logStep()` / `setView()`；登录、点导航、开始渲染、渲染完成、查件、兼容模式切换都会写日志；
+- 关键步骤与致命异常**自动镜像到「下载/快递驿站/驿站助手-运行日志.txt」**（固定文件名、覆盖式），Android 11+ 用普通文件管理器就能拿到；
+- 诊断屏显示「最后一步」；登录门新增「导出运行日志」按钮，一键导出版本、机型、启动错误、存储状态与原生日志；
+- 新增**老设备兼容模式**开关（登录门勾选）：渲染再延迟、列表减半、跳过语音播报与振动。
+
+**排查顺序建议**：覆盖安装后先看登录门版本号是不是 `2.0.5 / build 16`；若不是，说明装到的仍是旧包。若版本正确仍异常，取「下载/快递驿站/驿站助手-运行日志.txt」发回，最后一条 `STEP` 就是崩溃前停在的动作。
+
+**版本**：2.0.5 · SW `station-rebuild-v6` · 安卓 versionCode 16。
