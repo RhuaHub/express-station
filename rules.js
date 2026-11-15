@@ -4,7 +4,7 @@
   'use strict';
 
   var api = {};
-  var VERSION = '2.0.3';
+  var VERSION = '2.0.4';
   api.VERSION = VERSION;
 
   function str(v) { return v === null || v === undefined ? '' : String(v); }
@@ -127,7 +127,7 @@
     labelFields: ['station', 'goods', 'slot', 'recipient', 'tail', 'carrier', 'tracking', 'barcode'],
     labelWidth: 80, labelHeight: 50,
     delayUpload: 0, syncEnabled: false,
-    autoCapture: true, idleMinutes: 15
+    autoCapture: false, idleMinutes: 15
   };
 
   /* ctx: {seq, slot, tail, short, date, template, width, mode} */

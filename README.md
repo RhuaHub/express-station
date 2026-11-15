@@ -1,4 +1,4 @@
-# 驿站助手（重建版 2.0.3）
+# 驿站助手（重建版 2.0.4）
 
 对照 `570665.apk`（`com.touchez.mossp.ezhelper`，2021 年版「驿站助手」）**从零重建**的快递驿站管理系统。纯静态、零依赖、零后端：台账存浏览器 localStorage，照片存 IndexedDB，不上传任何服务器。
 
@@ -82,7 +82,7 @@ node tools/serve.js 8765      # 打开 http://127.0.0.1:8765/index.html
 
 ### 安卓
 ```bash
-bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.3.apk
+bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.4.apk
 ```
 需要 JDK 17 与 Android SDK build-tools / platform。APK 用 `https://appassets.androidplatform.net/` 映射到 assets，保证摄像头、localStorage、IndexedDB 都运行在安全上下文里；首次使用需允许相机权限。
 
@@ -96,7 +96,7 @@ bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.3.apk
 4. **公司识别**：`圆通=^(YT|8\d{11,})` 这类正则可在「设置 → 快递公司管理」编辑，从上往下匹配，手动选择优先。
 5. **拍照识别**：Chrome / 多数安卓 WebView 支持本机条码识别；iOS Safari 等不支持时页面会明示，照片仍按时间 / 识别串命名，手输单号照常出入库，不会假装识别成功。
 6. **权限**：站长全权；操作员默认可用业务页但不能改设置与账号；只读角色仅查件 / 台账 / 统计 / 打印 / 流水。可逐项调整。
-7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.3`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
+7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.4`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
 
 ---
 
@@ -144,7 +144,7 @@ node --check app.js           # 语法检查
   - 上次崩溃在 10 分钟内，本次启动先停在诊断屏，确认后自动清空记录。
 - `new WebView(this)` 单独兜底；补 `shouldInterceptRequest(WebView, String)` 旧重载（Android 5.x 只回调旧签名，缺了会整页 404 白）；主题改直接引用框架资源。
 
-**2.0.3（登录瞬间 · 本次重点）**
+**2.0.3（登录瞬间）**
 
 用户确认是「**点登录那一刻退出**」后，才定位到真正的差异点：启动时的登录门几乎不产生 DOM 操作，而登录成功会走 `enterApp() → renderAll()`，**在同一帧里一次性重绘全部 14 个视图**（大量 `innerHTML`、表格、SVG 条码）。低端 WebView 的渲染进程可能被这波峰值回收，而系统默认会连带杀掉 App 进程——这解释了为什么前两轮的 JS try/catch 与 Java 回调兜底都无效：渲染进程直接没了，根本没有异常可捕获。
 
@@ -155,4 +155,29 @@ node --check app.js           # 语法检查
 
 **若仍有问题**：启动异常会停在诊断屏（截图或「复制诊断」发回）；渲染进程崩溃会在「下载/快递驿站」留下 `驿站助手-崩溃日志-*.txt`。网页版可点登录门「自检」查看 `bootErrors` / `nativeLog` / `lastFatal`。
 
-**版本**：2.0.3 · SW `station-rebuild-v4` · 安卓 versionCode 14。
+---
+
+## 九、2.0.4 · 点出库就退出（全面检查后的统一修复）
+
+用户反馈「能登录，点出库就退出」。这次不再逐点猜，先做全链路只读排查，再用 CDP 把老 Android WebView 缺失的 API 全部撤掉后复现。
+
+**真实根因**：`bind()` 第一行就用了 `document.querySelectorAll('.nav-item').forEach(...)`，而 Chromium < 51 的 WebView 没有 `NodeList.prototype.forEach`。启动阶段 `bind()` 整体抛错 → **所有导航、按钮、事件委托都没绑上** → 点侧栏「出库」毫无反应；探针里直接调 `switchView()`，14 个视图全部抛同一个 TypeError。登录之所以正常，是因为登录门用的是更早执行的 `.onclick`。
+
+**同一轮全面检查发现的其它隐患**（一并修掉）：
+
+- `Element.prototype.closest` 在事件委托里用了 9 处；`classList.toggle(x, force)` / `classList.remove` 在部分老 WebView 也不完整 → 统一换成自写 ES5 helper `each()` / `closestData()` / `setClass()` / `setOn()`。
+- `rules.js` 默认 `autoCapture: true`，且 `switchView('outbound')` 会在 500ms 后自动 `getUserMedia` 开镜头；国产 ROM 上相机预览 / 权限回调是渲染进程退出的高发点。
+- `Media.capture()` 遇到 `getUserMedia` 同步抛错、不返回 Promise、`srcObject` 缺失、`video.play()` 返回 undefined、面板点击用 `closest`，都可能让 Promise 悬挂或把异常抛到页面外。
+- Java 层相机权限请求没有超时、`onRequestPermissionsResult` 未判空、`onActivityResult` 未兜底。
+
+**修复**：
+
+- **进入出库页绝不自动开镜头**：改由用户点「拍照取件 / 立即拍照 / 拍出库凭证」触发；设置里的 `autoCapture` 默认关，且只有用户先主动拍过一次，才可能用于连续取件时自动再开镜头。
+- 出库页表格单次生成上限 120 → 60 行；`Media.engines()` 结果缓存，不再每次渲染都触发一次 `getSupportedFormats()`。
+- `Media.capture()` 重写：全链路 `try/catch` 与判空、兼容老 WebView 的 `srcObject` / `play()`、15 秒超时自动收尾、任何失败降级到「从相册选」、Promise 永不 reject；`pickFiles()` 同样有兜底。
+- 所有 `Media.capture / recognize / listen / exportAll / Promise.all` 调用链统一走 `safeChain()`，不再出现 `unhandledrejection`。
+- Java：权限请求 8 秒超时自动 deny、Activity 已结束直接 deny、权限结果与文件选择回调整体 `catch (Throwable)`、渲染进程重建后按 `lastHash` 回到用户刚才的视图而不是退回首页。
+
+**验证**：CDP 模拟老 WebView（撤掉 `NodeList.forEach` / `Element.closest` / `Array.findIndex`，并让 `getUserMedia` 同步抛错）跑「初始化 → 登录 → 点出库 → 14 视图」，`bootErrors` / 页面异常全空，点侧栏能正常切到出库，自动相机调用 0 次。
+
+**版本**：2.0.4 · SW `station-rebuild-v5` · 安卓 versionCode 15。

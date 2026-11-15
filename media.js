@@ -138,15 +138,19 @@
   }
 
   /* ---------- 浏览器原生识别（条码 / 文字） ---------- */
+  var engCache = null;
   function engines() {
-    /* 部分 WebView 里这些属性本身就会抛 SecurityError，或 getSupportedFormats 不可用 */
+    /* 部分 WebView 里这些属性本身就会抛 SecurityError，或 getSupportedFormats 不可用；
+       结果缓存起来，避免每次渲染出库页都触发一次异步探测。 */
+    if (engCache) return engCache;
     var BD = null, TD = null;
     try { BD = global.BarcodeDetector; TD = global.TextDetector; } catch (e) { }
     var formats = Promise.resolve([]);
     if (BD && typeof BD.getSupportedFormats === 'function') {
       try { formats = BD.getSupportedFormats() || formats; } catch (e2) { }
     }
-    return { barcode: !!BD, text: !!TD, any: !!(BD || TD), formats: formats };
+    engCache = { barcode: !!BD, text: !!TD, any: !!(BD || TD), formats: formats };
+    return engCache;
   }
   function canvasOf(blob) {
     return new Promise(function (resolve, reject) {
@@ -171,21 +175,25 @@
     }
     return canvasOf(blob).then(function (canvas) {
       var jobs = [];
-      if (global.BarcodeDetector) {
-        var bd;
-        try {
-          bd = new global.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'code_93', 'itf'] });
-        } catch (err) { bd = new global.BarcodeDetector(); }
-        jobs.push(bd.detect(canvas).then(function (list) {
-          (list || []).forEach(function (b) { res.barcodes.push(String(b.rawValue || '')); });
-        }).catch(function () { }));
-      }
-      if (global.TextDetector) {
-        var td = new global.TextDetector();
-        jobs.push(td.detect(canvas).then(function (list) {
-          (list || []).forEach(function (t) { res.texts.push(String(t.rawValue || '')); });
-        }).catch(function () { }));
-      }
+      try {
+        if (e.barcode) {
+          var bd;
+          try {
+            bd = new global.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'code_93', 'itf'] });
+          } catch (err) { bd = null; }
+          if (bd && typeof bd.detect === 'function') {
+            jobs.push(Promise.resolve(bd.detect(canvas)).then(function (list) {
+              (list || []).forEach(function (b) { res.barcodes.push(String(b.rawValue || '')); });
+            }).catch(function () { }));
+          }
+        }
+        if (e.text) {
+          var td = new global.TextDetector();
+          jobs.push(Promise.resolve(td.detect(canvas)).then(function (list) {
+            (list || []).forEach(function (t) { res.texts.push(String(t.rawValue || '')); });
+          }).catch(function () { }));
+        }
+      } catch (err) { res.error = '识别引擎启动失败，可直接手输单号 / 货号'; }
       return Promise.all(jobs).then(function () {
         if (!res.barcodes.length && !res.texts.length) res.error = '没读到条码或数字，请对准面单再拍一次，或直接手输';
         return res;
@@ -195,10 +203,23 @@
   function barcodeOf(d) { return R.barcodeOf(d); }
 
   /* ---------- 相机面板 ---------- */
-  function supported() {
-    try { return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia); }
-    catch (e) { return false; }
+  function closestAct(node) {
+    while (node) {
+      if (node.nodeType === 1 && node.getAttribute && node.hasAttribute('data-act')) return node;
+      node = node.parentNode;
+    }
+    return null;
   }
+  function supported() {
+    try {
+      return !!(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function');
+    } catch (e) { return false; }
+  }
+
+  /* 相机面板：任何一步失败都降级到「从相册选」，绝不让 Promise 悬挂或抛到页面外。
+     老 WebView 上 getUserMedia 可能同步抛错、不返回 Promise、srcObject 不存在、
+     video.play() 返回 undefined；国产 ROM 上相机预览还可能直接拖垮渲染进程，
+     因此加了 15 秒超时兜底。 */
   function capture(opts) {
     opts = opts || {};
     var title = opts.title || '拍照';
@@ -206,128 +227,205 @@
     var autoTorch = !!opts.torch;
     var max = opts.max || 12;
     return new Promise(function (resolve) {
-      if (!supported()) {
-        pickFiles(opts).then(function (files) { resolve({ files: files, cancelled: !files.length, fallback: true }); });
-        return;
+      var settled = false;
+      function done(r) {
+        if (settled) return;
+        settled = true;
+        resolve(r || { files: [], cancelled: true });
       }
-      var root = document.createElement('div');
-      root.className = 'cam-mask';
-      root.innerHTML = '<div class="cam-panel">' +
-        '<div class="cam-head"><h3>' + R.esc(title) + '</h3>' +
-        '<button type="button" class="cam-x" data-act="close" aria-label="关闭">✕</button></div>' +
-        '<div class="cam-stage"><video playsinline autoplay muted></video>' +
-        '<div class="cam-frame"></div><div class="cam-hint" id="camHint">正在打开摄像头…</div></div>' +
-        '<div class="cam-bar">' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-act="switch">切换镜头</button>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-act="torch">补光灯</button>' +
-        '<button type="button" class="btn btn-outline btn-sm" data-act="album">从相册选</button>' +
-        '<button type="button" class="btn btn-primary" data-act="shoot">拍照</button>' +
-        '</div><div class="cam-thumbs" id="camThumbs"></div>' +
-        '<div class="cam-foot"><span id="camCount">0 张</span>' +
-        '<button type="button" class="btn btn-primary btn-sm" data-act="done">完成</button></div>' +
-        '</div>';
-      document.body.appendChild(root);
-      var video = root.querySelector('video');
-      var hint = root.querySelector('#camHint');
-      var stream = null, facing = 'environment', done = false, torchOn = false;
-      var files = [], thumbs = [];
+      var root = null, video = null, hint = null;
+      var stream = null, facing = 'environment', closed = false, torchOn = false;
+      var files = [], thumbs = [], timer = null;
 
-      function stop() {
-        if (stream) { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { } }
+      function cleanup() {
+        try { if (timer) clearTimeout(timer); } catch (e) { }
+        timer = null;
+        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
         stream = null;
+        try { thumbs.forEach(function (u) { URL.revokeObjectURL(u); }); } catch (e) { }
+        try { if (root && root.parentNode) root.parentNode.removeChild(root); } catch (e) { }
+      }
+      function toAlbum() {
+        if (settled) return;
+        cleanup();
+        try {
+          pickFiles(opts).then(function (files2) {
+            done({ files: files2 || [], cancelled: !files2 || !files2.length, fallback: true });
+          }, function () { done({ files: [], cancelled: true, fallback: true }); });
+        } catch (e) { done({ files: [], cancelled: true, fallback: true }); }
       }
       function finish(cancelled) {
-        if (done) return;
-        done = true; stop();
-        thumbs.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) { } });
-        if (root.parentNode) root.parentNode.removeChild(root);
-        resolve({ files: files, cancelled: cancelled || !files.length });
+        if (closed) return;
+        closed = true;
+        var result = { files: files.slice(), cancelled: cancelled || !files.length };
+        cleanup();
+        done(result);
+      }
+      function failCamera(e) {
+        if (hint) hint.textContent = '打不开摄像头，正在切换到相册选择…';
+        /* 相机彻底不可用时不留死遮罩：给 1.2 秒看到提示，然后自动降级到相册 */
+        try {
+          setTimeout(function () { if (!closed && !settled) toAlbum(); }, 1200);
+        } catch (e2) { }
+      }
+      function stop() {
+        try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+        stream = null;
       }
       function start() {
         stop();
         var constraints = { video: { facingMode: { ideal: facing }, width: { ideal: 1280 } }, audio: false };
-        return navigator.mediaDevices.getUserMedia(constraints).then(function (s) {
-          stream = s; video.srcObject = s;
-          try { return video.play(); } catch (e) { return null; }
+        var p;
+        try { p = navigator.mediaDevices.getUserMedia(constraints); }
+        catch (e) { failCamera(e); return Promise.resolve(); }
+        if (!p || typeof p.then !== 'function') {
+          failCamera(new Error('相机接口未返回 Promise'));
+          return Promise.resolve();
+        }
+        return Promise.resolve(p).then(function (s) {
+          stream = s;
+          try {
+            if (video && 'srcObject' in video) video.srcObject = s;
+            else if (video) video.src = URL.createObjectURL(s);
+          } catch (e2) { }
+          var play = null;
+          try { play = video && video.play(); } catch (e3) { }
+          return (play && typeof play.then === 'function') ? play.catch(function () { }) : null;
         }).then(function () {
-          hint.textContent = (facing === 'environment' ? '后置' : '前置') + '摄像头 · 把面单条码放入框内';
+          if (hint) hint.textContent = (facing === 'environment' ? '后置' : '前置') + '摄像头 · 把面单条码放入框内';
           if (autoTorch) setTimeout(function () { toggleTorch(true); }, 200);
-        }).catch(function () {
+        }).catch(function (e) {
           if (facing === 'environment') { facing = 'user'; return start(); }
-          hint.textContent = '打不开摄像头，可点「从相册选」，或检查相机权限';
+          failCamera(e);
+          return null;
         });
       }
       function toggleTorch(force) {
-        if (!stream) return;
-        var track = stream.getVideoTracks()[0];
-        if (!track || !track.applyConstraints) return;
-        torchOn = force === undefined ? !torchOn : !!force;
-        track.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(function () { torchOn = false; });
+        try {
+          if (!stream) return;
+          var track = stream.getVideoTracks()[0];
+          if (!track || !track.applyConstraints) return;
+          torchOn = force === undefined ? !torchOn : !!force;
+          var r = track.applyConstraints({ advanced: [{ torch: torchOn }] });
+          if (r && typeof r.catch === 'function') r.catch(function () { torchOn = false; });
+        } catch (e) { }
       }
       function shoot() {
-        if (!stream && !video.videoWidth) { hint.textContent = '摄像头还没就绪，请稍等或从相册选图'; return; }
-        var c = document.createElement('canvas');
-        c.width = video.videoWidth || 1280; c.height = video.videoHeight || 720;
-        try { c.getContext('2d').drawImage(video, 0, 0, c.width, c.height); }
-        catch (e) { hint.textContent = '画面读取失败，请重试'; return; }
-        var make = function (blob) {
-          var name = (opts.prefix || 'PH') + '_' + R.stamp() + '_' + Math.random().toString(36).slice(2, 5) + '.jpg';
-          files.push({ blob: blob, name: name, type: 'image/jpeg' });
-          var u = URL.createObjectURL(blob); thumbs.push(u);
-          var box = root.querySelector('#camThumbs');
-          var im = document.createElement('img'); im.src = u;
-          im.onclick = function () {
-            files = files.filter(function (_, i) { return thumbs[i] !== u; });
-            thumbs = thumbs.filter(function (x) { return x !== u; });
-            if (im.parentNode) im.parentNode.removeChild(im);
-            root.querySelector('#camCount').textContent = files.length + ' 张';
+        try {
+          if (!video || (!stream && !video.videoWidth)) {
+            if (hint) hint.textContent = '摄像头还没就绪，请稍等或从相册选图';
+            return;
+          }
+          var c = document.createElement('canvas');
+          c.width = video.videoWidth || 1280; c.height = video.videoHeight || 720;
+          c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+          var make = function (blob) {
+            var name = (opts.prefix || 'PH') + '_' + R.stamp() + '_' + Math.random().toString(36).slice(2, 5) + '.jpg';
+            files.push({ blob: blob, name: name, type: 'image/jpeg' });
+            var u = '';
+            try { u = URL.createObjectURL(blob); } catch (e) { }
+            thumbs.push(u);
+            var box = root.querySelector('#camThumbs');
+            var im = document.createElement('img');
+            if (u) im.src = u;
+            im.onclick = function () {
+              var k = thumbs.indexOf(u);
+              if (k >= 0) { files.splice(k, 1); thumbs.splice(k, 1); }
+              if (im.parentNode) im.parentNode.removeChild(im);
+              var count = root.querySelector('#camCount');
+              if (count) count.textContent = files.length + ' 张';
+            };
+            if (box) box.appendChild(im);
+            var count2 = root.querySelector('#camCount');
+            if (count2) count2.textContent = files.length + ' 张';
+            if (single || files.length >= max) finish(false);
+            else if (hint) hint.textContent = '已拍 ' + files.length + ' 张，可继续拍或点「完成」';
           };
-          box.appendChild(im);
-          root.querySelector('#camCount').textContent = files.length + ' 张';
-          if (single || files.length >= max) finish(false);
-          else hint.textContent = '已拍 ' + files.length + ' 张，可继续拍或点「完成」';
-        };
-        if (c.toBlob) c.toBlob(function (b) { make(b || new Blob()); }, 'image/jpeg', 0.9);
-        else make(new Blob());
-      }
-      root.addEventListener('click', function (ev) {
-        var b = ev.target.closest('[data-act]');
-        if (!b) return;
-        var act = b.getAttribute('data-act');
-        if (act === 'close') finish(true);
-        else if (act === 'switch') { facing = facing === 'environment' ? 'user' : 'environment'; start(); }
-        else if (act === 'torch') toggleTorch();
-        else if (act === 'shoot') shoot();
-        else if (act === 'done') finish(false);
-        else if (act === 'album') {
-          pickFiles({ multiple: !single }).then(function (picked) {
-            picked.forEach(function (f) { files.push(f); });
-            root.querySelector('#camCount').textContent = files.length + ' 张';
-            if (files.length) finish(false);
-          });
+          if (c.toBlob) c.toBlob(function (b) { make(b || new Blob()); }, 'image/jpeg', 0.9);
+          else make(new Blob());
+        } catch (e) {
+          if (hint) hint.textContent = '画面读取失败，可从相册选图';
         }
+      }
+
+      if (!supported()) { toAlbum(); return; }
+      try {
+        root = document.createElement('div');
+        root.className = 'cam-mask';
+        root.innerHTML = '<div class="cam-panel">' +
+          '<div class="cam-head"><h3>' + R.esc(title) + '</h3>' +
+          '<button type="button" class="cam-x" data-act="close" aria-label="关闭">✕</button></div>' +
+          '<div class="cam-stage"><video playsinline autoplay muted></video>' +
+          '<div class="cam-frame"></div><div class="cam-hint" id="camHint">正在打开摄像头…</div></div>' +
+          '<div class="cam-bar">' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-act="switch">切换镜头</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-act="torch">补光灯</button>' +
+          '<button type="button" class="btn btn-outline btn-sm" data-act="album">从相册选</button>' +
+          '<button type="button" class="btn btn-primary" data-act="shoot">拍照</button>' +
+          '</div><div class="cam-thumbs" id="camThumbs"></div>' +
+          '<div class="cam-foot"><span id="camCount">0 张</span>' +
+          '<button type="button" class="btn btn-primary btn-sm" data-act="done">完成</button></div>' +
+          '</div>';
+        document.body.appendChild(root);
+        video = root.querySelector('video');
+        hint = root.querySelector('#camHint');
+      } catch (e) { toAlbum(); return; }
+
+      root.addEventListener('click', function (ev) {
+        try {
+          var b = closestAct(ev.target);
+          if (!b) return;
+          var act = b.getAttribute('data-act');
+          if (act === 'close') finish(true);
+          else if (act === 'switch') { facing = facing === 'environment' ? 'user' : 'environment'; start(); }
+          else if (act === 'torch') toggleTorch();
+          else if (act === 'shoot') shoot();
+          else if (act === 'done') finish(false);
+          else if (act === 'album') {
+            pickFiles({ multiple: !single }).then(function (picked) {
+              (picked || []).forEach(function (f) { files.push(f); });
+              var count = root.querySelector('#camCount');
+              if (count) count.textContent = files.length + ' 张';
+              if (files.length) finish(false);
+            }, function () { });
+          }
+        } catch (e) { /* 单个点击异常不允许冒到页面外 */ }
       });
-      start();
-      if (opts.autoShoot && opts.autoShoot > 0) setTimeout(function () { if (!done) shoot(); }, opts.autoShoot);
+
+      /* 相机预览/权限回调卡死时，15 秒后自动收尾，页面不会一直挂着遮罩 */
+      timer = setTimeout(function () { if (!closed && !settled) finish(true); }, 15000);
+      try { start(); } catch (e) { failCamera(e); }
+      if (opts.autoShoot && opts.autoShoot > 0) {
+        setTimeout(function () { if (!closed) shoot(); }, opts.autoShoot);
+      }
     });
   }
   function pickFiles(opts) {
     opts = opts || {};
     return new Promise(function (resolve) {
-      var input = document.createElement('input');
-      input.type = 'file'; input.accept = 'image/*';
-      if (opts.multiple !== false) input.multiple = true;
-      if (opts.capture) { input.setAttribute('capture', 'environment'); }
-      input.style.display = 'none';
-      document.body.appendChild(input);
-      input.addEventListener('change', function () {
-        var out = Array.prototype.slice.call(input.files || []).slice(0, 12).map(function (f) {
-          return { blob: f, name: f.name, type: f.type };
+      var settled = false, input = null;
+      function finish(list) {
+        if (settled) return;
+        settled = true;
+        try { if (input && input.parentNode) input.parentNode.removeChild(input); } catch (e) { }
+        resolve(list || []);
+      }
+      try {
+        input = document.createElement('input');
+        input.type = 'file'; input.accept = 'image/*';
+        if (opts.multiple !== false) input.multiple = true;
+        if (opts.capture) input.setAttribute('capture', 'environment');
+        input.style.display = 'none';
+        document.body.appendChild(input);
+        input.addEventListener('change', function () {
+          var out = Array.prototype.slice.call(input.files || []).slice(0, 12).map(function (f) {
+            return { blob: f, name: f.name, type: f.type };
+          });
+          finish(out);
         });
-        if (input.parentNode) input.parentNode.removeChild(input);
-        resolve(out);
-      });
-      input.click();
+        input.click();
+        setTimeout(function () { finish([]); }, 120000);
+      } catch (e) { finish([]); }
     });
   }
 

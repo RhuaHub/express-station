@@ -1,17 +1,17 @@
-# 安卓壳 · 驿站助手 2.0.3
+# 安卓壳 · 驿站助手 2.0.4
 
 一个 `WebView` 壳，把仓库根目录的静态页面打包进 `assets`，不依赖 Gradle / Android Studio。
 
-- 产物：`android/dist/station-assistant-2.0.3.apk`
+- 产物：`android/dist/station-assistant-2.0.4.apk`
 - 页面入口：`https://appassets.androidplatform.net/index.html`（用 `shouldInterceptRequest` 映射到 assets，保证是安全上下文，摄像头 / localStorage / IndexedDB 才可用）
 - 打包脚本：`bash android/build-apk.sh`（需 JDK 17 + Android SDK platform / build-tools）
-- 版本：`versionName 2.0.3` / `versionCode 14`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
+- 版本：`versionName 2.0.4` / `versionCode 15`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
 
 打包进 assets 的页面文件：`index.html`、`styles.css`、`rules.js`、`db.js`、`auth.js`、`media.js`、`app.js`、`sw.js`、`manifest.webmanifest`。改了前端就要重跑脚本，否则手机还是旧页面。
 
 `StationNative` 提供 `saveText(name, content, mime)`（导出 CSV / JSON）、`toastMsg`、`platform`、`version`、`logError`、`crashLog`、`lastFatal`。JS 对话框、文件选择器、相机权限都有对应处理。
 
-## 崩溃诊断（2.0.3）
+## 崩溃诊断
 
 - **诊断屏**：静态块安装全局未捕获异常处理器，`onCreate` 全链路 `catch (Throwable)`；任何启动异常都不闪退，而是显示一个纯原生界面，列出完整堆栈、机型、Android 版本、App 版本，可「复制诊断」或点「仍要进入」继续加载页面。
 - **公共日志**：崩溃时除写私有 `files/crash/station-errors.txt` 外，还在「下载/快递驿站」生成一份 `驿站助手-崩溃日志-*.txt`（Android 10+ 走 MediaStore）。Android 11+ 无法直接访问 `Android/data`，公共目录才是用户真正能拿到的那份。
@@ -27,5 +27,12 @@
 - 页面改为**按需渲染**：`renderAll()` 只渲当前视图，`switchView()` 切到哪个渲哪个，登录瞬间 DOM 峰值约降为 1/14。
 - 原生实现 `onRenderProcessGone()` 并**返回 true**（返回 false 系统直接杀进程），自动重建 WebView；15 秒内连续崩 2 次则停在诊断屏。
 - `shouldOverrideUrlLoading` 只放行明确 http/https 外链；相机权限回调整体 `catch (Throwable)` 并判空。
+
+## 点出库就退出（2.0.4 全面检查）
+
+- 页面层去掉全部 `NodeList.forEach` / `Element.closest` / `classList` 依赖，改自写 ES5 helper；此前 `bind()` 在老 WebView 上启动即抛错，导致所有导航与按钮失效。
+- 出库页不再自动 `getUserMedia` 开镜头，拍照改由用户点按钮触发；相机失败自动降级到「从相册选」，15 秒超时收尾。
+- 原生层：相机权限请求 8 秒超时自动 deny；`Activity` 已结束时直接 deny；`onRequestPermissionsResult` 判空；`onActivityResult` 与 `JsResult` 回调整体 `catch (Throwable)`；渲染进程重建时按 `lastHash` 回到用户刚才的视图。
+- 诊断方式不变：异常会停在原生诊断屏，日志副本在「下载/快递驿站」。
 
 权限只有 `INTERNET`、`CAMERA`、`READ_MEDIA_IMAGES`（Android 13+）与旧版存储写入；**没有短信、电话、通讯录权限**。

@@ -35,17 +35,17 @@ check('重建版文件齐全', () => {
     assert.ok(!exists(f), '旧版文件未作废：' + f);
   });
 });
-check('index.html 脚本版本号统一 2.0.3', () => {
+check('index.html 脚本版本号统一 2.0.4', () => {
   const h = read('index.html');
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css', 'manifest.webmanifest'].forEach(f => {
-    assert.ok(h.includes(f + '?v=2.0.3'), '没有带版本号引用 ' + f);
+    assert.ok(h.includes(f + '?v=2.0.4'), '没有带版本号引用 ' + f);
   });
   assert.ok(!/\?v=1\./.test(h), '还残留旧版版本号');
 });
 check('SW 缓存清单与 BUILD 同步', () => {
   const sw = read('sw.js');
-  assert.ok(/BUILD\s*=\s*'2\.0\.3'/.test(sw));
-  assert.ok(/station-rebuild-v4/.test(sw));
+  assert.ok(/BUILD\s*=\s*'2\.0\.4'/.test(sw));
+  assert.ok(/station-rebuild-v5/.test(sw));
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'styles.css'].forEach(f => {
     assert.ok(sw.includes("'./" + f + "?v=' + BUILD"), 'SW 漏缓存 ' + f);
   });
@@ -56,15 +56,15 @@ check('安卓资源清单 / 版本号 / APK 名', () => {
   ['rules.js', 'db.js', 'auth.js', 'media.js', 'app.js', 'sw.js'].forEach(f => {
     assert.ok(listed.includes(f), '打包漏了 ' + f);
   });
-  assert.ok(/--version-name 2\.0\.3/.test(sh) && /--version-code 14/.test(sh));
-  assert.ok(/station-assistant-2\.0\.3\.apk/.test(sh));
+  assert.ok(/--version-name 2\.0\.4/.test(sh) && /--version-code 15/.test(sh));
+  assert.ok(/station-assistant-2\.0\.4\.apk/.test(sh));
   const mf = read('android/app/src/main/AndroidManifest.xml');
-  assert.ok(/versionCode="14"/.test(mf) && /versionName="2\.0\.3"/.test(mf));
+  assert.ok(/versionCode="15"/.test(mf) && /versionName="2\.0\.4"/.test(mf));
   assert.ok(!/SEND_SMS|CALL_PHONE|READ_CONTACTS/.test(mf), '安卓清单出现通知类权限');
 });
 check('安卓 APK 已构建且含全部新脚本', () => {
-  const apk = path.join(root, 'android/dist/station-assistant-2.0.3.apk');
-  assert.ok(fs.existsSync(apk), '2.0.3 APK 未构建');
+  const apk = path.join(root, 'android/dist/station-assistant-2.0.4.apk');
+  assert.ok(fs.existsSync(apk), '2.0.4 APK 未构建');
   const bin = fs.readFileSync(apk).toString('latin1');
   ['assets/app.js', 'assets/rules.js', 'assets/db.js', 'assets/auth.js', 'assets/media.js'].forEach(f => {
     assert.ok(bin.includes(f), 'APK 缺少 ' + f);
@@ -72,7 +72,7 @@ check('安卓 APK 已构建且含全部新脚本', () => {
   assert.ok(!bin.includes('assets/store.js'), 'APK 里还带着旧版文件');
 });
 
-/* ============ 1.1 安卓 WebView 稳定性（2.0.3） ============ */
+/* ============ 1.1 安卓 WebView 稳定性（2.0.4） ============ */
 check('安卓 WebView 启动与登录崩溃加固', () => {
   const h = read('index.html');
   assert.ok(h.includes('window.StationBoot ='), '缺少启动错误兜底');
@@ -96,13 +96,13 @@ check('安卓 WebView 启动与登录崩溃加固', () => {
   assert.ok(java.includes('Thread.setDefaultUncaughtExceptionHandler'), '缺少静态崩溃处理器');
   assert.ok(java.includes('attachBaseContext(Context base)'), '崩溃处理器拿不到 Context');
   assert.ok(java.includes('station-errors.txt'), '缺少错误日志文件');
-  assert.ok(java.includes('web.loadUrl(START_URL)'), '没有始终重新加载页面');
+  assert.ok(java.includes('web.loadUrl(START_URL'), '没有始终重新加载页面');
   assert.ok(!java.includes('restoreState('), '仍在用 restoreState 导致重建白屏');
   assert.ok(java.includes('public String crashLog()'), '原生桥没暴露 crashLog');
   assert.ok(read('README.md').includes('安卓 WebView 稳定性修复'), '文档没写修复说明');
 });
 
-/* ============ 1.2 崩溃自显 / 公共日志 / 老 WebView（2.0.3） ============ */
+/* ============ 1.2 崩溃自显 / 公共日志 / 老 WebView（2.0.4） ============ */
 check('安卓启动异常不再闪退且诊断可见', () => {
   const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
   assert.ok(java.includes('catch (Throwable t)'), '启动链路没有兜住 Error 类异常');
@@ -119,7 +119,7 @@ check('安卓启动异常不再闪退且诊断可见', () => {
     '应用主题仍依赖自定义 style，启动前有资源解析风险');
 });
 
-/* ============ 1.3 登录瞬间退出：按需渲染 + 渲染进程托管（2.0.3） ============ */
+/* ============ 1.3 登录瞬间退出：按需渲染 + 渲染进程托管（2.0.4） ============ */
 check('登录不再单帧重绘全部视图，原生接管渲染进程崩溃', () => {
   const app = read('app.js');
   assert.ok(app.includes('var RENDERERS = {'), '缺少视图渲染器映射');
@@ -138,6 +138,41 @@ check('登录不再单帧重绘全部视图，原生接管渲染进程崩溃', (
     'onRenderProcessGone 必须返回 true，否则系统会直接杀进程');
   assert.ok(java.includes('private boolean openExternal('), '外链跳转没有收敛');
   assert.ok(java.includes('onPermissionRequest " + stackOf(t)'), '相机权限回调没有整体兜底');
+});
+
+/* ============ 1.4 点出库就退出：老 WebView 兼容 + 相机链路（2.0.4） ============ */
+check('出库视图不再触发启动崩溃或自动开镜头', () => {
+  const frontend = ['index.html', 'app.js', 'rules.js', 'db.js', 'auth.js', 'media.js'];
+  frontend.forEach(f => {
+    const t = read(f);
+    assert.ok(!/querySelectorAll\([^)]*\)\.forEach/.test(t),
+      f + ' 用了老 WebView 没有的 NodeList.forEach');
+    assert.ok(!/\.closest\(/.test(t), f + ' 用了老 WebView 没有的 Element.closest');
+    assert.ok(!/\.classList\./.test(t), f + ' 用了可能缺失的 classList');
+  });
+  const app = read('app.js');
+  assert.ok(app.includes('function each(') && app.includes('function closestData('),
+    '缺少 ES5 DOM 兼容 helper');
+  assert.ok(app.includes('function safeChain('), '异步链没有兜住 unhandledrejection');
+  assert.ok(!/if \(name === 'outbound' && store\.settings\(\)\.autoCapture/.test(app),
+    '进入出库页仍会自动开镜头');
+  assert.ok(app.includes('S.manualCaptureUsed'), '连续取件自动开镜头没有用户手势前置条件');
+  assert.ok(/status: 'in', limit: 60/.test(app), '出库表格没有降峰');
+  assert.ok(/autoCapture:\s*false/.test(read('rules.js')), '默认设置仍在自动开镜头');
+  assert.ok(read('index.html').includes('默认不自动开镜头'), '出库页文案没同步');
+
+  const media = read('media.js');
+  assert.ok(media.includes('function closestAct('), '相机面板仍依赖 Element.closest');
+  assert.ok(media.includes('if (!closed && !settled) finish(true)'), '相机预览没有超时收尾');
+  assert.ok(media.includes('typeof p.then !=='), 'getUserMedia 返回值没有判空');
+  assert.ok(media.includes('var engCache = null'), '识别引擎每次渲染都重新探测');
+
+  const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
+  assert.ok(java.includes('postDelayed'), '相机权限请求没有超时拒绝');
+  assert.ok(java.includes('results != null'), '权限回调结果没有判空');
+  assert.ok(java.includes('lastHash'), '渲染进程重建后没有恢复当前视图');
+  assert.ok(java.includes('activityGone()'), 'Activity 已结束时没有直接拒绝权限');
+  assert.ok(read('README.md').includes('点出库就退出'), '文档没写本轮修复说明');
 });
 
 /* ================= 2. 排除项：源码里没有通知能力 ================= */
@@ -556,7 +591,7 @@ check('自检面板信息可用', () => {
   a.setup({ name: 'boss', password: 'abc123456' });
   const d = a.diag();
   assert.strictEqual(d.accounts, 1);
-  assert.strictEqual(d.build, '2.0.3');
+  assert.strictEqual(d.build, '2.0.4');
   assert.ok('storageOk' in d && 'role' in d);
 });
 
@@ -601,7 +636,7 @@ check('媒体模块：识别降级、反馈与照片库接口齐全', () => {
 });
 check('README 写明功能对照、排除项与数据边界', () => {
   const md = read('README.md');
-  ['2.0.3', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39'].forEach(k => {
+  ['2.0.4', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39'].forEach(k => {
     assert.ok(md.includes(k), 'README 漏了 ' + k);
   });
 });
@@ -612,7 +647,7 @@ check('仓库无敏感凭据', () => {
 });
 
 /* ================= 结果 ================= */
-console.log('\n驿站助手 2.0.3 · 回归测试');
+console.log('\n驿站助手 2.0.4 · 回归测试');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
 if (failures.length) {
   console.log('\n失败明细：');

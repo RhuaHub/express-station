@@ -13,6 +13,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.Gravity;
@@ -56,7 +58,7 @@ import java.util.Map;
  * IndexedDB 都会被限制），而是用 shouldInterceptRequest 把
  * https://appassets.androidplatform.net/ 映射到 assets，得到真正的安全上下文。
  *
- * 2.0.3 起：任何启动期异常都不再闪退，而是显示原生诊断屏；崩溃堆栈同时落到
+ * 2.0.2 起：任何启动期异常都不再闪退，而是显示原生诊断屏；崩溃堆栈同时落到
  * 公共「下载/快递驿站」目录（Android 11+ 用户无法直接访问 Android/data）。
  */
 public class MainActivity extends Activity {
@@ -94,6 +96,15 @@ public class MainActivity extends Activity {
     private boolean fatalShown = false;
     private int renderGoneCount = 0;
     private long renderGoneAt = 0L;
+    /** 渲染进程被回收后重建时，尽量回到用户刚才所在的视图，避免看起来像「退回首页」 */
+    private String lastHash = "";
+
+    private boolean activityGone() {
+        try {
+            if (isFinishing()) return true;
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed();
+        } catch (Throwable t) { return false; }
+    }
 
     @Override
     protected void attachBaseContext(Context base) {
@@ -256,7 +267,7 @@ public class MainActivity extends Activity {
     private void showFatal(final String detail, String title) {
         if (fatalShown) return;
         fatalShown = true;
-        final String info = "版本 2.0.3 · " + Build.MANUFACTURER + " " + Build.MODEL
+        final String info = "版本 2.0.4 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
         writePublicCrash(info + "\n" + title + "\n\n" + detail);
         try {
@@ -399,7 +410,7 @@ public class MainActivity extends Activity {
         });
 
         /* 始终重新加载：restoreState 在 Activity 重建时会恢复出空白页，且原生桥可能失效 */
-        web.loadUrl(START_URL);
+        web.loadUrl(START_URL + (lastHash == null ? "" : lastHash));
     }
 
     /* ---------- 资源映射：https 域 -> assets ---------- */
@@ -506,7 +517,12 @@ public class MainActivity extends Activity {
             boolean crashed = detail != null && detail.didCrash();
             appendCrash("FATAL 渲染进程退出 didCrash=" + crashed);
             writePublicCrash("渲染进程退出 didCrash=" + crashed
-                    + " · 版本 2.0.3 · Android " + Build.VERSION.SDK_INT);
+                    + " · 版本 2.0.4 · Android " + Build.VERSION.SDK_INT);
+            try {
+                String u = view == null ? null : view.getUrl();
+                int h = u == null ? -1 : u.indexOf('#');
+                lastHash = h >= 0 ? u.substring(h) : "";
+            } catch (Throwable ignored) { }
             long now = System.currentTimeMillis();
             if (now - renderGoneAt > 15000) renderGoneCount = 0;
             renderGoneAt = now;
@@ -518,7 +534,7 @@ public class MainActivity extends Activity {
                 fatalShown = false;
                 showFatal("WebView 渲染进程在 15 秒内连续退出 " + renderGoneCount + " 次。\n"
                         + "常见原因：页面单帧生成过多 DOM、设备内存紧张。\n"
-                        + "2.0.3 已把登录后的一次性全量渲染改为按需渲染，请把本屏内容发回。",
+                        + "2.0.3 已把登录后的一次性全量渲染改为按需渲染，2.0.4 又去掉了老 WebView 不兼容 API 与进入出库页自动开镜头，请把本屏内容发回。",
                         "渲染进程连续崩溃");
             } else {
                 runOnUiThread(new Runnable() {
@@ -545,6 +561,10 @@ public class MainActivity extends Activity {
                 @Override public void run() {
                     try {
                         if (request == null) return;
+                        if (activityGone()) {
+                            request.deny();
+                            return;
+                        }
                         boolean wantsVideo = false;
                         String[] res = request.getResources();
                         if (res != null) {
@@ -559,6 +579,20 @@ public class MainActivity extends Activity {
                             request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
                         } else {
                             pendingPermission = request;
+                            final PermissionRequest waiting = request;
+                            /* 部分 ROM 的权限对话框不会回调，WebView 会一直等 grant/deny，
+                               进而 ANR 或被系统回收；8 秒后自动拒绝，让用户改用「从相册选」。 */
+                            try {
+                                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                                    @Override public void run() {
+                                        if (pendingPermission == waiting) {
+                                            pendingPermission = null;
+                                            try { waiting.deny(); } catch (Throwable ignored) { }
+                                            appendCrash("相机权限请求超时，已自动拒绝");
+                                        }
+                                    }
+                                }, 8000L);
+                            } catch (Throwable ignored) { }
                             requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
                         }
                     } catch (Throwable t) {
@@ -614,10 +648,14 @@ public class MainActivity extends Activity {
                 new android.app.AlertDialog.Builder(MainActivity.this)
                         .setMessage(message)
                         .setPositiveButton("好", new android.content.DialogInterface.OnClickListener() {
-                            @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
+                            @Override public void onClick(android.content.DialogInterface d, int w) {
+                                try { result.confirm(); } catch (Throwable ignored) { }
+                            }
                         })
                         .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
-                            @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
+                            @Override public void onCancel(android.content.DialogInterface d) {
+                            try { result.cancel(); } catch (Throwable ignored) { }
+                        }
                         })
                         .show();
             } catch (Throwable t) {
@@ -633,13 +671,19 @@ public class MainActivity extends Activity {
                 new android.app.AlertDialog.Builder(MainActivity.this)
                         .setMessage(message)
                         .setPositiveButton("确定", new android.content.DialogInterface.OnClickListener() {
-                            @Override public void onClick(android.content.DialogInterface d, int w) { result.confirm(); }
+                            @Override public void onClick(android.content.DialogInterface d, int w) {
+                                try { result.confirm(); } catch (Throwable ignored) { }
+                            }
                         })
                         .setNegativeButton("取消", new android.content.DialogInterface.OnClickListener() {
-                            @Override public void onClick(android.content.DialogInterface d, int w) { result.cancel(); }
+                            @Override public void onClick(android.content.DialogInterface d, int w) {
+                                try { result.cancel(); } catch (Throwable ignored) { }
+                            }
                         })
                         .setOnCancelListener(new android.content.DialogInterface.OnCancelListener() {
-                            @Override public void onCancel(android.content.DialogInterface d) { result.cancel(); }
+                            @Override public void onCancel(android.content.DialogInterface d) {
+                            try { result.cancel(); } catch (Throwable ignored) { }
+                        }
                         })
                         .show();
             } catch (Throwable t) {
@@ -664,15 +708,21 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
         super.onRequestPermissionsResult(code, perms, results);
         if (code == REQ_CAMERA_PERM) {
-            boolean ok = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
-            if (pendingPermission != null) {
-                try {
-                    if (ok) pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
-                    else {
-                        pendingPermission.deny();
-                        toast("没有相机权限，可用「从相册选择」替代");
-                    }
-                } catch (Throwable t) { appendCrash("camera result " + t); }
+            try {
+                boolean ok = results != null && results.length > 0
+                        && results[0] == PackageManager.PERMISSION_GRANTED;
+                if (pendingPermission != null) {
+                    try {
+                        if (ok) pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                        else {
+                            pendingPermission.deny();
+                            toast("没有相机权限，可用「从相册选择」替代");
+                        }
+                    } catch (Throwable t) { appendCrash("camera result " + t); }
+                    pendingPermission = null;
+                }
+            } catch (Throwable t) {
+                appendCrash("onRequestPermissionsResult " + stackOf(t));
                 pendingPermission = null;
             }
         }
@@ -683,18 +733,25 @@ public class MainActivity extends Activity {
         super.onActivityResult(req, result, data);
         if (req != REQ_FILE) return;
         if (fileCallback == null) return;
-        List<Uri> out = new ArrayList<>();
-        if (result == RESULT_OK && data != null) {
-            if (data.getClipData() != null) {
-                for (int i = 0; i < data.getClipData().getItemCount(); i++) {
-                    out.add(data.getClipData().getItemAt(i).getUri());
+        try {
+            List<Uri> out = new ArrayList<>();
+            if (result == RESULT_OK && data != null) {
+                if (data.getClipData() != null) {
+                    for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                        out.add(data.getClipData().getItemAt(i).getUri());
+                    }
+                } else if (data.getData() != null) {
+                    out.add(data.getData());
                 }
-            } else if (data.getData() != null) {
-                out.add(data.getData());
             }
+            try { fileCallback.onReceiveValue(out.isEmpty() ? null : out.toArray(new Uri[0])); }
+            catch (Throwable t) { appendCrash("fileCallback " + t); }
+        } catch (Throwable t) {
+            appendCrash("onActivityResult " + stackOf(t));
+            try { fileCallback.onReceiveValue(null); } catch (Throwable ignored) { }
+        } finally {
+            fileCallback = null;
         }
-        fileCallback.onReceiveValue(out.isEmpty() ? null : out.toArray(new Uri[0]));
-        fileCallback = null;
     }
 
     /* ---------- 给网页用的原生桥 ---------- */
@@ -707,7 +764,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "2.0.3";
+            return "2.0.4";
         }
 
         /** 导出 CSV / JSON：写入系统「下载/快递驿站」 */

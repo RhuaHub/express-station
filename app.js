@@ -7,13 +7,49 @@
   var $ = function (id) { return document.getElementById(id); };
   var esc = R.esc;
 
+  /* 老 Android WebView（Chromium < 51）没有 NodeList.prototype.forEach / Element.closest，
+     classList 也可能不完整。统一用 ES5 写法，避免启动阶段整个 bind() 抛错、所有按钮失效。 */
+  function each(list, fn) {
+    var nodes = typeof list === 'string' ? document.querySelectorAll(list) : list;
+    if (!nodes) return;
+    for (var i = 0; i < nodes.length; i++) fn(nodes[i], i);
+  }
+  function closestData(node, attr) {
+    while (node) {
+      if (node.nodeType === 1 && node.getAttribute && node.hasAttribute(attr)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+  function hasClass(el, c) {
+    return !!el && (' ' + String(el.className || '') + ' ').indexOf(' ' + c + ' ') >= 0;
+  }
+  function setClass(el, c, on) {
+    if (!el) return;
+    var list = String(el.className || '').split(/\s+/), out = [], i;
+    for (i = 0; i < list.length; i++) if (list[i] && list[i] !== c) out.push(list[i]);
+    if (on) out.push(c);
+    el.className = out.join(' ');
+  }
+  function setOn(el, on) { setClass(el, 'on', on); }
+  /* 任何异步链都不允许变成 unhandledrejection（老 WebView 上会连带页面异常） */
+  function safeChain(p, label) {
+    if (!p || typeof p.then !== 'function') return Promise.resolve(null);
+    return p.then(null, function (e) {
+      reportBoot(label || '异步任务失败', e);
+      toast((label || '操作') + '未完成：' + ((e && e.message) || '设备不支持'), 'err');
+      return null;
+    });
+  }
+
+
   var S = {
     view: 'dash', inTab: 'manual', outTab: 'pickup', outType: 'pickup',
     inFiles: [], outFiles: [], inUrls: [], outUrls: [], inOcrPending: null,
     lastIn: null, lastInBatchId: '', lastOut: null, lastOutIds: [],
     quickList: [], scanInList: [], batchRows: [], batchErrors: [],
     outSelected: {}, invSelected: {}, printSelected: {},
-    autoTried: false, outEngine: '', outCandidates: [], outScanPhoto: null,
+    autoTried: false, manualCaptureUsed: false, outEngine: '', outCandidates: [], outScanPhoto: null,
     statPreset: 'today', statTab: 'rate', qResult: [], invResult: [],
     photoUrls: {}, idleTimer: null, lastActive: Date.now()
   };
@@ -203,22 +239,19 @@
     if (!$('view-' + name)) name = 'dash';
     S.view = name;
     Object.keys(TITLES).forEach(function (v) { var el = $('view-' + v); if (el) el.hidden = v !== name; });
-    document.querySelectorAll('.nav-item').forEach(function (b) {
-      b.classList.toggle('on', b.getAttribute('data-view') === name);
+    each('.nav-item', function (b) {
+      setOn(b, b.getAttribute('data-view') === name);
       var p = b.getAttribute('data-perm');
       b.disabled = !!(p && !auth.can(p));
     });
     $('topSub').textContent = TITLES[name];
-    $('sidebar').classList.remove('open'); $('sideShade').classList.remove('on');
+    setClass($('sidebar'), 'open', false); setClass($('sideShade'), 'on', false);
     try { history.replaceState(null, '', '#' + name); } catch (e) { }
     renderCurrent();
     window.scrollTo(0, 0);
     if (name === 'inbound' && S.inTab === 'manual') setTimeout(function () { try { $('inNo').focus(); } catch (e) { } }, 100);
-    if (name === 'outbound' && store.settings().autoCapture && !S.autoTried &&
-      auth.can('outbound') && Media.supported() && store.listParcels({ status: 'in' }).length) {
-      S.autoTried = true;
-      setTimeout(function () { if (S.view === 'outbound') capturePickup(true); }, 500);
-    }
+    /* 进入出库页绝不自动开镜头：老 Android WebView 上相机预览 / 权限回调会让渲染进程退出，
+       表现正是「能登录，点出库就退出」。拍照一律由用户点显式按钮触发。 */
   }
   /* 按需渲染：登录那一刻绝不能一次性重绘 14 个视图。
      低端 Android WebView 在单帧内做大量 innerHTML / 表格 / SVG 生成时，
@@ -340,6 +373,10 @@
         : '';
       renderInbound();
       return out;
+    }).catch(function (e) {
+      reportBoot('入库识别', e);
+      toast('照片识别失败，可直接手输运单号', 'err');
+      return [];
     });
     return S.inOcrPending;
   }
@@ -368,7 +405,7 @@
       return items.filter(function (x) { return x && x.ok; }).map(function (x) {
         return { id: x.id, name: x.name, at: R.iso(), kind: kind };
       });
-    });
+    }).catch(function (e) { reportBoot('照片保存', e); return []; });
   }
   function submitInbound(e) {
     e.preventDefault();
@@ -421,7 +458,7 @@
     $('outMode').value = mode;
     $('outReasonBox').hidden = S.outType !== 'refund';
     var kw = $('outKeyword').value.trim();
-    var list = store.listParcels({ kw: kw, mode: $('outMode').value, status: 'in', limit: 120 });
+    var list = store.listParcels({ kw: kw, mode: $('outMode').value, status: 'in', limit: 60 });
     $('outResultCount').textContent = (kw ? '匹配 ' : '在库 ') + list.length + ' 件';
     var rows = list.map(function (p) {
       return { id: p.id, cells: [parcelLine(p), esc(p.carrier), esc(p.recipient || '—') + ' <span class="muted">' + esc(p.phoneTail || '') + '</span>',
@@ -443,7 +480,7 @@
   }
   function setOutTab(tab) {
     S.outTab = tab; S.outType = tab;
-    document.querySelectorAll('#outTabs .tab').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-tab') === tab); });
+    each('#outTabs .tab', function (b) { setOn(b, b.getAttribute('data-tab') === tab); });
     $('outKeyword').placeholder = tab === 'phone' ? '输入手机后四位' : tab === 'scan' ? '扫描货号 / 条码后回车即出库' : '货号 / 编号 / 单号 / 尾号 / 收件人';
     renderOutbound();
   }
@@ -476,28 +513,32 @@
         $('outOcrState').hidden = true; $('outCandidates').innerHTML = '';
         feedback(type === 'refund' ? 'refund' : 'out', R.feedbackText(type === 'refund' ? 'refund' : 'out', r.parcels[0]));
         afterWrite((r.merged ? '合并出库 ' : '已出库 ') + r.count + ' 件 · ' + r.batchId);
-        if (S.outTab === 'pickup' && store.settings().autoCapture && Media.supported() && auth.can('outbound')) {
-          setTimeout(function () { if (S.view === 'outbound') capturePickup(true); }, 650);
+        /* 连续取件：只有用户先主动拍过、且站长显式开启开关时才自动再开镜头 */
+        if (S.outTab === 'pickup' && store.settings().autoCapture && S.manualCaptureUsed &&
+          Media.supported() && auth.can('outbound')) {
+          setTimeout(function () { if (S.view === 'outbound') safeChain(capturePickup(true), '连续取件'); }, 650);
         }
       }).catch(function (e) { toast('凭证保存失败：' + e.message, 'err'); });
     };
     if (needPhoto && store.settings().photoAuto && Media.supported()) {
-      captureOutProof().then(function (ok) { if (ok) run(); });
+      captureOutProof().then(function (ok) { if (ok) run(); })
+        .catch(function (e) { reportBoot('出库凭证', e); });
     } else run();
   }
   function captureOutProof() {
-    return Media.capture({ title: '拍出库凭证', max: 6, prefix: 'CK', torch: store.settings().torch }).then(function (r) {
-      if (r.cancelled) { toast('未拍照，已取消出库', 'err'); return false; }
+    return safeChain(Media.capture({ title: '拍出库凭证', max: 6, prefix: 'CK', torch: store.settings().torch }).then(function (r) {
+      if (!r || r.cancelled) { toast('未拍照，已取消出库', 'err'); return false; }
       S.outFiles = S.outFiles.concat(r.files).slice(0, 12);
       renderOutbound();
       return true;
-    });
+    }), '拍摄出库凭证');
   }
   function capturePickup(auto) {
     if (!guard('outbound')) return Promise.resolve(false);
-    return Media.capture({ title: '拍照取件 · 对准面单条码', single: true, prefix: 'CK',
+    if (!auto) S.manualCaptureUsed = true;  /* 只有用户主动拍过，才允许连续取件自动再开镜头 */
+    return safeChain(Media.capture({ title: '拍照取件 · 对准面单条码', single: true, prefix: 'CK',
       torch: store.settings().torch }).then(function (r) {
-      if (r.cancelled || !r.files.length) return false;
+      if (!r || r.cancelled || !r.files.length) return false;
       var f = r.files[0];
       return Media.recognize(f.blob).then(function (d) {
         var code = R.barcodeOf(d);
@@ -532,7 +573,7 @@
         renderOutbound();
         return true;
       });
-    });
+    }), '拍照取件');
   }
 
   /* ---------------- 查件 / 台账 ---------------- */
@@ -861,6 +902,10 @@
       box.innerHTML = urls.length ? urls.map(function (u, i) {
         return '<a href="' + u + '" target="_blank" rel="noopener"><img src="' + u + '" alt="' + esc(p.photos[i].name) + '"></a>';
       }).join('') : '<span class="muted">这件包裹没有照片</span>';
+    }).catch(function (e) {
+      reportBoot('读取照片', e);
+      var box2 = $('modalPhotos');
+      if (box2) box2.textContent = '照片读取失败';
     });
   }
   function editParcelDialog(id) {
@@ -945,7 +990,7 @@
       '<button class="btn btn-ghost" data-modal="close">取消</button><button class="btn btn-primary" data-modal="ok">保存</button>');
     m.querySelector('[data-modal="ok"]').onclick = function () {
       var n = 0;
-      m.querySelectorAll('[data-tail]').forEach(function (el) {
+      each(m.querySelectorAll('[data-tail]'), function (el) {
         if (el.value.trim()) {
           var r = store.updateParcel(el.getAttribute('data-tail'), { phone: el.value.trim() });
           if (r.ok) n++;
@@ -1019,7 +1064,7 @@
       var a = auth.listAccounts().filter(function (x) { return x.id === id; })[0]; if (!a) return;
       $('accId').value = a.id; $('accName').value = a.name; $('accPw').value = '';
       $('accRole').value = a.role;
-      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+      each('[data-perm-check]', function (cb) {
         cb.checked = a.perms.indexOf(cb.getAttribute('data-perm-check')) >= 0;
       });
     } else if (act === 'accDel') {
@@ -1051,22 +1096,22 @@
     fr.readAsText(file);
   }
   function bind() {
-    document.querySelectorAll('.nav-item').forEach(function (b) {
+    each('.nav-item', function (b) {
       b.addEventListener('click', function () { if (!b.disabled) switchView(b.getAttribute('data-view')); });
     });
     document.addEventListener('click', function (e) {
-      var go = e.target.closest('[data-go]');
+      var go = closestData(e.target, 'data-go');
       if (go) { switchView(go.getAttribute('data-go')); return; }
-      var act = e.target.closest('[data-act]');
+      var act = closestData(e.target, 'data-act');
       if (act) { e.preventDefault(); handleAct(act.getAttribute('data-act'), act); return; }
-      var mc = e.target.closest('[data-modal="close"]');
-      if (mc) { closeModal(); return; }
+      var mc = closestData(e.target, 'data-modal');
+      if (mc && mc.getAttribute('data-modal') === 'close') { closeModal(); return; }
       if (e.target === $('modalMask')) closeModal();
     });
     on('btnMenu', 'click', function () {
-      $('sidebar').classList.toggle('open'); $('sideShade').classList.toggle('on');
+      setClass($('sidebar'), 'open', !hasClass($('sidebar'), 'open')); setClass($('sideShade'), 'on', !hasClass($('sideShade'), 'on'));
     });
-    on('sideShade', 'click', function () { $('sidebar').classList.remove('open'); $('sideShade').classList.remove('on'); });
+    on('sideShade', 'click', function () { setClass($('sidebar'), 'open', false); setClass($('sideShade'), 'on', false); });
     on('btnLock', 'click', function () { auth.lock(); showGate(); });
     on('btnLogout', 'click', function () { auth.logout(); showGate(); });
 
@@ -1074,8 +1119,8 @@
     on('formIn', 'submit', submitInbound);
     on('inNo', 'input', syncCarrier);
     on('btnInScan', 'click', function () {
-      Media.capture({ title: '扫描面单条码', single: true, prefix: 'RK', torch: store.settings().torch }).then(function (r) {
-        if (r.cancelled || !r.files.length) return;
+      safeChain(Media.capture({ title: '扫描面单条码', single: true, prefix: 'RK', torch: store.settings().torch }).then(function (r) {
+        if (!r || r.cancelled || !r.files.length) return;
         var f = r.files[0];
         return Media.recognize(f.blob).then(function (d) {
           var code = R.barcodeOf(d);
@@ -1089,17 +1134,17 @@
           renderInbound();
           toast(code ? '已识别 ' + code : '未识别到条码', code ? 'ok' : 'err');
         });
-      });
+      }), '扫描面单条码');
     });
     on('btnInVoice', 'click', function () {
-      Media.listen().then(function (r) {
+      safeChain(Media.listen().then(function (r) {
         if (!r.ok) { toast(r.error, 'err'); return; }
         $('inPhone').value = r.text; syncCarrier(); toast('已录入 ' + r.text, 'ok');
-      });
+      }), '语音录入');
     });
     on('btnInCamera', 'click', function () {
-      Media.capture({ title: '入库面单拍照', max: 12, prefix: 'RK', torch: store.settings().torch })
-        .then(function (r) { if (!r.cancelled && r.files.length) return nameInFiles(r.files); });
+      safeChain(Media.capture({ title: '入库面单拍照', max: 12, prefix: 'RK', torch: store.settings().torch })
+        .then(function (r) { if (r && !r.cancelled && r.files.length) return nameInFiles(r.files); }), '入库面单拍照');
     });
     on('btnInAlbum', 'click', function () { $('inPhotos').click(); });
     on('inPhotos', 'change', function () {
@@ -1108,7 +1153,7 @@
     });
     ['inPhotoPreview', 'outPhotoPreview'].forEach(function (boxId) {
       on(boxId, 'click', function (e) {
-        var img = e.target.closest('[data-photo]'); if (!img) return;
+        var img = closestData(e.target, 'data-photo'); if (!img) return;
         var which = img.getAttribute('data-photo'), idx = Number(img.getAttribute('data-index'));
         var arr = which === 'in' ? S.inFiles : S.outFiles;
         var f = arr[idx]; if (!f) return;
@@ -1123,10 +1168,10 @@
         };
       });
     });
-    document.querySelectorAll('#inTabs .tab').forEach(function (b) {
+    each('#inTabs .tab', function (b) {
       b.addEventListener('click', function () {
         S.inTab = b.getAttribute('data-tab');
-        document.querySelectorAll('#inTabs .tab').forEach(function (x) { x.classList.toggle('on', x === b); });
+        each('#inTabs .tab', function (x) { setOn(x, x === b); });
         ['manual', 'quick', 'batch', 'scan'].forEach(function (t) { $('inPane-' + t).hidden = t !== S.inTab; });
         if (S.inTab === 'quick') $('quickNo').focus();
         if (S.inTab === 'scan') $('scanInNo').focus();
@@ -1201,7 +1246,7 @@
     });
 
     /* 出库 */
-    document.querySelectorAll('#outTabs .tab').forEach(function (b) {
+    each('#outTabs .tab', function (b) {
       b.addEventListener('click', function () { setOutTab(b.getAttribute('data-tab')); });
     });
     on('outKeyword', 'input', renderOutbound);
@@ -1214,7 +1259,7 @@
     });
     on('btnOutSearch', 'click', renderOutbound);
     on('btnOutSelectAll', 'click', function () {
-      store.listParcels({ kw: $('outKeyword').value.trim(), mode: $('outMode').value, status: 'in', limit: 120 })
+      store.listParcels({ kw: $('outKeyword').value.trim(), mode: $('outMode').value, status: 'in', limit: 60 })
         .forEach(function (p) { S.outSelected[p.id] = true; });
       renderOutbound();
     });
@@ -1242,7 +1287,7 @@
     on('btnOutCamera', 'click', function () { capturePickup(false); });
     on('btnOutCameraNow', 'click', function () { capturePickup(false); });
     $('outTable').addEventListener('change', function (e) {
-      var cb = e.target.closest('[data-out-check]');
+      var cb = closestData(e.target, 'data-out-check');
       if (cb) toggleOutCheck(cb.getAttribute('data-out-check'), cb.checked);
     });
 
@@ -1263,7 +1308,7 @@
     });
     on('btnInvAll', 'click', function () { S.invResult.forEach(function (p) { S.invSelected[p.id] = true; }); renderInventory(); });
     $('invTable').addEventListener('change', function (e) {
-      var cb = e.target.closest('[data-check]');
+      var cb = closestData(e.target, 'data-check');
       if (cb) { if (cb.checked) S.invSelected[cb.getAttribute('data-check')] = true; else delete S.invSelected[cb.getAttribute('data-check')]; }
     });
     on('btnInvMove', 'click', function () {
@@ -1355,7 +1400,7 @@
     on('labelW', 'change', function () { store.updateSettings({ labelWidth: Number(this.value) || 80 }); renderPrint(); });
     on('labelH', 'change', function () { store.updateSettings({ labelHeight: Number(this.value) || 50 }); renderPrint(); });
     $('labelFields').addEventListener('change', function (e) {
-      var cb = e.target.closest('[data-label-field]'); if (!cb) return;
+      var cb = closestData(e.target, 'data-label-field'); if (!cb) return;
       var arr = store.settings().labelFields.slice();
       var k = cb.getAttribute('data-label-field');
       arr = cb.checked ? arr.concat([k]).filter(function (x, i, a) { return a.indexOf(x) === i; }) : arr.filter(function (x) { return x !== k; });
@@ -1372,7 +1417,7 @@
       renderPrint();
     });
     $('printList').addEventListener('change', function (e) {
-      var cb = e.target.closest('[data-print-check]'); if (!cb) return;
+      var cb = closestData(e.target, 'data-print-check'); if (!cb) return;
       var id = cb.getAttribute('data-print-check');
       if (cb.checked) S.printSelected[id] = true; else delete S.printSelected[id];
       renderPrint();
@@ -1421,7 +1466,7 @@
         var snap = store.exportSnapshot(); snap.photos = photos;
         download('驿站备份-' + R.dayKey() + '.json', JSON.stringify(snap), 'application/json');
         toast('备份已导出（含 ' + photos.length + ' 张照片）', 'ok');
-      });
+      }).catch(function (e) { reportBoot('导出备份', e); toast('备份导出失败', 'err'); });
     });
     on('btnRestore', 'click', function () { $('restoreFile').click(); });
     on('restoreFile', 'change', function () {
@@ -1458,7 +1503,7 @@
       Media.exportAll().then(function (photos) {
         download('照片数据-' + R.dayKey() + '.json', JSON.stringify(photos), 'application/json');
         toast('已导出 ' + photos.length + ' 张照片数据', 'ok');
-      });
+      }).catch(function (e) { reportBoot('导出照片', e); toast('照片导出失败', 'err'); });
     });
     on('btnClearAll', 'click', function () {
       confirmBox('清空全部数据', '包裹、客户、账号、照片引用、流水都会被清空，且不可撤销。建议先导出备份！', function () {
@@ -1472,7 +1517,7 @@
     on('formAccount', 'submit', function (e) {
       e.preventDefault(); if (!guard('accounts')) return;
       var perms = [];
-      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+      each('[data-perm-check]', function (cb) {
         if (cb.checked) perms.push(cb.getAttribute('data-perm-check'));
       });
       var id = $('accId').value;
@@ -1484,7 +1529,7 @@
     on('btnAccClear', 'click', function () {
       ['accId', 'accName', 'accPw'].forEach(function (id) { $(id).value = ''; });
       $('accRole').value = 'operator';
-      document.querySelectorAll('[data-perm-check]').forEach(function (cb) {
+      each('[data-perm-check]', function (cb) {
         cb.checked = Auth.OPERATOR_DEFAULT.indexOf(cb.getAttribute('data-perm-check')) >= 0;
       });
     });
@@ -1542,7 +1587,7 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.3',
+    rules: R, media: Media, version: '2.0.4',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();
