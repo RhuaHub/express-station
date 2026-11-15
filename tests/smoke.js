@@ -1,6 +1,6 @@
 /* 驿站助手（重建版）· 回归测试
    运行：node tests/smoke.js
-   覆盖：规则层、数据层、账号权限、页面接线、功能清单、排除项与版本一致性。 */
+   覆盖：规则层、数据层、账号权限、页面接线、通知能力与安全限制、版本一致性。 */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,7 @@ const Media = require('../media.js');
 const OCR = require('../ocr.js');
 const QR = require('../qr.js');
 const Extras = require('../extras.js');
+const Notify = require('../notify.js');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -31,7 +32,7 @@ function isoAt(day, h) { return new Date(day + 'T' + (h || '10:00') + ':00').toI
 /* ================= 1. 文件与版本一致性 ================= */
 check('重建版文件齐全', () => {
   ['index.html', 'styles.css', 'rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js',
-    'extras.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'README.md', 'tests/smoke.js',
+    'extras.js', 'notify.js', 'app.js', 'sw.js', 'manifest.webmanifest', 'README.md', 'tests/smoke.js',
     'android/build-apk.sh'].forEach(f => {
       assert.ok(exists(f), '缺文件 ' + f);
     });
@@ -39,43 +40,45 @@ check('重建版文件齐全', () => {
     assert.ok(!exists(f), '旧版文件未作废：' + f);
   });
 });
-check('index.html 脚本版本号统一 2.1.0', () => {
+check('index.html 脚本版本号统一 2.2.0', () => {
   const h = read('index.html');
-  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'app.js',
+  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'notify.js', 'app.js',
     'styles.css', 'manifest.webmanifest'].forEach(f => {
-      assert.ok(h.includes(f + '?v=2.1.0'), '没有带版本号引用 ' + f);
+      assert.ok(h.includes(f + '?v=2.2.0'), '没有带版本号引用 ' + f);
     });
   assert.ok(h.indexOf('ocr.js') < h.indexOf('media.js'), 'ocr.js 必须在 media.js 之前加载');
   assert.ok(h.indexOf('qr.js') < h.indexOf('media.js'), 'qr.js 必须在 media.js 之前加载');
-  assert.ok(h.indexOf('extras.js') < h.indexOf('app.js'), 'extras.js 必须在 app.js 之前加载');
+  assert.ok(h.indexOf('notify.js') < h.indexOf('app.js'), 'notify.js 必须在 app.js 之前加载');
   assert.ok(!/\?v=1\./.test(h), '还残留旧版版本号');
 });
 check('SW 缓存清单与 BUILD 同步', () => {
   const sw = read('sw.js');
-  assert.ok(/BUILD\s*=\s*'2\.1\.0'/.test(sw));
-  assert.ok(/station-rebuild-v8/.test(sw));
-  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'app.js', 'styles.css'].forEach(f => {
+  assert.ok(/BUILD\s*=\s*'2\.2\.0'/.test(sw));
+  assert.ok(/station-rebuild-v9/.test(sw));
+  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'notify.js', 'app.js', 'styles.css'].forEach(f => {
     assert.ok(sw.includes("'./" + f + "?v=' + BUILD"), 'SW 漏缓存 ' + f);
   });
 });
-check('安卓资源清单 / 版本号 / APK 名', () => {
+check('安卓资源清单 / 版本号 / 通知权限 / APK 名', () => {
   const sh = read('android/build-apk.sh');
   const listed = (sh.match(/for f in (index\.html[^;]*); do/) || [])[1] || '';
-  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'app.js', 'sw.js'].forEach(f => {
+  ['rules.js', 'ocr.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'extras.js', 'notify.js', 'app.js', 'sw.js'].forEach(f => {
     assert.ok(listed.includes(f), '打包漏了 ' + f);
   });
-  assert.ok(/--version-name 2\.1\.0/.test(sh) && /--version-code 18/.test(sh));
-  assert.ok(/station-assistant-2\.1\.0\.apk/.test(sh));
+  assert.ok(/--version-name 2\.2\.0/.test(sh) && /--version-code 19/.test(sh));
+  assert.ok(/station-assistant-2\.2\.0\.apk/.test(sh));
   const mf = read('android/app/src/main/AndroidManifest.xml');
-  assert.ok(/versionCode="18"/.test(mf) && /versionName="2\.1\.0"/.test(mf));
-  assert.ok(!/SEND_SMS|CALL_PHONE|READ_CONTACTS/.test(mf), '安卓清单出现通知类权限');
+  assert.ok(/versionCode="19"/.test(mf) && /versionName="2\.2\.0"/.test(mf));
+  ['SEND_SMS', 'CALL_PHONE', 'READ_CALL_LOG'].forEach(p => {
+    assert.ok(mf.includes('android.permission.' + p), '安卓清单缺少通知权限 ' + p);
+  });
 });
 check('安卓 APK 已构建且含全部新脚本', () => {
-  const apk = path.join(root, 'android/dist/station-assistant-2.1.0.apk');
-  assert.ok(fs.existsSync(apk), '2.1.0 APK 未构建');
+  const apk = path.join(root, 'android/dist/station-assistant-2.2.0.apk');
+  assert.ok(fs.existsSync(apk), '2.2.0 APK 未构建');
   const bin = fs.readFileSync(apk).toString('latin1');
   ['assets/app.js', 'assets/rules.js', 'assets/ocr.js', 'assets/qr.js', 'assets/db.js',
-    'assets/auth.js', 'assets/media.js', 'assets/extras.js'].forEach(f => {
+    'assets/auth.js', 'assets/media.js', 'assets/extras.js', 'assets/notify.js'].forEach(f => {
       assert.ok(bin.includes(f), 'APK 缺少 ' + f);
     });
   assert.ok(!bin.includes('assets/store.js'), 'APK 里还带着旧版文件');
@@ -188,7 +191,7 @@ check('出库视图不再触发启动崩溃或自动开镜头', () => {
 /* ============ 1.4 2.0.5 缓存隔离 / 出库零渲染 / 步骤日志 ============ */
 check('点出库就死：缓存隔离、零渲染、步骤日志', () => {
   const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
-  assert.ok(java.includes('index.html?v=2.1.0'), '入口 URL 没带版本号，可能命中旧主文档缓存');
+  assert.ok(java.includes('index.html?v=2.2.0'), '入口 URL 没带版本号，可能命中旧主文档缓存');
   assert.ok(java.includes('web.clearCache(true)'), '启动没有清资源缓存');
   assert.ok(java.includes('WebSettings.LOAD_NO_CACHE'), '没有关闭磁盘缓存');
   assert.ok(java.includes('no-store, no-cache, must-revalidate'), 'assets 响应仍允许缓存');
@@ -209,29 +212,38 @@ check('点出库就死：缓存隔离、零渲染、步骤日志', () => {
 
   const h = read('index.html');
   assert.ok(h.includes('no-cache, no-store, must-revalidate'), '页面缺少 no-store meta');
-  assert.ok(h.includes('id="gateVersion"') && h.includes('build 18'), '登录门没有版本自证');
+  assert.ok(h.includes('id="gateVersion"') && h.includes('build 19'), '登录门没有版本自证');
   assert.ok(h.includes('id="gateSafeMode"') && h.includes('id="btnExportLog"'), '缺少兼容模式 / 导出日志入口');
   assert.ok(read('README.md').includes('## 十、2.0.5'), 'README 没有 2.0.5 修复说明');
 });
 
-/* ================= 2. 排除项：源码里没有通知能力 ================= */
-check('业务代码没有短信 / 电话 / 群呼能力', () => {
-  const files = ['index.html', 'app.js', 'rules.js', 'ocr.js', 'db.js', 'auth.js', 'media.js',
-    'sw.js', 'android/app/src/main/java/com/rhua/expressstation/MainActivity.java'];
-  const bad = /tel:|sms:|SmsManager|ACTION_CALL|ACTION_SENDTO|sendSms\(|makePhoneCall|groupCall|CALL_PHONE|SEND_SMS|拨打电话|群发短信接口|语音通知接口/;
-  files.forEach(f => {
-    assert.ok(!bad.test(read(f)), f + ' 里出现通知能力调用');
-  });
+/* ================= 2. 通知能力：源码里确实实现了短信 / 电话 ================= */
+check('业务代码实现短信 / 电话 / 群呼能力', () => {
+  const js = read('notify.js'), java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
+  const html = read('index.html'), app = read('app.js');
+  assert.ok(/sms:/.test(js) && /tel:/.test(js), '缺少系统意图通道');
+  assert.ok(js.includes('function sendSmsBatch(') && js.includes('function retryFailed('), '缺少群发 / 失败重发');
+  assert.ok(js.includes('function oneCall(') && js.includes('function runGroup('), '缺少拨号 / 群呼');
+  assert.ok(js.includes('function quietBlocked(') && js.includes("confirmBox('确认发送短信'"), '缺少免打扰 / 二次确认');
+  assert.ok(js.includes('onReceipt'), '缺少短信回执');
+  assert.ok(java.includes('SmsManager') && java.includes('ACTION_CALL') && java.includes('ACTION_SENDTO'), '原生桥没有真实发送 / 拨号能力');
+  assert.ok(java.includes('StationNotifyNative') && java.includes('sendMultipartTextMessage'), '原生桥没接通');
+  assert.ok(java.includes('READ_CALL_LOG') && java.includes('CallLog.Calls'), '缺少系统通话记录读取');
+  assert.ok(html.includes('id="view-notify"') && html.includes('id="view-sms"') && html.includes('id="view-calls"'), '缺少三个通知视图');
+  assert.ok(app.includes("act.indexOf('n-') === 0") && app.includes('window.StationNotify.init('), '通知模块没有接线');
 });
-check('帮助页逐条列出已实现与排除项', () => {
+check('帮助页逐条列出已实现功能与边界限制', () => {
   const app = read('app.js');
   assert.ok(/var HELP_FEATURES = \[/.test(app) && /var HELP_EXCLUDED = \[/.test(app));
   const seg = app.slice(app.indexOf('var HELP_FEATURES'), app.indexOf('function renderHelp'));
   ['拍照取件', '移库', '客户管理', '业务统计', '货号标签', '入库拦截'].forEach(k => {
     assert.ok(seg.includes(k), '功能清单漏了 ' + k);
   });
-  ['短信类', '电话通知类', '公众号消息推送', '真实联网能力'].forEach(k => {
-    assert.ok(seg.includes(k), '排除项漏了 ' + k);
+  ['短信通知', '电话通知', '通知中心', '微信取件'].forEach(k => {
+    assert.ok(seg.includes(k), '功能清单漏了通知能力 ' + k);
+  });
+  ['发送通道与权限', '发送安全限制', '微信通知（本机等价）', '运营商与服务端能力'].forEach(k => {
+    assert.ok(seg.includes(k), '边界说明漏了 ' + k);
   });
   ['出库任务', '驿站档案', '账本资费', '服务中心'].forEach(k => {
     assert.ok(seg.includes(k), '功能清单漏了新增视图 ' + k);
@@ -634,7 +646,7 @@ check('自检面板信息可用', () => {
   a.setup({ name: 'boss', password: 'abc123456' });
   const d = a.diag();
   assert.strictEqual(d.accounts, 1);
-  assert.strictEqual(d.build, '2.1.0');
+  assert.strictEqual(d.build, '2.2.0');
   assert.ok('storageOk' in d && 'role' in d);
 });
 
@@ -677,9 +689,9 @@ check('媒体模块：识别降级、反馈与照片库接口齐全', () => {
   const e = Media.engines();
   assert.ok('any' in e && 'barcode' in e && 'text' in e);
 });
-check('README 写明功能对照、排除项与数据边界', () => {
+check('README 写明功能对照、通知实现与数据边界', () => {
   const md = read('README.md');
-  ['2.1.0', '短信', '电话', '群呼', '重建', '备份', 'IndexedDB', 'Code39', 'OCR'].forEach(k => {
+  ['2.2.0', '短信', '电话', '群呼', 'SEND_SMS', 'CALL_PHONE', '重建', '备份', 'IndexedDB', 'Code39', 'OCR'].forEach(k => {
     assert.ok(md.includes(k), 'README 漏了 ' + k);
   });
 });
@@ -848,11 +860,13 @@ check('扩展数据模型：默认结构、归一化与备份恢复', () => {
   assert.ok(st2.raw().extras.tasks.some(t => t.id === 'tk1'), '备份合并丢了出库任务');
   assert.ok(st2.restoreSnapshot(snap, 'cover').ok, '备份覆盖恢复失败');
 });
-check('权限表扩展到 16 项并含新视图', () => {
-  ['tasks', 'station', 'wallet', 'service'].forEach(p => {
+check('权限表扩展到 20 项并含通知权限', () => {
+  ['tasks', 'station', 'wallet', 'service', 'notify', 'sms', 'calls', 'wechat'].forEach(p => {
     assert.ok(Auth.PERMS.indexOf(p) >= 0, '缺权限 ' + p);
   });
-  assert.strictEqual(Auth.PERMS.length, 16);
+  assert.strictEqual(Auth.PERMS.length, 20);
+  assert.ok(Auth.OPERATOR_DEFAULT.indexOf('sms') >= 0, '操作员默认不能发短信');
+  assert.ok(Auth.VIEWER_DEFAULT.indexOf('sms') < 0, '只读角色不应有发送权限');
 });
 check('四个新视图已接线（导航 / 渲染 / 事件转发 / 初始化）', () => {
   const h = read('index.html'), a = read('app.js');
@@ -889,23 +903,116 @@ check('打印模板管理接线', () => {
   assert.ok(h.includes('id="tplSelect"') && h.includes('x-tplSave') && h.includes('x-tplDel'));
   assert.ok(a.includes('fillTemplates()') && e.includes('function tplApply('));
 });
-check('排除项仍然只排除短信 / 电话通知', () => {
-  ['index.html', 'app.js', 'extras.js', 'qr.js', 'db.js', 'auth.js', 'media.js', 'rules.js', 'ocr.js'].forEach(f => {
-    const src = read(f);
-    assert.ok(!/tel:|sms:|SEND_SMS|CALL_PHONE|sendMessage\s*\(/.test(src), f + ' 出现通知能力');
+check('通知能力已接通，且不引入第三方联网通知接口', () => {
+  const src = read('notify.js');
+  ['sms:', 'tel:', 'StationNotifyNative', 'sendSms', 'onReceipt', 'requestPerms'].forEach(k => {
+    assert.ok(src.includes(k), '通知引擎缺少 ' + k);
   });
-  assert.ok(!/SEND_SMS|CALL_PHONE|READ_CONTACTS/.test(read('android/app/src/main/AndroidManifest.xml')));
+  assert.ok(!/fetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon|api\.[a-z0-9-]+\.com/.test(src),
+    '通知引擎出现联网接口：号码与内容必须只走本机 / 系统应用');
+  const mf = read('android/app/src/main/AndroidManifest.xml');
+  ['SEND_SMS', 'CALL_PHONE', 'READ_CALL_LOG'].forEach(p => {
+    assert.ok(mf.includes('android.permission.' + p), '清单缺权限 ' + p);
+  });
 });
-check('README 记录 2.1.0 功能对齐', () => {
+check('README 记录 2.1.0 功能对齐与 2.2.0 通知实现', () => {
   const md = read('README.md');
   assert.ok(md.includes('## 十二、2.1.0'), 'README 没有 2.1.0 章节');
-  ['出库任务', '驿站档案', '账本资费', '服务中心', '二维码'].forEach(k => {
+  assert.ok(md.includes('## 十三、2.2.0'), 'README 没有 2.2.0 通知章节');
+  ['出库任务', '驿站档案', '账本资费', '服务中心', '二维码', '短信群发', '电话通知', '通知中心'].forEach(k => {
     assert.ok(md.includes(k), 'README 漏了 ' + k);
   });
 });
 
+/* ============ 9. 2.2.0 通知能力：引擎 / 数据 / 接线 / 原生桥 ============ */
+check('通知引擎：变量、分段、号码校验与内置模板', () => {
+  ['init', 'render', 'action', 'onReceipt', 'permState', 'renderText', 'segments', 'phoneOK'].forEach(k => {
+    assert.strictEqual(typeof Notify[k], 'function', '缺导出 ' + k);
+  });
+  assert.ok(Notify.BUILTIN.length >= 8 && Notify.VAR_DESC.length >= 10);
+  const t = Notify.renderText('{sign}{name}/{goods}/{slot}/{code}', {
+    sign: '【驿站】', name: '张三', goods: 'A01010023', slot: 'A-3', code: '1234'
+  });
+  assert.strictEqual(t, '【驿站】张三/A01010023/A-3/1234');
+  assert.strictEqual(Notify.renderText('{a}{b}', { a: '1' }), '1');
+  assert.strictEqual(Notify.segments('x'.repeat(70)), 1);
+  assert.strictEqual(Notify.segments('x'.repeat(140)), 3);
+  assert.strictEqual(Notify.phoneOK('138 0013-8000'), '13800138000');
+  assert.strictEqual(Notify.phoneOK('123'), '');
+});
+check('通知数据模型纳入持久化与备份合并', () => {
+  const st = fresh(), n = st.raw().extras.notify;
+  assert.ok(n && n.settings && Array.isArray(n.templates) && Array.isArray(n.history) &&
+    Array.isArray(n.calls) && Array.isArray(n.queue) && n.counters);
+  assert.strictEqual(n.settings.channel, 'system', '默认必须是系统通道');
+  assert.strictEqual(n.settings.autoSend, false, '默认不允许自动直发');
+  assert.ok(n.settings.quietOn && n.settings.batchLimit === 50 && n.settings.dayLimit === 500);
+  n.history.push({ id: 'nh1', kind: 'sms', phone: '13800138000', at: new Date().toISOString() });
+  n.templates.push({ id: 'tplX', name: '自定义', kind: 'sms', body: '{name}' });
+  st.save();
+  const snap = st.exportSnapshot();
+  const st2 = DB.createStore(DB.memoryStorage(), '测试员');
+  st2.raw().extras.notify.settings.channel = 'native';
+  assert.ok(st2.restoreSnapshot(snap, 'merge').ok, '备份合并失败');
+  assert.ok(st2.raw().extras.notify.history.some(h => h.id === 'nh1'), '合并丢了通知流水');
+  assert.ok(st2.raw().extras.notify.templates.some(t => t.id === 'tplX'), '合并丢了通知模板');
+  assert.strictEqual(st2.raw().extras.notify.settings.channel, 'native', '合并模式不应覆盖本机通知配置');
+  assert.ok(st2.restoreSnapshot(snap, 'merge').ok, '重复合并失败');
+  assert.strictEqual(st2.raw().extras.notify.history.filter(h => h.id === 'nh1').length, 1, '合并没有按 id 去重');
+  assert.ok(st2.restoreSnapshot(snap, 'cover').ok, '备份覆盖恢复失败');
+});
+check('通知引擎：ES5、按需渲染、不联网', () => {
+  const src = read('notify.js');
+  assert.ok(!/\b(let|const|class)\s|=>|\.closest\(|\.classList\.|querySelectorAll\([^)]*\)\.forEach/.test(src),
+    'notify.js 必须保持 ES5');
+  assert.ok(!/fetch\s*\(|XMLHttpRequest|WebSocket|sendBeacon/.test(src), 'notify.js 出现联网调用');
+  assert.ok(src.includes("document.addEventListener('change'") && src.includes('function render(name)'));
+  assert.ok(src.includes("document.addEventListener('submit'"), '缺表单委托');
+});
+check('三视图接线：导航 / 渲染器 / 动作分发 / 初始化 / 导出', () => {
+  const h = read('index.html'), a = read('app.js');
+  ['notify', 'sms', 'calls'].forEach(v => {
+    assert.ok(h.includes('id="view-' + v + '"') && h.includes('data-view="' + v + '"'), '缺视图 ' + v);
+    assert.ok(a.includes("ntRender('" + v + "')"), '渲染器漏了 ' + v);
+    assert.ok(a.includes(v + ": '"), '标题漏了 ' + v);
+  });
+  assert.ok(a.includes("act.indexOf('n-') === 0") && a.includes('window.StationNotify.action'));
+  assert.ok(a.includes('window.StationNotify.init('), '通知模块没有初始化');
+  assert.ok(a.includes('notify: window.StationNotify'), '自检没有暴露通知模块');
+  ['ntSetChannel', 'smsTemplate', 'smsPreviewBox', 'callQueueBox', 'ntHistoryTable', 'callLogTable', 'ntQrBox'].forEach(id => {
+    assert.ok(h.includes('id="' + id + '"'), '缺 DOM ' + id);
+  });
+});
+check('发送安全：二次确认、免打扰、限额与回执', () => {
+  const src = read('notify.js');
+  ["confirmBox('确认发送短信'", 'quietBlocked()', 'batchLimit', 'dayLimit',
+    'onReceipt', 'retryFailed', "permState()", "cfg().channel === 'native'"].forEach(k => {
+      assert.ok(src.includes(k), '缺少安全机制 ' + k);
+    });
+  assert.ok(src.includes('function openSmsSystem(') && src.includes('function dialNumber('), '缺系统意图通道');
+});
+check('原生通知桥：直发 / 回执 / 直拨 / 通话记录 / 权限申请', () => {
+  const java = read('android/app/src/main/java/com/rhua/expressstation/MainActivity.java');
+  ['class NotifyBridge', 'StationNotifyNative', 'sendSmsNow', 'sendMultipartTextMessage',
+    'SmsManager.getDefault()', 'SMS_SENT', 'SMS_DELIVERED', 'receipt(', 'registerSmsReceiver',
+    'ACTION_CALL', 'ACTION_DIAL', 'ACTION_SENDTO', 'callLog(', 'missedCalls(',
+    'readSystemCallLog', 'requestNotifyPerms', 'REQ_NOTIFY_PERM', 'speakNow',
+    'TextToSpeech', 'Context.RECEIVER_NOT_EXPORTED'].forEach(k => {
+      assert.ok(java.includes(k), '原生桥缺少 ' + k);
+    });
+  assert.ok(java.includes('"tel".equalsIgnoreCase(scheme)'), 'URL 拦截没放行 tel:');
+  assert.ok(java.includes('"sms".equalsIgnoreCase(scheme)'), 'URL 拦截没放行 sms:');
+  assert.ok(java.includes('unregisterReceiver(smsReceiver)'), 'onDestroy 没有注销回执接收器');
+});
+check('权限标签与角色默认值覆盖通知', () => {
+  const a = read('app.js');
+  ['notify: \'通知中心\'', 'sms: \'短信发送\'', 'calls: \'电话通知\'', 'wechat: \'微信取件\''].forEach(k => {
+    assert.ok(a.includes(k), '权限中文标签漏了 ' + k);
+  });
+});
+
 /* ================= 结果 ================= */
-console.log('\n驿站助手 2.1.0 · 回归测试');
+console.log('\n驿站助手 2.2.0 · 回归测试');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');
 if (failures.length) {
   console.log('\n失败明细：');

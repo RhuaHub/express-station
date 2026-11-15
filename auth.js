@@ -56,10 +56,11 @@
 
   var PERMS = ['inbound', 'outbound', 'query', 'inventory', 'customers', 'collections',
     'stats', 'print', 'sync', 'logs', 'settings', 'accounts',
-    'tasks', 'station', 'wallet', 'service'];
+    'tasks', 'station', 'wallet', 'service',
+    'notify', 'sms', 'calls', 'wechat'];
   var OPERATOR_DEFAULT = ['inbound', 'outbound', 'query', 'inventory', 'customers', 'collections',
-    'stats', 'print', 'sync', 'logs', 'tasks', 'service'];
-  var VIEWER_DEFAULT = ['query', 'inventory', 'stats', 'print', 'logs', 'service'];
+    'stats', 'print', 'sync', 'logs', 'tasks', 'service', 'notify', 'sms', 'calls', 'wechat'];
+  var VIEWER_DEFAULT = ['query', 'inventory', 'stats', 'print', 'logs', 'service', 'notify'];
 
   function create(store) {
     var sess = global.StationDB.pickStorage('session');
@@ -223,7 +224,7 @@
       return {
         accounts: accounts().length, logged: status().logged, user: status().user,
         role: status().role, storageOk: store.storageOk(), sessionMemory: !!sess._memory,
-        locked: locked, fail: failState(), build: '2.1.0'
+        locked: locked, fail: failState(), build: '2.2.0'
       };
     }
 

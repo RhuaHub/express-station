@@ -67,7 +67,7 @@
     var nativeLog = '';
     try { nativeLog = window.StationNative.crashLog() || ''; } catch (e) { }
     var info = {
-      app: 'station-assistant', version: '2.1.0', build: 18,
+      app: 'station-assistant', version: '2.2.0', build: 19,
       ua: String(navigator.userAgent || ''), time: new Date().toISOString(),
       bootErrors: window.StationBoot ? window.StationBoot.errors() : [],
       storageOk: store.storageOk(), safeMode: !!store.settings().safeMode,
@@ -308,7 +308,8 @@
     dash: '工作台', inbound: '入库', outbound: '出库', query: '查件', inventory: '库存台账',
     tasks: '出库任务', collections: '收件任务', customers: '客户管理', stats: '业务统计',
     print: '货号标签', sync: '同步记录', wallet: '账本资费', settings: '设置',
-    station: '驿站档案', accounts: '子账号', logs: '操作流水', service: '服务中心', help: '帮助 / 关于'
+    station: '驿站档案', accounts: '子账号', logs: '操作流水', service: '服务中心', help: '帮助 / 关于',
+    notify: '通知中心', sms: '短信群发', calls: '电话通知'
   };
   function switchView(name) {
     if (!$('view-' + name)) name = 'dash';
@@ -351,8 +352,15 @@
     stats: renderStats, print: renderPrint, sync: renderSync, settings: renderSettings,
     accounts: renderAccounts, logs: renderLogs, help: renderHelp,
     tasks: exRender('tasks'), station: exRender('station'),
-    wallet: exRender('wallet'), service: exRender('service')
+    wallet: exRender('wallet'), service: exRender('service'),
+    notify: ntRender('notify'), sms: ntRender('sms'), calls: ntRender('calls')
   };
+  function ntRender(name) {
+    return function () {
+      if (window.StationNotify) window.StationNotify.render(name);
+      else toast('通知模块未加载，请刷新页面', 'err');
+    };
+  }
   function exRender(name) {
     return function () {
       if (window.StationExtras) window.StationExtras.render(name);
@@ -951,7 +959,9 @@
   var PERM_LABEL = {
     inbound: '入库', outbound: '出库', query: '查件', inventory: '台账', customers: '客户',
     collections: '收件任务', stats: '统计', print: '打印', sync: '同步记录', logs: '流水',
-    settings: '设置', accounts: '子账号'
+    settings: '设置', accounts: '子账号', tasks: '出库任务', station: '驿站档案',
+    wallet: '账本资费', service: '服务中心', notify: '通知中心', sms: '短信发送',
+    calls: '电话通知', wechat: '微信取件'
   };
   function renderAccounts() {
     $('accPerms').innerHTML = Auth.PERMS.map(function (p) {
@@ -993,14 +1003,19 @@
     ['驿站档案', '驿站信息、代收登记、实名与门头证件照（本机）、合作公司、服务项目、延迟上传、取件二维码海报'],
     ['账本资费', '余额、充值与替他人充值记录、按件数结算账单、资费设置、活动奖励、CSV 导出（本机记账，不接支付）'],
     ['服务中心', 'FAQ、意见反馈与回复、用户指南、关于与免责声明、活动记录（本机，不联网客服）'],
-    ['设置与账号', '提醒 / 拍照 / 拦截 / 货架设置、主子账号、逐项权限、锁屏、登录限速、记住账号'],
-    ['数据', '完整备份 JSON（含照片）、恢复 / 合并、包裹 CSV 导入导出、一键清空']
+    ['短信通知', '群发短信、短信模板 / 签名 / 审核状态、短信历史、失败重发、扫码发短信、延迟发送队列、分段条数与费用预估'],
+    ['电话通知', '拨号盘 / 直接拨出、回拨、顺序群呼、系统通话记录同步、未接来电登记与回拨、语音通知模板与本机 TTS 播报'],
+    ['微信取件', '取件通知文案、取件二维码海报、公众号本机登记、码上取件二维码'],
+    ['通知中心', '双通道切换、运行时权限、统一通知流水、导出 CSV、免打扰与单批 / 每日限额、逐批二次确认'],
+    ['设置与账号', '提醒 / 拍照 / 拦截 / 货架设置、主子账号、20 项权限、锁屏、登录限速、记住账号'],
+    ['数据', '完整备份 JSON（含照片与通知流水）、恢复 / 合并、包裹 CSV 导入导出、一键清空']
   ];
   var HELP_EXCLUDED = [
-    ['短信类（按需求排除）', '群发短信、短信模板 / 签名 / 审核、短信历史、失败短信提醒、扫码发短信'],
-    ['电话通知类（按需求排除）', '直拨 / 回拨 / 隐私号、群呼、群呼历史、通话记录、未接来电、语音通知模板'],
-    ['通知发送能力', '微信 / 公众号消息推送、自动取件通知：任何形式对外发送通知都不做；本机只生成取件二维码与凭证'],
-    ['真实联网能力（本机等价）', '支付充值、快递公司数据上行与实名核验、在线客服会话、蓝牙厂商 SDK 改为系统打印；页面明确标注「本机登记 / 记账」，不假装已联网完成']
+    ['发送通道与权限', '短信 / 电话默认走系统应用由人最后确认；本机直发 / 直拨需运行时授权 SEND_SMS / CALL_PHONE，每次群发都二次确认'],
+    ['发送安全限制', '免打扰时段、单批人数上限、每日条数上限、顺序群呼（安卓不允许并发外呼）、完整流水与失败重发'],
+    ['微信通知（本机等价）', '公众号模板消息 / 码上取件推送需认证公众号与服务端；本页只生成本机文案与二维码，不联网、不代表已推送'],
+    ['运营商与服务端能力', '隐私号 AXB 中转、自动语音外呼、短信通道商签名报备、快递公司数据上行：以本机登记 / TTS 播报 / 导出上行文件等价实现'],
+    ['支付与硬件（本机等价）', '充值记账不接支付、蓝牙打印改系统打印、在线客服改本机意见反馈，页面明确标注不假装已联网完成']
   ];
   function renderHelp() {
     $('helpFeatures').innerHTML = HELP_FEATURES.map(function (x) { return '<div><b>' + esc(x[0]) + '</b><br>' + esc(x[1]) + '</div>'; }).join('');
@@ -1152,6 +1167,11 @@
     var id = el.getAttribute('data-id');
     if (act.indexOf('x-') === 0) {
       if (window.StationExtras) window.StationExtras.action(act, el);
+      return;
+    }
+    if (act.indexOf('n-') === 0) {
+      if (window.StationNotify) window.StationNotify.action(act, el);
+      else toast('通知模块未加载，请刷新页面', 'err');
       return;
     }
     if (act === 'detail') detailDialog(id);
@@ -1733,14 +1753,14 @@
   try {
     bindGate();
     bind();
-    if (window.StationExtras) {
-      window.StationExtras.init({
-        store: store, auth: auth, R: R, Media: Media, $: $, esc: esc,
-        toast: toast, download: download, table: table, openModal: openModal,
-        closeModal: closeModal, confirmBox: confirmBox, guard: guard,
-        afterWrite: afterWrite, renderAll: renderAll, step: step, statusTag: statusTag
-      });
-    }
+    var extCtx = {
+      store: store, auth: auth, R: R, Media: Media, $: $, esc: esc,
+      toast: toast, download: download, table: table, openModal: openModal,
+      closeModal: closeModal, confirmBox: confirmBox, guard: guard,
+      afterWrite: afterWrite, renderAll: renderAll, step: step, statusTag: statusTag
+    };
+    if (window.StationExtras) window.StationExtras.init(extCtx);
+    if (window.StationNotify) window.StationNotify.init(extCtx);
     if (auth.status().logged) enterApp(); else showGate();
   } catch (e) {
     reportBoot('启动失败', e);
@@ -1749,7 +1769,7 @@
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
     rules: R, media: Media, ocr: window.StationOcr, qr: window.StationQr,
-    extras: window.StationExtras, version: '2.1.0',
+    extras: window.StationExtras, notify: window.StationNotify, version: '2.2.0',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

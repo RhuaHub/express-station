@@ -342,6 +342,32 @@ details.card[open] > summary { margin-bottom: 14px; border-bottom: 1px solid var
   .qr-code { font-size: 19px; }
 }
 
+/* ---------- 通知中心 / 短信 / 电话 ---------- */
+.tag-ok { background: #e8f5ed; color: var(--ok); border: 1px solid #bfe3cc; }
+.clip { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--surface); font-size: 12px; color: var(--muted); }
+.chip code { font-family: ui-monospace, Consolas, monospace; color: #7a5606; font-weight: 700; }
+.chan-row { display: flex; flex-direction: column; gap: 10px; }
+.chan-row .chip-row { margin: 0; }
+.sms-bubble { border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+  padding: 9px 11px; margin-bottom: 8px; }
+.sms-to { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
+.sms-body { font-size: 13px; line-height: 1.65; color: var(--text); word-break: break-all; }
+.sms-meta { font-size: 11px; color: var(--muted); margin-top: 5px; text-align: right; }
+.strip-item.pick { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.strip-item.pick input { margin-top: 4px; flex: 0 0 auto; }
+.strip-item.pick > div { flex: 1 1 auto; min-width: 0; }
+.strip-item.pick.on { border-color: var(--gold); background: var(--gold-soft); }
+.strip-item.done { opacity: .62; }
+.strip-item.now { border-color: var(--warn); background: var(--gold-soft); }
+.strip-list .strip-item .row-actions { flex: 0 0 auto; }
+@media (max-width: 640px) {
+  .clip { max-width: 180px; }
+  .chip-row { gap: 4px; }
+}
+
 /* ---------- 打印：只输出标签 ---------- */
 @media print {
   @page { margin: 8mm; }

@@ -35,6 +35,36 @@
     return -1;
   }
 
+  /* 2.2.0 通知数据：短信 / 电话 / 微信取件通知的模板、签名、流水与队列。
+     默认走系统意图通道（sms: / tel:），原生直发默认关闭，避免误发产生费用。 */
+  function defaultNotify() {
+    return {
+      settings: {
+        channel: 'system', autoSend: false, signature: '【快递驿站】', signStatus: 'pending',
+        templateId: '', quietOn: true, quietStart: 21, quietEnd: 8,
+        batchLimit: 50, dayLimit: 500, intervalMs: 600, costPerSms: 0.05,
+        callChannel: 'dial', groupCallInterval: 3, privacyNo: '',
+        wechatAccount: '', wechatBound: false
+      },
+      templates: [], history: [], calls: [], queue: [],
+      counters: { day: '', sent: 0, calls: 0 }
+    };
+  }
+  function mergeNotify(base, incoming) {
+    var out = base || defaultNotify();
+    if (!incoming || typeof incoming !== 'object') return out;
+    var s = incoming.settings || {};
+    Object.keys(out.settings).forEach(function (k) {
+      if (s[k] !== undefined && s[k] !== null) out.settings[k] = s[k];
+    });
+    ['templates', 'history', 'calls', 'queue'].forEach(function (k) {
+      if (Array.isArray(incoming[k])) out[k] = incoming[k];
+    });
+    var c = incoming.counters || {};
+    Object.keys(out.counters).forEach(function (k) { if (c[k] !== undefined) out.counters[k] = c[k]; });
+    return out;
+  }
+
   /* 2.1.0 扩展数据：原版「出库任务 / 代收管理 / 账本资费 / 服务中心」等页面。
      统一放在 extras 里，旧备份缺这个字段时自动补齐，不影响已有包裹数据。 */
   function defaultExtras() {
@@ -46,7 +76,8 @@
         delayUpload: false, delayMinutes: 30
       },
       tasks: [], wallet: { balance: 0, records: [], feePerIn: 0, feePerOut: 0 },
-      feedbacks: [], templates: [], queryHistory: [], activities: [], notices: []
+      feedbacks: [], templates: [], queryHistory: [], activities: [], notices: [],
+      notify: defaultNotify()
     };
   }
   function mergeExtras(base, incoming) {
@@ -64,6 +95,7 @@
     if (w.balance !== undefined) out.wallet.balance = Number(w.balance) || 0;
     if (w.feePerIn !== undefined) out.wallet.feePerIn = Number(w.feePerIn) || 0;
     if (w.feePerOut !== undefined) out.wallet.feePerOut = Number(w.feePerOut) || 0;
+    out.notify = mergeNotify(out.notify, incoming.notify);
     return out;
   }
 
@@ -769,6 +801,12 @@
           db.extras.wallet.records.forEach(function (x) { ids[x.id] = true; });
           incoming.extras.wallet.records.forEach(function (x) { if (x && !ids[x.id]) db.extras.wallet.records.push(x); });
         })();
+        /* 通知流水同样按 id 去重合并；通道 / 签名等本机配置以当前设备为准 */
+        ['templates', 'history', 'calls', 'queue'].forEach(function (k) {
+          var ids = {};
+          db.extras.notify[k].forEach(function (x) { ids[x.id] = true; });
+          incoming.extras.notify[k].forEach(function (x) { if (x && !ids[x.id]) db.extras.notify[k].push(x); });
+        });
       } else {
         db = incoming;
       }

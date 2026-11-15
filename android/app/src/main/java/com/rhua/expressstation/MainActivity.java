@@ -3,13 +3,20 @@ package com.rhua.expressstation;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
+import android.provider.CallLog;
+import android.speech.tts.TextToSpeech;
+import android.telephony.SmsManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -50,6 +57,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TimeZone;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * 快递驿站 App 外壳。
@@ -67,10 +78,14 @@ public class MainActivity extends Activity {
     /* 主文档也带版本号：老 WebView 会缓存 shouldInterceptRequest 的响应，
        不带版本号时用户覆盖安装后仍可能拿到上一版 index.html（旧 JS 引用），
        表现正是「改了好几版，点出库还是死」。 */
-    private static final String START_URL = "https://" + HOST + "/index.html?v=2.1.0";
+    private static final String START_URL = "https://" + HOST + "/index.html?v=2.2.0";
     private static final String TAG = "StationFatal";
     private static final int REQ_FILE = 2001;
     private static final int REQ_CAMERA_PERM = 2002;
+    private static final int REQ_NOTIFY_PERM = 2003;
+    private static final String ACTION_SMS_SENT = "com.rhua.expressstation.SMS_SENT";
+    private static final String ACTION_SMS_DELIVERED = "com.rhua.expressstation.SMS_DELIVERED";
+    private static final String EXTRA_RID = "rid";
 
     /** attachBaseContext 比 onCreate 更早，供静态崩溃处理器写日志用 */
     private static volatile Context APP_CONTEXT = null;
@@ -103,6 +118,10 @@ public class MainActivity extends Activity {
     private long renderGoneAt = 0L;
     /** 渲染进程被回收后重建时，尽量回到用户刚才所在的视图，避免看起来像「退回首页」 */
     private String lastHash = "";
+    /** 短信发送 / 送达回执接收器；只在 Activity 存活期间动态注册 */
+    private BroadcastReceiver smsReceiver = null;
+    private TextToSpeech tts = null;
+    private long lastPermReqAt = 0L;
 
     private boolean activityGone() {
         try {
@@ -138,7 +157,175 @@ public class MainActivity extends Activity {
             showFatal(recent, "检测到上次崩溃记录");
             return;
         }
+        registerSmsReceiver();
         startWebView();
+    }
+
+    /* ---------- 通知能力：短信回执 / 系统通话记录 ---------- */
+
+    private void registerSmsReceiver() {
+        try {
+            IntentFilter f = new IntentFilter();
+            f.addAction(ACTION_SMS_SENT);
+            f.addAction(ACTION_SMS_DELIVERED);
+            smsReceiver = new BroadcastReceiver() {
+                @Override public void onReceive(Context ctx, Intent it) {
+                    try {
+                        String rid = it.getStringExtra(EXTRA_RID);
+                        if (rid == null || rid.isEmpty()) return;
+                        boolean delivered = ACTION_SMS_DELIVERED.equals(it.getAction());
+                        int rc = getResultCode();
+                        String status = rc == Activity.RESULT_OK
+                                ? (delivered ? "delivered" : "sent") : "failed";
+                        String detail = rc == Activity.RESULT_OK ? "" : ("短信错误码 " + rc);
+                        receipt(rid, status, detail);
+                    } catch (Throwable t) { appendCrash("sms receiver " + stackOf(t)); }
+                }
+            };
+            /* Android 13+ 要求显式声明 receiver 是否导出；这里只接收本应用自己发的回执 */
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(smsReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(smsReceiver, f);
+        } catch (Throwable t) { appendCrash("registerSmsReceiver " + stackOf(t)); }
+    }
+
+    /** 原生侧把发送 / 送达结果回写到页面流水，状态不会停留在「已发送」 */
+    private void receipt(final String id, final String status, final String detail) {
+        evalJs("window.StationNotify&&window.StationNotify.onReceipt(" +
+                JSONObject.quote(id) + "," + JSONObject.quote(status) + "," +
+                JSONObject.quote(detail) + ")");
+    }
+
+    private void evalJs(final String expr) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                if (web == null) return;
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                        web.evaluateJavascript(expr, null);
+                    } else web.loadUrl("javascript:" + expr);
+                } catch (Throwable t) { appendCrash("evalJs " + stackOf(t)); }
+            }
+        });
+    }
+
+    private boolean hasPerm(String p) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        try { return checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED; }
+        catch (Throwable t) { return false; }
+    }
+
+    private void requestNotifyPerms() {
+        /* 页面会连续调用 requestSms / requestCall / requestLog，合并成一次弹窗 */
+        long t = System.currentTimeMillis();
+        if (t - lastPermReqAt < 800L) return;
+        lastPermReqAt = t;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) { toast("此系统版本安装时已授予权限"); return; }
+        try {
+            ArrayList<String> need = new ArrayList<>();
+            if (!hasPerm(Manifest.permission.SEND_SMS)) need.add(Manifest.permission.SEND_SMS);
+            if (!hasPerm(Manifest.permission.CALL_PHONE)) need.add(Manifest.permission.CALL_PHONE);
+            if (!hasPerm(Manifest.permission.READ_CALL_LOG)) need.add(Manifest.permission.READ_CALL_LOG);
+            if (need.isEmpty()) { toast("短信 / 电话 / 通话记录权限已全部授予"); return; }
+            requestPermissions(need.toArray(new String[0]), REQ_NOTIFY_PERM);
+        } catch (Throwable te) { appendCrash("requestNotifyPerms " + stackOf(te)); toast("权限申请失败"); }
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean sendSmsNow(String phone, String text, String rid) {
+        if (!hasPerm(Manifest.permission.SEND_SMS)) { toast("未授权 SEND_SMS，请在通知中心申请权限"); return false; }
+        final String dest = String.valueOf(phone == null ? "" : phone).replaceAll("[^0-9;+,]", "");
+        if (dest.isEmpty()) return false;
+        final String body = String.valueOf(text == null ? "" : text);
+        final String id = String.valueOf(rid == null ? "" : rid);
+        try {
+            SmsManager sm = SmsManager.getDefault();
+            ArrayList<String> parts = sm.divideMessage(body);
+            if (parts == null || parts.isEmpty()) return false;
+            ArrayList<PendingIntent> sent = new ArrayList<>();
+            ArrayList<PendingIntent> delivered = new ArrayList<>();
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
+            int seq = 0;
+            for (int i = 0; i < parts.size(); i++) {
+                seq++;
+                Intent si = new Intent(ACTION_SMS_SENT).setPackage(getPackageName()).putExtra(EXTRA_RID, id);
+                Intent di = new Intent(ACTION_SMS_DELIVERED).setPackage(getPackageName()).putExtra(EXTRA_RID, id);
+                sent.add(PendingIntent.getBroadcast(this, id.hashCode() + seq, si, flags));
+                delivered.add(PendingIntent.getBroadcast(this, id.hashCode() + 10000 + seq, di, flags));
+            }
+            sm.sendMultipartTextMessage(dest, null, parts, sent, delivered);
+            appendCrash("SMS submit " + dest + " parts=" + parts.size() + " rid=" + id);
+            return true;
+        } catch (Throwable t) {
+            appendCrash("sendSmsNow " + stackOf(t));
+            receipt(id, "failed", String.valueOf(t.getMessage()));
+            return false;
+        }
+    }
+
+    private static String isoOf(long ms) {
+        try {
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+            f.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return f.format(new java.util.Date(ms));
+        } catch (Throwable t) { return ""; }
+    }
+
+    /** 读取系统通话记录；只在用户主动点「同步」且已授权时调用 */
+    private String readSystemCallLog(int limit, boolean missedOnly) {
+        JSONArray arr = new JSONArray();
+        if (!hasPerm(Manifest.permission.READ_CALL_LOG)) return arr.toString();
+        Cursor c = null;
+        try {
+            String sel = missedOnly ? CallLog.Calls.TYPE + "=" + CallLog.Calls.MISSED_TYPE : null;
+            c = getContentResolver().query(CallLog.Calls.CONTENT_URI,
+                    new String[]{CallLog.Calls.NUMBER, CallLog.Calls.CACHED_NAME,
+                            CallLog.Calls.TYPE, CallLog.Calls.DATE, CallLog.Calls.DURATION},
+                    sel, null, CallLog.Calls.DATE + " DESC");
+            if (c == null) return arr.toString();
+            int iN = c.getColumnIndex(CallLog.Calls.NUMBER);
+            int iName = c.getColumnIndex(CallLog.Calls.CACHED_NAME);
+            int iT = c.getColumnIndex(CallLog.Calls.TYPE);
+            int iD = c.getColumnIndex(CallLog.Calls.DATE);
+            int iDur = c.getColumnIndex(CallLog.Calls.DURATION);
+            int max = limit <= 0 ? 100 : Math.min(limit, 500);
+            while (c.moveToNext() && arr.length() < max) {
+                JSONObject o = new JSONObject();
+                int type = iT >= 0 ? c.getInt(iT) : 0;
+                o.put("phone", iN >= 0 ? String.valueOf(c.getString(iN)) : "");
+                o.put("name", iName >= 0 ? String.valueOf(c.getString(iName)) : "");
+                o.put("type", type == CallLog.Calls.MISSED_TYPE ? "missed"
+                        : (type == CallLog.Calls.INCOMING_TYPE ? "in" : "out"));
+                o.put("at", isoOf(iD >= 0 ? c.getLong(iD) : System.currentTimeMillis()));
+                o.put("duration", iDur >= 0 ? c.getLong(iDur) : 0L);
+                arr.put(o);
+            }
+        } catch (Throwable t) { appendCrash("readSystemCallLog " + stackOf(t)); }
+        finally { if (c != null) { try { c.close(); } catch (Throwable ignored) { } } }
+        return arr.toString();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void speakNow(final String text) {
+        if (text == null || text.isEmpty()) return;
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (tts == null) {
+                        tts = new TextToSpeech(MainActivity.this, new TextToSpeech.OnInitListener() {
+                            @Override public void onInit(int status) {
+                                if (status != TextToSpeech.SUCCESS || tts == null) { toast("设备未安装中文语音引擎"); return; }
+                                try { tts.setLanguage(Locale.CHINA); } catch (Throwable ignored) { }
+                                try { tts.speak(text, TextToSpeech.QUEUE_FLUSH, new HashMap<String, String>()); }
+                                catch (Throwable t) { appendCrash("tts speak " + t); }
+                            }
+                        });
+                    } else {
+                        tts.speak(text, TextToSpeech.QUEUE_FLUSH, new HashMap<String, String>());
+                    }
+                } catch (Throwable t) { appendCrash("speakNow " + stackOf(t)); toast("语音播报不可用"); }
+            }
+        });
     }
 
     /* ---------- 崩溃日志：私有 + 公共下载目录双写 ---------- */
@@ -318,7 +505,7 @@ public class MainActivity extends Activity {
     private void showFatal(final String detail, String title) {
         if (fatalShown) return;
         fatalShown = true;
-        final String info = "版本 2.1.0 · 最后一步：" + (LAST_STEP == null ? "无" : LAST_STEP)
+        final String info = "版本 2.2.0 · 最后一步：" + (LAST_STEP == null ? "无" : LAST_STEP)
                 + "\n" + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
         writePublicCrash(info + "\n" + title + "\n\n" + detail);
@@ -459,6 +646,7 @@ public class MainActivity extends Activity {
         }
 
         web.addJavascriptInterface(new Bridge(), "StationNative");
+        web.addJavascriptInterface(new NotifyBridge(), "StationNotifyNative");
         web.setWebViewClient(new Client());
         web.setWebChromeClient(new Chrome());
         web.setDownloadListener(new android.webkit.DownloadListener() {
@@ -559,6 +747,14 @@ public class MainActivity extends Activity {
             if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
                 catch (Throwable t) { appendCrash("外链打开失败 " + t); }
+            } else if ("tel".equalsIgnoreCase(scheme) || "sms".equalsIgnoreCase(scheme)
+                    || "smsto".equalsIgnoreCase(scheme)) {
+                /* 通知通道：把 tel: / sms: 交给系统拨号 / 短信应用，由人最后确认 */
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
+                catch (Throwable t) {
+                    appendCrash("系统通知应用打开失败 " + t);
+                    toast("没有可用的拨号 / 短信应用");
+                }
             } else {
                 appendCrash("页内拦截非网页跳转 " + u);
             }
@@ -578,7 +774,7 @@ public class MainActivity extends Activity {
             boolean crashed = detail != null && detail.didCrash();
             appendCrash("FATAL 渲染进程退出 didCrash=" + crashed);
             writePublicCrash("渲染进程退出 didCrash=" + crashed
-                    + " · 版本 2.1.0 · Android " + Build.VERSION.SDK_INT);
+                    + " · 版本 2.2.0 · Android " + Build.VERSION.SDK_INT);
             /* 2.0.5 起页面不再修改 URL（老 WebView 会把它当导航），
                视图由 StationNative.setView 同步到 lastHash，重建后直接沿用。 */
             appendCrash("STEP 渲染进程退出前所在视图 " + (lastHash == null ? "" : lastHash));
@@ -784,6 +980,12 @@ public class MainActivity extends Activity {
                 appendCrash("onRequestPermissionsResult " + stackOf(t));
                 pendingPermission = null;
             }
+        } else if (code == REQ_NOTIFY_PERM) {
+            String s = "通知权限：短信 " + (hasPerm(Manifest.permission.SEND_SMS) ? "已授权" : "未授权") +
+                    " · 电话 " + (hasPerm(Manifest.permission.CALL_PHONE) ? "已授权" : "未授权") +
+                    " · 通话记录 " + (hasPerm(Manifest.permission.READ_CALL_LOG) ? "已授权" : "未授权");
+            toast(s);
+            evalJs("window.StationNotify&&window.StationNotify.render(window.StationApp&&window.StationApp.state&&window.StationApp.state.view||'notify')");
         }
     }
 
@@ -823,7 +1025,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "2.1.0";
+            return "2.2.0";
         }
 
         /** 页面每做一个关键动作就同步一步，崩溃后能从日志看到最后停在哪 */
@@ -913,6 +1115,84 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 通知能力桥（JS 侧 window.StationNotifyNative）。
+        默认通道是系统意图；只有页面显式切到「本机直发 / 直接拨出」且已授权时才走这里。 */
+    private class NotifyBridge {
+
+        @JavascriptInterface public String platform() { return "android"; }
+        @JavascriptInterface public boolean smsGranted() { return hasPerm(Manifest.permission.SEND_SMS); }
+        @JavascriptInterface public boolean callGranted() { return hasPerm(Manifest.permission.CALL_PHONE); }
+        @JavascriptInterface public boolean logGranted() { return hasPerm(Manifest.permission.READ_CALL_LOG); }
+
+        @JavascriptInterface public void requestSms() { requestNotifyPerms(); }
+        @JavascriptInterface public void requestCall() { requestNotifyPerms(); }
+        @JavascriptInterface public void requestLog() { requestNotifyPerms(); }
+        @JavascriptInterface public void requestAll() { requestNotifyPerms(); }
+
+        @JavascriptInterface
+        public boolean sendSms(String phone, String text, String id) {
+            return sendSmsNow(phone, text, id);
+        }
+
+        /** 系统短信应用：一次带入全部收件人，由人在系统里最后点发送 */
+        @JavascriptInterface
+        public void openSms(String phone, String text) {
+            final String num = String.valueOf(phone == null ? "" : phone).replaceAll("[^0-9;+,]", "");
+            final String body = String.valueOf(text == null ? "" : text);
+            try {
+                Intent i = new Intent(Intent.ACTION_SENDTO);
+                i.setData(Uri.parse("smsto:" + num));
+                i.putExtra("sms_body", body);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+            } catch (Throwable t) {
+                appendCrash("openSms ACTION_SENDTO " + stackOf(t));
+                try {
+                    Intent i2 = new Intent(Intent.ACTION_VIEW, Uri.parse("sms:" + num));
+                    i2.putExtra("sms_body", body);
+                    i2.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(i2);
+                } catch (Throwable t2) {
+                    appendCrash("openSms ACTION_VIEW " + stackOf(t2));
+                    toast("没有可用的短信应用");
+                }
+            }
+        }
+
+        @JavascriptInterface public void dial(String phone) { dialIntent(phone, false); }
+        @JavascriptInterface public void call(String phone) { dialIntent(phone, true); }
+
+        @JavascriptInterface public String callLog(int limit) { return readSystemCallLog(limit, false); }
+        @JavascriptInterface public String missedCalls(int limit) { return readSystemCallLog(limit, true); }
+        @JavascriptInterface public void speak(String text) { speakNow(text); }
+
+        @JavascriptInterface
+        public void copyText(String text) {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("station", String.valueOf(text)));
+            } catch (Throwable t) { appendCrash("copyText " + stackOf(t)); }
+        }
+    }
+
+    private void dialIntent(String phone, boolean direct) {
+        final String num = String.valueOf(phone == null ? "" : phone).replaceAll("[^0-9+*#]", "");
+        if (num.isEmpty()) { toast("号码为空"); return; }
+        boolean useCall = direct;
+        if (useCall && !hasPerm(Manifest.permission.CALL_PHONE)) {
+            useCall = false;
+            toast("未授权 CALL_PHONE，已改用拨号盘");
+        }
+        try {
+            Intent i = new Intent(useCall ? Intent.ACTION_CALL : Intent.ACTION_DIAL, Uri.parse("tel:" + num));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable t) {
+            appendCrash("dialIntent " + stackOf(t));
+            toast("没有可用的拨号应用");
+        }
+    }
+
     private void toast(String msg) {
         final String text = String.valueOf(msg);
         try {
@@ -950,6 +1230,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (smsReceiver != null) {
+            try { unregisterReceiver(smsReceiver); } catch (Throwable ignored) { }
+            smsReceiver = null;
+        }
+        if (tts != null) {
+            try { tts.shutdown(); } catch (Throwable ignored) { }
+            tts = null;
+        }
         if (web != null) {
             try {
                 web.loadUrl("about:blank");
