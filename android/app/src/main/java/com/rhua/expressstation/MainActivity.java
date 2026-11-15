@@ -20,6 +20,7 @@ import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -55,7 +56,7 @@ import java.util.Map;
  * IndexedDB 都会被限制），而是用 shouldInterceptRequest 把
  * https://appassets.androidplatform.net/ 映射到 assets，得到真正的安全上下文。
  *
- * 2.0.2 起：任何启动期异常都不再闪退，而是显示原生诊断屏；崩溃堆栈同时落到
+ * 2.0.3 起：任何启动期异常都不再闪退，而是显示原生诊断屏；崩溃堆栈同时落到
  * 公共「下载/快递驿站」目录（Android 11+ 用户无法直接访问 Android/data）。
  */
 public class MainActivity extends Activity {
@@ -91,6 +92,8 @@ public class MainActivity extends Activity {
     private PermissionRequest pendingPermission;
     private long lastBackAt = 0L;
     private boolean fatalShown = false;
+    private int renderGoneCount = 0;
+    private long renderGoneAt = 0L;
 
     @Override
     protected void attachBaseContext(Context base) {
@@ -253,7 +256,7 @@ public class MainActivity extends Activity {
     private void showFatal(final String detail, String title) {
         if (fatalShown) return;
         fatalShown = true;
-        final String info = "版本 2.0.2 · " + Build.MANUFACTURER + " " + Build.MODEL
+        final String info = "版本 2.0.3 · " + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
         writePublicCrash(info + "\n" + title + "\n\n" + detail);
         try {
@@ -467,26 +470,69 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
-            Uri u = req.getUrl();
-            if (u != null && HOST.equals(u.getHost())) return false;
-            try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
-            catch (Throwable ignored) { }
-            return true;
+            return openExternal(req == null ? null : req.getUrl());
         }
 
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, String url) {
-            try {
-                Uri u = Uri.parse(url);
-                if (u != null && HOST.equals(u.getHost())) return false;
-                startActivity(new Intent(Intent.ACTION_VIEW, u));
-            } catch (Throwable ignored) { }
+            try { return openExternal(Uri.parse(url)); }
+            catch (Throwable t) { appendCrash("URL 解析失败 " + t); return true; }
+        }
+
+        /* 只放行明确的 http/https 外链；hash、相对地址、未知 scheme 一律留在页内，
+           避免误起一个外部 Activity 让用户觉得「App 退出」 */
+        private boolean openExternal(Uri u) {
+            if (u == null || HOST.equals(u.getHost())) return false;
+            String scheme = u.getScheme();
+            if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)) {
+                try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
+                catch (Throwable t) { appendCrash("外链打开失败 " + t); }
+            } else {
+                appendCrash("页内拦截非网页跳转 " + u);
+            }
             return true;
         }
 
         @Override
         public void onReceivedError(WebView view, int code, String desc, String failingUrl) {
             appendCrash("页面资源错误 " + code + " " + desc + " @ " + failingUrl);
+        }
+
+        /* API 26+：渲染进程被系统回收时，默认返回 false 会让系统直接杀掉整个 App，
+           表现正是「点登录那一刻退出」。返回 true 由 App 接管：重建 WebView；
+           短时间内连续崩溃则停在诊断屏，避免无限重启。 */
+        @Override
+        public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            boolean crashed = detail != null && detail.didCrash();
+            appendCrash("FATAL 渲染进程退出 didCrash=" + crashed);
+            writePublicCrash("渲染进程退出 didCrash=" + crashed
+                    + " · 版本 2.0.3 · Android " + Build.VERSION.SDK_INT);
+            long now = System.currentTimeMillis();
+            if (now - renderGoneAt > 15000) renderGoneCount = 0;
+            renderGoneAt = now;
+            renderGoneCount++;
+            if (web == view) web = null;
+            try { if (view != null) { view.removeAllViews(); view.destroy(); } }
+            catch (Throwable ignored) { }
+            if (renderGoneCount >= 2) {
+                fatalShown = false;
+                showFatal("WebView 渲染进程在 15 秒内连续退出 " + renderGoneCount + " 次。\n"
+                        + "常见原因：页面单帧生成过多 DOM、设备内存紧张。\n"
+                        + "2.0.3 已把登录后的一次性全量渲染改为按需渲染，请把本屏内容发回。",
+                        "渲染进程连续崩溃");
+            } else {
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        try { startWebView(); }
+                        catch (Throwable t) {
+                            appendCrash("FATAL 重建 WebView 失败\n" + stackOf(t));
+                            fatalShown = false;
+                            showFatal(stackOf(t), "重建 WebView 失败");
+                        }
+                    }
+                });
+            }
+            return true;
         }
     }
 
@@ -497,20 +543,28 @@ public class MainActivity extends Activity {
         public void onPermissionRequest(final PermissionRequest request) {
             runOnUiThread(new Runnable() {
                 @Override public void run() {
-                    boolean wantsVideo = false;
-                    for (String res : request.getResources()) {
-                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) wantsVideo = true;
-                    }
-                    if (!wantsVideo) { request.deny(); return; }
-                    boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
-                            || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-                    if (granted) {
-                        try { request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE}); }
-                        catch (Throwable t) { appendCrash("grant camera " + t); }
-                    } else {
-                        pendingPermission = request;
-                        try { requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM); }
-                        catch (Throwable t) { pendingPermission = null; appendCrash("request camera " + t); }
+                    try {
+                        if (request == null) return;
+                        boolean wantsVideo = false;
+                        String[] res = request.getResources();
+                        if (res != null) {
+                            for (String r : res) {
+                                if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) wantsVideo = true;
+                            }
+                        }
+                        if (!wantsVideo) { request.deny(); return; }
+                        boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+                                || checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+                        if (granted) {
+                            request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                        } else {
+                            pendingPermission = request;
+                            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERM);
+                        }
+                    } catch (Throwable t) {
+                        appendCrash("onPermissionRequest " + stackOf(t));
+                        pendingPermission = null;
+                        try { if (request != null) request.deny(); } catch (Throwable ignored) { }
                     }
                 }
             });
@@ -653,7 +707,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "2.0.2";
+            return "2.0.3";
         }
 
         /** 导出 CSV / JSON：写入系统「下载/快递驿站」 */

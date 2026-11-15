@@ -211,7 +211,7 @@
     $('topSub').textContent = TITLES[name];
     $('sidebar').classList.remove('open'); $('sideShade').classList.remove('on');
     try { history.replaceState(null, '', '#' + name); } catch (e) { }
-    renderAll();
+    renderCurrent();
     window.scrollTo(0, 0);
     if (name === 'inbound' && S.inTab === 'manual') setTimeout(function () { try { $('inNo').focus(); } catch (e) { } }, 100);
     if (name === 'outbound' && store.settings().autoCapture && !S.autoTried &&
@@ -220,12 +220,25 @@
       setTimeout(function () { if (S.view === 'outbound') capturePickup(true); }, 500);
     }
   }
-  function renderAll() {
+  /* 按需渲染：登录那一刻绝不能一次性重绘 14 个视图。
+     低端 Android WebView 在单帧内做大量 innerHTML / 表格 / SVG 生成时，
+     渲染进程可能被系统回收，表现为「点登录直接退出」，JS 侧 try/catch 兜不住。
+     数据变更后只标记其它视图为脏，切过去时再单独渲染那一个。 */
+  var RENDERERS = {
+    dash: renderDash, inbound: renderInbound, outbound: renderOutbound, query: renderQuery,
+    inventory: renderInventory, collections: renderCollections, customers: renderCustomers,
+    stats: renderStats, print: renderPrint, sync: renderSync, settings: renderSettings,
+    accounts: renderAccounts, logs: renderLogs, help: renderHelp
+  };
+  function renderCurrent() {
     if ($('app').hidden) return;
-    renderDash(); renderInbound(); renderOutbound(); renderQuery(); renderInventory();
-    renderCollections(); renderCustomers(); renderStats(); renderPrint(); renderSync();
-    renderSettings(); renderAccounts(); renderLogs(); renderHelp();
+    var name = S.view && RENDERERS[S.view] ? S.view : 'dash';
+    try { RENDERERS[name](); }
+    catch (e) { reportBoot('渲染「' + name + '」失败', e); }
   }
+  /* 数据变更后只刷新当前视图；切到其它视图时由 switchView 单独渲染，
+     保证看到的始终是最新数据，同时把登录瞬间的 DOM 峰值降到原来的 1/14。 */
+  function renderAll() { renderCurrent(); }
 
   /* ---------------- 工作台 ---------------- */
   function renderDash() {
@@ -1529,7 +1542,7 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, version: '2.0.2',
+    rules: R, media: Media, version: '2.0.3',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

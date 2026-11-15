@@ -4,7 +4,7 @@
   'use strict';
 
   var api = {};
-  var VERSION = '2.0.2';
+  var VERSION = '2.0.3';
   api.VERSION = VERSION;
 
   function str(v) { return v === null || v === undefined ? '' : String(v); }

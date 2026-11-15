@@ -1,4 +1,4 @@
-# 驿站助手（重建版 2.0.2）
+# 驿站助手（重建版 2.0.3）
 
 对照 `570665.apk`（`com.touchez.mossp.ezhelper`，2021 年版「驿站助手」）**从零重建**的快递驿站管理系统。纯静态、零依赖、零后端：台账存浏览器 localStorage，照片存 IndexedDB，不上传任何服务器。
 
@@ -82,7 +82,7 @@ node tools/serve.js 8765      # 打开 http://127.0.0.1:8765/index.html
 
 ### 安卓
 ```bash
-bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.2.apk
+bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.3.apk
 ```
 需要 JDK 17 与 Android SDK build-tools / platform。APK 用 `https://appassets.androidplatform.net/` 映射到 assets，保证摄像头、localStorage、IndexedDB 都运行在安全上下文里；首次使用需允许相机权限。
 
@@ -96,7 +96,7 @@ bash android/build-apk.sh     # 产物 android/dist/station-assistant-2.0.2.apk
 4. **公司识别**：`圆通=^(YT|8\d{11,})` 这类正则可在「设置 → 快递公司管理」编辑，从上往下匹配，手动选择优先。
 5. **拍照识别**：Chrome / 多数安卓 WebView 支持本机条码识别；iOS Safari 等不支持时页面会明示，照片仍按时间 / 识别串命名，手输单号照常出入库，不会假装识别成功。
 6. **权限**：站长全权；操作员默认可用业务页但不能改设置与账号；只读角色仅查件 / 台账 / 统计 / 打印 / 流水。可逐项调整。
-7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.2`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
+7. **版本缓存**：每次改动都必须同步 `index.html` 的 `?v=2.0.3`、`sw.js` 的 `BUILD`、安卓 `versionName` / `versionCode` 与 APK 名，否则手机会继续跑旧 JS。
 
 ---
 
@@ -125,9 +125,9 @@ node --check app.js           # 语法检查
 
 ---
 
-## 八、2.0.1 / 2.0.2 · 安卓 WebView 稳定性修复
+## 八、2.0.1 ~ 2.0.3 · 安卓 WebView 稳定性修复
 
-针对「安卓版登录崩溃」的两轮加固（旧版 APK 请直接覆盖安装）：
+针对「安卓版登录崩溃」的三轮加固（旧版 APK 请直接覆盖安装）：
 
 **2.0.1（页面层）**
 - 页面顶部红色错误条，任何脚本异常都可见、可「复制诊断」；登录门与主界面「自检」带 `bootErrors` / `nativeLog`。
@@ -135,17 +135,24 @@ node --check app.js           # 语法检查
 - 去掉 `Array.prototype.findIndex`（Chromium < 45 没有）；`BarcodeDetector.getSupportedFormats()` 加保护。
 - 原生壳始终重新 `loadUrl`；JS 对话框、相机授权、资源拦截、销毁都加兜底。
 
-**2.0.2（原生层，本次重点）**
-- 上一轮让用户去 `Android/data/com.rhua.expressstation/files/crash/` 取日志，但 **Android 11+ 文件管理器进不去该目录**，诊断路径等于失效。本轮改为：
+**2.0.2（原生层 · 让崩溃可见）**
+- 上一轮让用户去 `Android/data/com.rhua.expressstation/files/crash/` 取日志，但 **Android 11+ 文件管理器进不去该目录**，诊断路径等于失效。改为：
   - 静态块安装全局未捕获异常处理器（早于主题解析与 `onCreate`），`attachBaseContext` 提供 Context；
   - `onCreate` 全链路 `catch (Throwable)`，连 `NoSuchMethodError` / `VerifyError` 这类 `Error` 也不再闪退；
-  - 任何启动异常都切换成**不依赖 WebView 的原生诊断屏**，直接显示完整堆栈 + 机型/系统版本，支持「复制诊断」和「仍要进入」；
-  - 崩溃日志额外写一份到**「下载/快递驿站」公共目录**（Android 10+ 走 MediaStore），用户可直接查看；
-  - 若上次崩溃在 10 分钟内，本次启动**先停在诊断屏**，避免反复闪退看不到原因，确认后自动清空记录。
-- `new WebView(this)` 单独兜底：国产 ROM 上 WebView 组件被禁用 / 正在更新时不闪退，提示更新 Android System WebView。
-- 补上 `shouldInterceptRequest(WebView, String)` **旧重载**：Android 5.x 自带 WebView 只回调旧签名，此前缺它会导致所有资源 404、整页白。
-- 应用主题改为直接引用框架资源 `@android:style/Theme.Material.Light.NoActionBar`，去掉自定义 style 的启动期解析环节。
+  - 任何启动异常都切换成**不依赖 WebView 的原生诊断屏**，显示完整堆栈 + 机型/系统版本，支持「复制诊断」和「仍要进入」；
+  - 崩溃日志额外写一份到**「下载/快递驿站」公共目录**（Android 10+ 走 MediaStore）；
+  - 上次崩溃在 10 分钟内，本次启动先停在诊断屏，确认后自动清空记录。
+- `new WebView(this)` 单独兜底；补 `shouldInterceptRequest(WebView, String)` 旧重载（Android 5.x 只回调旧签名，缺了会整页 404 白）；主题改直接引用框架资源。
 
-**若仍有问题**：现在不会直接闪退，会停在诊断屏——截图或点「复制诊断」发回即可；日志副本在「下载/快递驿站」。网页版仍可点登录门「自检」查看 `bootErrors` / `nativeLog` / `lastFatal`。
+**2.0.3（登录瞬间 · 本次重点）**
 
-**版本**：2.0.2 · SW `station-rebuild-v3` · 安卓 versionCode 13。
+用户确认是「**点登录那一刻退出**」后，才定位到真正的差异点：启动时的登录门几乎不产生 DOM 操作，而登录成功会走 `enterApp() → renderAll()`，**在同一帧里一次性重绘全部 14 个视图**（大量 `innerHTML`、表格、SVG 条码）。低端 WebView 的渲染进程可能被这波峰值回收，而系统默认会连带杀掉 App 进程——这解释了为什么前两轮的 JS try/catch 与 Java 回调兜底都无效：渲染进程直接没了，根本没有异常可捕获。
+
+- **按需渲染**：`renderAll()` 改为只渲染当前视图，`switchView()` 切到哪个视图才渲染哪一个；数据变更后只刷新当前，切过去时用最新数据重绘。登录瞬间 DOM 峰值降到原来的约 1/14。
+- **接管渲染进程崩溃**：实现 `WebViewClient.onRenderProcessGone()` 并**返回 `true`**（返回 false 系统会直接杀进程），自动重建 WebView；15 秒内连续崩溃 2 次则停在诊断屏，不再无限重启。
+- **外链跳转收敛**：`shouldOverrideUrlLoading` 只放行明确的 http/https 外链，hash / 相对地址 / 未知 scheme 一律留在页内，避免误起外部 Activity 让人误以为「退出」。
+- **相机权限回调**：整个 `runOnUiThread` 体包 `catch (Throwable)`，并对 `request` / `getResources()` 判空。
+
+**若仍有问题**：启动异常会停在诊断屏（截图或「复制诊断」发回）；渲染进程崩溃会在「下载/快递驿站」留下 `驿站助手-崩溃日志-*.txt`。网页版可点登录门「自检」查看 `bootErrors` / `nativeLog` / `lastFatal`。
+
+**版本**：2.0.3 · SW `station-rebuild-v4` · 安卓 versionCode 14。
