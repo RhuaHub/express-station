@@ -5,6 +5,7 @@
 
   var R = global.StationRules || (typeof require !== 'undefined' ? require('./rules.js') : null);
   var OCR = global.StationOcr || (typeof require !== 'undefined' ? require('./ocr.js') : null);
+  var QR = global.StationQr || (typeof require !== 'undefined' ? require('./qr.js') : null);
   var DB_NAME = 'station-media-v2', STORE = 'photos';
   var memFallback = {};   /* IndexedDB 不可用时，至少保证当前会话内能看 */
   var dbPromise = null;
@@ -205,9 +206,9 @@
   }
   function recognize(blob) {
     var e = engines();
-    var res = { supported: !!(OCR || e.any), barcode: e.barcode, text: e.text, js: !!OCR,
+    var res = { supported: !!(OCR || QR || e.any), barcode: e.barcode, text: e.text, js: !!(OCR || QR),
       barcodes: [], texts: [], engine: '离线 OCR', confidence: 0, format: '', error: '' };
-    if (!OCR && !e.any) {
+    if (!OCR && !QR && !e.any) {
       res.error = '识别引擎未加载，请刷新页面；也可直接手输单号 / 货号';
       return Promise.resolve(res);
     }
@@ -242,12 +243,29 @@
       return Promise.all(jobs).then(function () { return hit; });
     }
     function offlineOf(canvas) {
-      if (!OCR) return Promise.resolve();
-      try {
-        /* scanCanvas 是同步的，内部自带 1.5s 预算上限，不会把老 WebView 卡死 */
-        mergeOCR(res, OCR.scanCanvas(canvas, { budget: 1500, maxSide: 1400 }));
-      } catch (err) {
-        res.error = '离线识别未完成，可直接手输单号 / 货号';
+      if (OCR) {
+        try {
+          /* scanCanvas 是同步的，内部自带 1.5s 预算上限，不会把老 WebView 卡死 */
+          mergeOCR(res, OCR.scanCanvas(canvas, { budget: 1500, maxSide: 1400 }));
+        } catch (err) {
+          res.error = '离线识别未完成，可直接手输单号 / 货号';
+        }
+      }
+      /* 二维码走独立通道：一维码图上找不到定位符会安全返回 null */
+      if (QR && canvas && typeof QR.decodeImage === 'function') {
+        try {
+          var ctx = canvas.getContext('2d');
+          if (ctx && typeof ctx.getImageData === 'function') {
+            var q = QR.decodeImage(ctx.getImageData(0, 0, canvas.width, canvas.height));
+            if (q) {
+              pushRes(res.barcodes, q);
+              res.format = res.format || 'QR';
+              if (res.confidence < 0.88) res.confidence = 0.88;
+              res.offlineHit = true;
+              res.offlineEngine = res.offlineEngine ? res.offlineEngine + ' + 离线 QR' : '离线 QR';
+            }
+          }
+        } catch (err2) { }
       }
       return Promise.resolve();
     }

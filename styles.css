@@ -314,6 +314,34 @@ details.card[open] > summary { margin-bottom: 14px; border-bottom: 1px solid var
   .auth-head p { display: none; }
 }
 
+/* ---------- 2.1.0 扩展视图 ---------- */
+.pool-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; border-bottom: 1px dashed var(--line); font-size: 14px; }
+.pool-row .mono { font-weight: 700; color: var(--gold); min-width: 88px; }
+.pool-row > span:nth-child(3) { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.strip-item.on { background: var(--gold-soft); border-color: var(--gold-2); }
+.tag.ok { background: #e8f5ed; color: var(--ok); border-color: #bfe3cc; }
+.tag.warn { background: var(--gold-soft); color: var(--warn); border-color: var(--line-2); }
+.up { color: var(--ok); font-weight: 700; }
+.down { color: var(--danger); font-weight: 700; }
+.qr-box { margin-top: 12px; }
+.qr-card { display: flex; gap: 18px; align-items: center; max-width: 460px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.qr-img { flex: none; background: #fff; padding: 6px; border-radius: 8px; }
+.qr-img svg { display: block; width: 140px; height: 140px; }
+.qr-meta b { font-size: 16px; }
+.qr-meta p { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.qr-code { margin-top: 6px; font-size: 24px; font-weight: 800; letter-spacing: 2px; color: var(--gold); font-family: ui-monospace, Consolas, monospace; }
+.faq-list { display: grid; gap: 10px; }
+.faq-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.faq-item b { font-size: 14px; }
+.faq-item p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.lb-qr { margin: 4px 0; }
+.lb-qr svg { width: 24mm; height: 24mm; }
+@media (max-width: 640px) {
+  .qr-card { gap: 12px; padding: 10px; }
+  .qr-img svg { width: 108px; height: 108px; }
+  .qr-code { font-size: 19px; }
+}
+
 /* ---------- 打印：只输出标签 ---------- */
 @media print {
   @page { margin: 8mm; }
@@ -322,4 +350,7 @@ details.card[open] > summary { margin-bottom: 14px; border-bottom: 1px solid var
   .print-root { display: block !important; }
   .label-sheet { border: 1px solid #999; page-break-inside: avoid; break-inside: avoid; margin: 0 4mm 4mm 0; display: inline-flex; vertical-align: top; }
   .barcode { height: 40px; }
+  .qr-card { border: none; background: #fff; max-width: none; }
+  .qr-img svg { width: 60mm; height: 60mm; }
+  .qr-code { font-size: 30px; }
 }

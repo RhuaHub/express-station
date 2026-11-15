@@ -67,7 +67,7 @@
     var nativeLog = '';
     try { nativeLog = window.StationNative.crashLog() || ''; } catch (e) { }
     var info = {
-      app: 'station-assistant', version: '2.0.6', build: 17,
+      app: 'station-assistant', version: '2.1.0', build: 18,
       ua: String(navigator.userAgent || ''), time: new Date().toISOString(),
       bootErrors: window.StationBoot ? window.StationBoot.errors() : [],
       storageOk: store.storageOk(), safeMode: !!store.settings().safeMode,
@@ -217,7 +217,15 @@
       var r = auth.status().locked ? auth.unlock(pw) : auth.login($('loginName').value, pw);
       $('authMsg').textContent = r.ok ? '' : r.error;
       $('authMsg').className = 'auth-msg';
-      if (r.ok) { step('登录校验通过'); $('loginPw').value = ''; enterApp(); }
+      if (r.ok) {
+        step('登录校验通过');
+        try {
+          var rm = $('loginRemember');
+          if (rm && rm.checked) localStorage.setItem('station.remember.name', $('loginName').value.trim());
+          else localStorage.removeItem('station.remember.name');
+        } catch (e) { } /* 存储被禁用时忽略，不影响登录 */
+        $('loginPw').value = ''; enterApp();
+      }
     } catch (e) {
       reportBoot('登录失败', e);
       $('authMsg').textContent = '登录出错：' + (e && e.message ? e.message : String(e));
@@ -225,6 +233,10 @@
   }
   function bindGate() {
     $('btnLogin').onclick = doLogin;
+    try {
+      var savedName = localStorage.getItem('station.remember.name');
+      if (savedName) { $('loginName').value = savedName; $('loginRemember').checked = true; }
+    } catch (e) { }
     try {
       var sm = $('gateSafeMode');
       sm.checked = !!store.settings().safeMode;
@@ -237,6 +249,12 @@
       };
     } catch (e) { }
     try { if ($('btnExportLog')) $('btnExportLog').onclick = exportRunLog; } catch (e) { }
+    try {
+      if ($('btnForgotPw')) $('btnForgotPw').onclick = function () {
+        $('authMsg').textContent = '本机不存明文密码、也没有找回服务器：请用「从备份导入」恢复，或请站长在「子账号」里重置该账号密码。';
+        $('authMsg').className = 'auth-msg';
+      };
+    } catch (e) { }
     /* 版本自证：把原生壳版本也显示出来，一眼确认装到的确实是新 APK */
     try {
       if (window.StationNative && window.StationNative.version && $('gateVersion')) {
@@ -288,8 +306,9 @@
   /* ---------------- 视图切换 ---------------- */
   var TITLES = {
     dash: '工作台', inbound: '入库', outbound: '出库', query: '查件', inventory: '库存台账',
-    collections: '收件任务', customers: '客户管理', stats: '业务统计', print: '货号标签',
-    sync: '同步记录', settings: '设置', accounts: '子账号', logs: '操作流水', help: '帮助 / 关于'
+    tasks: '出库任务', collections: '收件任务', customers: '客户管理', stats: '业务统计',
+    print: '货号标签', sync: '同步记录', wallet: '账本资费', settings: '设置',
+    station: '驿站档案', accounts: '子账号', logs: '操作流水', service: '服务中心', help: '帮助 / 关于'
   };
   function switchView(name) {
     if (!$('view-' + name)) name = 'dash';
@@ -330,8 +349,16 @@
     dash: renderDash, inbound: renderInbound, outbound: renderOutbound, query: renderQuery,
     inventory: renderInventory, collections: renderCollections, customers: renderCustomers,
     stats: renderStats, print: renderPrint, sync: renderSync, settings: renderSettings,
-    accounts: renderAccounts, logs: renderLogs, help: renderHelp
+    accounts: renderAccounts, logs: renderLogs, help: renderHelp,
+    tasks: exRender('tasks'), station: exRender('station'),
+    wallet: exRender('wallet'), service: exRender('service')
   };
+  function exRender(name) {
+    return function () {
+      if (window.StationExtras) window.StationExtras.render(name);
+      else toast('扩展模块未加载，请刷新页面', 'err');
+    };
+  }
   function renderCurrent() {
     if ($('app').hidden) return;
     var name = S.view && RENDERERS[S.view] ? S.view : 'dash';
@@ -495,6 +522,7 @@
         recipient: $('inRecipient').value, phone: $('inPhone').value,
         slot: $('inSlot').value, serial: $('inSerial').value, goodsNo: $('inGoods').value,
         label: $('inLabel').value, note: $('inNote').value, count: $('inCount').value,
+        hiddenPhone: !!($('inHidden') && $('inHidden').checked),
         photos: photos
       });
       btn.disabled = false;
@@ -696,6 +724,15 @@
     S.qResult = store.listParcels(q).slice(0, 300);
     $('qCount').textContent = '共 ' + S.qResult.length + ' 条' + (S.qResult.length >= 300 ? '（仅显示前 300 条）' : '');
     table('queryTable', COLS, parcelRows(S.qResult), { empty: '无查询结果' });
+    if (window.StationExtras && window.StationExtras.renderQueryHistory) {
+      try { window.StationExtras.renderQueryHistory(); } catch (e) { }
+    }
+  }
+  function recordQuery() {
+    try {
+      var kw = $('qKw').value.trim();
+      if (kw && window.StationExtras && window.StationExtras.recordQuery) window.StationExtras.recordQuery(kw);
+    } catch (e) { }
   }
   function renderInventory() {
     var status = $('invStatus').value, kw = $('invKw').value.trim();
@@ -790,7 +827,8 @@
   var LABEL_FIELDS = [
     ['station', '驿站名称'], ['goods', '货号'], ['slot', '货架号'], ['serial', '编号'],
     ['recipient', '收件人'], ['tail', '手机尾号'], ['carrier', '快递公司'], ['date', '入库时间'],
-    ['tracking', '运单号'], ['barcode', 'Code39 条码'], ['label', '快递标签'], ['note', '备注']
+    ['tracking', '运单号'], ['barcode', 'Code39 条码'], ['qrcode', '二维码'],
+    ['label', '快递标签'], ['note', '备注']
   ];
   function renderPrint() {
     var set = store.settings();
@@ -813,6 +851,9 @@
       return '<div style="width:' + (set.labelWidth || 80) + 'mm;min-height:' + (set.labelHeight || 50) + 'mm">' +
         R.labelHTML(p, set) + '</div>';
     }).join('') : '<div class="muted">勾选左边的包裹，这里会显示打印预览</div>';
+    if (window.StationExtras && window.StationExtras.fillTemplates) {
+      try { window.StationExtras.fillTemplates(); } catch (e) { }
+    }
   }
   function printParcels(list) {
     list = (list || []).filter(Boolean);
@@ -825,6 +866,10 @@
 
   /* ---------------- 同步记录 ---------------- */
   function renderSync() {
+    var st = (store.raw().extras && store.raw().extras.station) || {};
+    $('syncDelayInfo').textContent = st.delayUpload
+      ? '延迟上传：已登记开启，入库后 ' + (st.delayMinutes || 0) + ' 分钟再标记待上传（本机策略，不真实上行）。可在「驿站档案」调整。'
+      : '延迟上传：未开启。可在「驿站档案」里登记延迟策略与合作快递公司。';
     var list = store.listUploads({ state: $('syncState').value, kw: $('syncKw').value.trim() });
     $('syncCount').textContent = '共 ' + list.length + ' 条';
     table('syncTable', ['时间', '货号', '单号', '动作', '状态', '说明', '操作'],
@@ -931,10 +976,10 @@
   }
   var HELP_FEATURES = [
     ['入库', '手动 / 极速 / 批量 / 扫码枪连录，条码识别按码命名照片，自动识别公司、分配货架与货号'],
-    ['OCR 识别', '内置离线引擎：Code128 / EAN-13 / UPC-A / ITF / Code39 条码 + 印刷数字；拍照自动填单号、按码命名照片，照片不上传'],
+    ['OCR / 二维码', '内置离线引擎：Code128 / EAN-13 / UPC-A / ITF / Code39 + 印刷数字 + 二维码生成与解码；拍照自动填单号、按码命名照片，照片不上传'],
     ['编号货号', '连续 / 按日 / 按货架 / 尾号四种编号模式，五种货号模式 + 自定义模板，批量改号'],
-    ['出库', '取件 / 货号 / 电话 / 扫描 / 退件五种出库，合并出库、出库拍照、出库备注、撤销出库'],
-    ['拍照取件', '进出库页自动开镜头，拍面单自动识别并匹配在库件，连续取件自动开下一张'],
+    ['出库', '取件 / 货号 / 电话 / 扫描 / 退件五种出库，合并出库、出库任务整批出库、出库拍照、出库备注、撤销出库'],
+    ['拍照取件', '点按钮开镜头，拍面单自动识别并匹配在库件；不自动开摄像头，识别不到可手输'],
     ['查件台账', '多条件组合查询、在库天数、滞留筛选、详情、修改、照片、批量移库与打印'],
     ['移库', '扫描或勾选加入移库列表，换货架号并可重算货号，留移库流水'],
     ['客户管理', '按尾号自动归档、VIP / 老客户 / 黑名单、星标备注、号码导入导出与去重'],
@@ -942,18 +987,20 @@
     ['快递公司', '公司启停、简称、单号正则识别规则，可编辑'],
     ['收件任务', '上门取件 / 寄件登记与状态流转'],
     ['业务统计', '出库率 / 工作量统计，13 种时间范围、每日明细与 CSV 导出'],
-    ['货号标签', '模板字段可配、Code39 可扫条码、批量打印（系统打印）'],
-    ['同步记录', '本地等价实现：上传记录、状态标记、重试、导出上行文件'],
-    ['设置与账号', '提醒 / 拍照 / 拦截 / 货架设置、主子账号、逐项权限、锁屏、登录限速'],
+    ['货号标签', '模板字段可配、打印模板可存多套、Code39 条码 / 二维码、批量打印（系统打印）'],
+    ['同步记录', '本地等价实现：上传记录、状态标记、重试、延迟上传策略、导出上行文件'],
+    ['出库任务', '按货号 / 单号 / 尾号圈定待取件，建任务、看明细、整批出库与任务状态'],
+    ['驿站档案', '驿站信息、代收登记、实名与门头证件照（本机）、合作公司、服务项目、延迟上传、取件二维码海报'],
+    ['账本资费', '余额、充值与替他人充值记录、按件数结算账单、资费设置、活动奖励、CSV 导出（本机记账，不接支付）'],
+    ['服务中心', 'FAQ、意见反馈与回复、用户指南、关于与免责声明、活动记录（本机，不联网客服）'],
+    ['设置与账号', '提醒 / 拍照 / 拦截 / 货架设置、主子账号、逐项权限、锁屏、登录限速、记住账号'],
     ['数据', '完整备份 JSON（含照片）、恢复 / 合并、包裹 CSV 导入导出、一键清空']
   ];
   var HELP_EXCLUDED = [
-    ['短信类', '群发短信、短信模板 / 签名 / 审核、短信历史、失败短信提醒、扫码发短信'],
-    ['电话类', '直拨 / 回拨 / 隐私号、群呼、群呼历史、通话记录、未接来电、语音通知模板'],
-    ['微信通知', '微信取件通知、公众号绑定、码上取件、永久二维码海报'],
-    ['服务端合作', '驿站代收开通 / 实名认证、物流数据上行到快递公司、延迟上传真实生效'],
-    ['商业与硬件', '充值 / 账单 / 资费、商城、蓝牙打印机厂商 SDK、在线客服与活动奖励'],
-    ['云端能力', '云端 OCR 接口 / 在线语音识别服务（本机改用内置离线识别引擎与浏览器接口，不联网、不上传照片）']
+    ['短信类（按需求排除）', '群发短信、短信模板 / 签名 / 审核、短信历史、失败短信提醒、扫码发短信'],
+    ['电话通知类（按需求排除）', '直拨 / 回拨 / 隐私号、群呼、群呼历史、通话记录、未接来电、语音通知模板'],
+    ['通知发送能力', '微信 / 公众号消息推送、自动取件通知：任何形式对外发送通知都不做；本机只生成取件二维码与凭证'],
+    ['真实联网能力（本机等价）', '支付充值、快递公司数据上行与实名核验、在线客服会话、蓝牙厂商 SDK 改为系统打印；页面明确标注「本机登记 / 记账」，不假装已联网完成']
   ];
   function renderHelp() {
     $('helpFeatures').innerHTML = HELP_FEATURES.map(function (x) { return '<div><b>' + esc(x[0]) + '</b><br>' + esc(x[1]) + '</div>'; }).join('');
@@ -966,6 +1013,7 @@
     var rows = [
       ['货号', p.goodsNo], ['编号', p.serial], ['运单号', p.trackingNo], ['快递公司', p.carrier],
       ['收件人', p.recipient || '—'], ['联系电话', R.maskPhone(p.phone) || p.phoneTail || '—'],
+      ['面单类型', p.hiddenPhone ? '隐号面单（按货号 / 单号取件）' : '普通面单'],
       ['货架号', p.slot], ['标签', p.label || '—'], ['件数', p.count], ['备注', p.note || '—'],
       ['入库时间', R.fmt(p.inAt)], ['出库时间', R.fmt(p.outAt) || '—'],
       ['在库天数', p.status === 'in' ? R.daysBetween(p.inAt, Date.now()) : (p.outAt ? R.daysBetween(p.inAt, p.outAt) : '—')],
@@ -1102,6 +1150,10 @@
   }
   function handleAct(act, el) {
     var id = el.getAttribute('data-id');
+    if (act.indexOf('x-') === 0) {
+      if (window.StationExtras) window.StationExtras.action(act, el);
+      return;
+    }
     if (act === 'detail') detailDialog(id);
     else if (act === 'photos') photosDialog(id);
     else if (act === 'label') printParcels([store.getParcel(id)]);
@@ -1387,7 +1439,15 @@
     ['qKw', 'qMode', 'qStatus', 'qCarrier', 'qSlot', 'qLabel', 'qFrom', 'qTo'].forEach(function (id) {
       on(id, 'change', renderQuery); on(id, 'input', renderQuery);
     });
-    on('btnQuery', 'click', renderQuery);
+    on('btnQuery', 'click', function () { recordQuery(); renderQuery(); });
+    on('btnQueryVoice', 'click', function () {
+      var p;
+      try { p = Media.listen(); } catch (e) { toast('语音识别不可用，请手动输入', 'err'); return; }
+      safeChain(Promise.resolve(p).then(function (r) {
+        if (r && r.ok && r.text) { $('qKw').value = r.text; recordQuery(); renderQuery(); }
+        else toast((r && r.error) || '没听清，请重试', 'err');
+      }), '语音搜索');
+    });
     on('btnQueryReset', 'click', function () {
       ['qKw', 'qSlot', 'qFrom', 'qTo'].forEach(function (id) { $(id).value = ''; });
       $('qStatus').value = 'all'; $('qCarrier').value = 'all'; $('qLabel').value = '';
@@ -1519,6 +1579,7 @@
         .map(function (k) { return store.getParcel(k); }));
     });
     ['syncState', 'syncKw'].forEach(function (id) { on(id, 'change', renderSync); on(id, 'input', renderSync); });
+    on('btnSyncPending', 'click', function () { $('syncState').value = 'pending'; renderSync(); });
     on('btnSyncExport', 'click', function () {
       var rows = [['时间', '货号', '运单号', '动作', '状态', '说明']];
       store.listUploads({}).forEach(function (u) {
@@ -1672,6 +1733,14 @@
   try {
     bindGate();
     bind();
+    if (window.StationExtras) {
+      window.StationExtras.init({
+        store: store, auth: auth, R: R, Media: Media, $: $, esc: esc,
+        toast: toast, download: download, table: table, openModal: openModal,
+        closeModal: closeModal, confirmBox: confirmBox, guard: guard,
+        afterWrite: afterWrite, renderAll: renderAll, step: step, statusTag: statusTag
+      });
+    }
     if (auth.status().logged) enterApp(); else showGate();
   } catch (e) {
     reportBoot('启动失败', e);
@@ -1679,7 +1748,8 @@
   }
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
-    rules: R, media: Media, ocr: window.StationOcr, version: '2.0.6',
+    rules: R, media: Media, ocr: window.StationOcr, qr: window.StationQr,
+    extras: window.StationExtras, version: '2.1.0',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

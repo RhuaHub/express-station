@@ -62,9 +62,9 @@ window.StationBoot = (function () {
   return { report: report, errors: function () { return errs.slice(); } };
 })();
 </script>
-<link rel="manifest" href="manifest.webmanifest?v=2.0.6">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.0.6">
-<link rel="stylesheet" href="styles.css?v=2.0.6">
+<link rel="manifest" href="manifest.webmanifest?v=2.1.0">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.1.0">
+<link rel="stylesheet" href="styles.css?v=2.1.0">
 </head>
 <body>
 
@@ -86,8 +86,9 @@ window.StationBoot = (function () {
       <div class="auth-head"><h2 id="authLoginTitle">登录</h2><p>数据只存在本机浏览器，换设备请用备份导入。</p></div>
       <label>账号<input class="input" id="loginName" autocomplete="username"></label>
       <label>密码<input class="input" id="loginPw" type="password" autocomplete="current-password"></label>
+      <label class="inline"><input type="checkbox" id="loginRemember"> 记住账号（不保存密码）</label>
       <button class="btn btn-primary btn-block" id="btnLogin">登录</button>
-      <div class="auth-links"><button type="button" class="link" id="btnDiag">自检</button><button type="button" class="link" id="btnClearLock">清除登录限制</button></div>
+      <div class="auth-links"><button type="button" class="link" id="btnForgotPw">忘记密码</button><button type="button" class="link" id="btnDiag">自检</button><button type="button" class="link" id="btnClearLock">清除登录限制</button></div>
     </div>
 
     <div id="authBootHint" class="auth-note" hidden>
@@ -99,7 +100,7 @@ window.StationBoot = (function () {
     <pre class="diag" id="authDiag" hidden></pre>
     <input type="file" id="authImportFile" accept="application/json,.json" hidden>
     <div class="auth-foot">
-      <span id="gateVersion"><b>2.0.6</b> · 重建版 · build 17</span>
+      <span id="gateVersion"><b>2.1.0</b> · 重建版 · build 18</span>
       <span class="gate-tools"><label class="inline"><input type="checkbox" id="gateSafeMode"> 老设备兼容模式</label>
         <button type="button" class="link" id="btnExportLog">导出运行日志</button></span>
       <span>无短信 / 电话 / 群呼能力</span>
@@ -127,16 +128,20 @@ window.StationBoot = (function () {
       <button class="nav-item" data-perm="outbound" data-view="outbound"><i>↥</i><span>出库</span></button>
       <button class="nav-item" data-perm="query" data-view="query"><i>⌕</i><span>查件</span></button>
       <button class="nav-item" data-perm="inventory" data-view="inventory"><i>▣</i><span>库存台账</span></button>
+      <button class="nav-item" data-perm="tasks" data-view="tasks"><i>☑</i><span>出库任务</span></button>
       <button class="nav-item" data-perm="collections" data-view="collections"><i>✉</i><span>收件任务</span></button>
       <div class="nav-group">管理</div>
       <button class="nav-item" data-perm="customers" data-view="customers"><i>☻</i><span>客户管理</span></button>
       <button class="nav-item" data-perm="stats" data-view="stats"><i>◫</i><span>业务统计</span></button>
       <button class="nav-item" data-perm="print" data-view="print"><i>⎙</i><span>货号标签</span></button>
       <button class="nav-item" data-perm="sync" data-view="sync"><i>⇅</i><span>同步记录</span></button>
+      <button class="nav-item" data-perm="wallet" data-view="wallet"><i>¥</i><span>账本资费</span></button>
       <div class="nav-group">系统</div>
       <button class="nav-item" data-perm="settings" data-view="settings"><i>⚙</i><span>设置</span></button>
+      <button class="nav-item" data-perm="station" data-view="station"><i>⌂</i><span>驿站档案</span></button>
       <button class="nav-item" data-perm="accounts" data-view="accounts"><i>♙</i><span>子账号</span></button>
       <button class="nav-item" data-perm="logs" data-view="logs"><i>≡</i><span>操作流水</span></button>
+      <button class="nav-item" data-perm="service" data-view="service"><i>♡</i><span>服务中心</span></button>
       <button class="nav-item" data-view="help"><i>?</i><span>帮助 / 关于</span></button>
     </nav>
     <div class="side-foot">数据存本机 · 记得定期备份</div>
@@ -186,6 +191,7 @@ window.StationBoot = (function () {
             <label>快递标签<select class="input" id="inLabel"></select></label>
             <label>件数<input class="input" id="inCount" type="number" min="1" value="1"></label>
             <label class="wide">备注<input class="input" id="inNote" maxlength="120" placeholder="选填，最多 120 字"></label>
+            <label class="wide inline"><input type="checkbox" id="inHidden"> 隐号面单（面单手机号被遮蔽，按货号 / 单号取件）</label>
           </div>
           <div class="photo-picker">
             <input type="file" id="inPhotos" accept="image/*" multiple hidden>
@@ -298,9 +304,11 @@ window.StationBoot = (function () {
         </div>
         <div class="row-actions"><button class="btn btn-primary btn-sm" id="btnQuery">查询</button>
           <button class="btn btn-ghost btn-sm" id="btnQueryReset">重置</button>
+          <button class="btn btn-outline btn-sm" id="btnQueryVoice">语音搜索</button>
           <button class="btn btn-outline btn-sm" id="btnQueryExport">导出结果 CSV</button>
           <span class="muted" id="qCount"></span></div>
       </div>
+      <div class="card"><div class="card-head"><h3>最近查询</h3><span class="muted">点关键词可重查</span></div><div id="qHistory" class="muted"></div></div>
       <div class="card"><div class="table-wrap"><table class="table" id="queryTable"></table></div></div>
     </section>
 
@@ -402,14 +410,18 @@ window.StationBoot = (function () {
 
     <!-- 货号标签 / 打印 -->
     <section class="view" id="view-print" hidden>
-      <div class="page-head"><div><h2>货号标签</h2><p>选包裹 → 调模板 → 用系统打印；条码为 Code39，可用扫码枪识别</p></div>
+      <div class="page-head"><div><h2>货号标签</h2><p>选包裹 → 调模板 → 用系统打印；支持 Code39 条码与二维码</p></div>
         <div class="head-actions"><button class="btn btn-primary btn-sm" id="btnDoPrint">打印标签</button></div></div>
       <div class="grid-2">
         <div class="card"><div class="card-head"><h3>打印模板设置</h3></div>
+          <div class="row-actions"><select class="input input-sm" id="tplSelect"><option value="">默认模板</option></select>
+            <input class="input input-sm" id="tplName" placeholder="新模板名称">
+            <button class="btn btn-outline btn-sm" data-act="x-tplSave" data-perm="print">保存模板</button>
+            <button class="btn btn-ghost btn-sm" data-act="x-tplDel" data-perm="print">删除模板</button></div>
           <div class="check-grid" id="labelFields"></div>
           <div class="form-grid"><label>标签宽 mm<input class="input" id="labelW" type="number" min="40" max="150"></label>
             <label>标签高 mm<input class="input" id="labelH" type="number" min="25" max="150"></label></div>
-          <div class="muted">蓝牙打印机需厂商 SDK，网页版改为系统打印（可选择连蓝牙打印机）。</div></div>
+          <div class="muted">蓝牙打印机需厂商 SDK，网页版改为系统打印（可选择连蓝牙打印机）；模板可保存多套随时切换。</div></div>
         <div class="card"><div class="card-head"><h3>选择包裹</h3>
           <input class="input input-sm mono" id="printKw" placeholder="货号 / 单号 / 批次"></div>
           <div class="row-actions"><button class="btn btn-ghost btn-sm" id="btnPrintRecent">最近入库 10 件</button>
@@ -424,9 +436,11 @@ window.StationBoot = (function () {
     <section class="view" id="view-sync" hidden>
       <div class="page-head"><div><h2>同步记录</h2><p>原版用于上行数据到快递公司；重建版为纯本地，这里保留记录与导出上行文件</p></div></div>
       <div class="card notice"><b>本机模式</b>：没有服务器，也不会把包裹、手机号发给任何第三方。
-        如需对接快递公司代收 / 签收上行，需要对方开放接口与资质；本页只做本地记录与「导出上行文件」，不会假装已上传。</div>
-      <div class="card"><div class="row-actions"><select class="input input-sm" id="syncState"><option value="all">全部状态</option><option value="local">本机记录</option><option value="pending">待同步</option><option value="done">已标记</option></select>
+        如需对接快递公司代收 / 签收上行，需要对方开放接口与资质；本页只做本地记录与「导出上行文件」，不会假装已上传。
+        <div id="syncDelayInfo" class="muted"></div></div>
+      <div class="card"><div class="row-actions"><select class="input input-sm" id="syncState"><option value="all">全部状态</option><option value="local">本机记录</option><option value="pending">待同步（未上传明细）</option><option value="done">已标记</option></select>
         <input class="input input-sm mono" id="syncKw" placeholder="搜索货号 / 单号">
+        <button class="btn btn-ghost btn-sm" id="btnSyncPending">仅看未上传</button>
         <button class="btn btn-outline btn-sm" id="btnSyncExport">导出上行文件 CSV</button>
         <span class="muted" id="syncCount"></span></div>
         <div class="table-wrap"><table class="table" id="syncTable"></table></div></div>
@@ -538,12 +552,136 @@ window.StationBoot = (function () {
         <div class="table-wrap"><table class="table" id="logTable"></table></div></div>
     </section>
 
+    <!-- 出库任务 -->
+    <section class="view" id="view-tasks" hidden>
+      <div class="page-head"><div><h2>出库任务</h2><p>先圈定待取件，再按任务整批出库</p></div>
+        <div class="head-actions"><button class="btn btn-outline btn-sm" data-act="x-taskRefresh">刷新在库件</button></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>新建任务</h3><span class="muted" id="taskPoolCount"></span></div>
+          <form id="formTask"><div class="form-grid">
+            <label class="wide">任务名称<input class="input" id="taskName" placeholder="例：晚高峰待取件"></label>
+            <label class="wide">筛选关键词（货号 / 单号 / 尾号 / 收件人）<input class="input mono" id="taskKw" placeholder="留空列出全部在库件"></label>
+            <label class="wide">备注<input class="input" id="taskNote"></label>
+          </div><div class="form-foot">
+            <button class="btn btn-outline btn-sm" type="button" data-act="x-taskPreview">筛选在库件</button>
+            <button class="btn btn-primary btn-sm" type="submit" data-perm="tasks">创建任务</button>
+          </div></form>
+          <div id="taskPool" class="strip-list"></div></div>
+        <div class="card"><div class="card-head"><h3>任务列表</h3>
+          <select class="input input-sm" id="taskFilter"><option value="all">全部</option><option value="open">待出库</option><option value="done">已完成</option></select></div>
+          <div id="taskList" class="strip-list"></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>任务明细</h3><span class="muted" id="taskDetailTitle">点上方任务查看明细</span></div>
+        <div class="table-wrap"><table class="table" id="taskDetailTable"></table></div>
+        <div class="row-actions"><button class="btn btn-primary btn-sm" data-act="x-taskCheckout" data-perm="outbound">按任务出库</button>
+          <button class="btn btn-ghost btn-sm" data-act="x-taskDelete" data-perm="tasks">删除任务</button>
+          <button class="link" data-go="logs">查看流水</button></div></div>
+    </section>
+
+    <!-- 驿站档案 -->
+    <section class="view" id="view-station" hidden>
+      <div class="page-head"><div><h2>驿站档案</h2><p>代收资料、实名证件、合作公司、服务项目、延迟上传与取件二维码</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>驿站信息</h3><span class="muted" id="stationState"></span></div>
+          <form id="formStation"><div class="form-grid">
+            <label>驿站名称<input class="input" id="stName"></label>
+            <label>联系人<input class="input" id="stContact"></label>
+            <label class="wide">详细地址<input class="input" id="stAddress"></label>
+            <label>营业时间<input class="input" id="stHours" placeholder="08:00 - 21:00"></label>
+            <label>代收开通状态<select class="input" id="stOpened"><option value="0">未开通</option><option value="1">已登记开通（本机标记）</option></select></label>
+            <label class="wide">服务项目（每行一项）<textarea class="input" id="stServices" rows="3"></textarea></label>
+          </div><div class="form-foot"><button class="btn btn-primary btn-sm" type="submit" data-perm="station">保存驿站信息</button></div></form></div>
+        <div class="card"><div class="card-head"><h3>实名资料与证件照片</h3></div>
+          <form id="formStationId"><div class="form-grid">
+            <label>实名姓名<input class="input" id="stRealName"></label>
+            <label>证件号码<input class="input mono" id="stIdNo"></label>
+          </div><div class="row-actions">
+            <button class="btn btn-outline btn-sm" type="button" data-act="x-stPhoto" data-kind="storeFront">上传门头照</button>
+            <button class="btn btn-outline btn-sm" type="button" data-act="x-stPhoto" data-kind="idFront">身份证人像面</button>
+            <button class="btn btn-outline btn-sm" type="button" data-act="x-stPhoto" data-kind="idBack">身份证国徽面</button>
+            <button class="btn btn-primary btn-sm" type="submit" data-perm="station">保存资料</button>
+          </div></form>
+          <div id="stPhotos" class="strip-list"></div>
+          <div class="muted">证件照片只存本机 IndexedDB，不上传、不做联网实名核验。</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>合作快递公司 / 延迟上传</h3></div>
+          <div id="stPartners" class="check-grid"></div>
+          <div class="row-actions"><label class="inline"><input type="checkbox" id="stDelay"> 延迟上传代收信息</label>
+            <input class="input input-sm" id="stDelayMin" type="number" min="0" value="30" style="width:88px"><span class="muted">分钟</span>
+            <button class="btn btn-primary btn-sm" data-act="x-stSaveSync" data-perm="station">保存</button></div>
+          <div class="muted">只在本机记录待上传状态与延迟策略，不向快递公司真实上行数据。</div></div>
+        <div class="card"><div class="card-head"><h3>取件二维码海报</h3><span class="muted">本机生成，不发送任何消息</span></div>
+          <div class="row-actions"><input class="input input-sm mono" id="stQrText" placeholder="输入货号 / 取件码">
+            <button class="btn btn-outline btn-sm" data-act="x-stQr">生成二维码</button>
+            <button class="btn btn-ghost btn-sm" data-act="x-stQrPrint">打印海报</button></div>
+          <div id="stQrBox" class="qr-box"></div></div>
+      </div>
+    </section>
+
+    <!-- 账本资费 -->
+    <section class="view" id="view-wallet" hidden>
+      <div class="page-head"><div><h2>账本资费</h2><p>余额、充值记录、账单结算、资费说明与活动奖励（本机记账，不接支付）</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>账户余额</h3><span class="muted">仅本机记账</span></div>
+          <div class="kpi"><div class="k">当前余额</div><div class="v" id="walBalance">¥0.00</div><div class="s" id="walSummary"></div></div>
+          <form id="formRecharge"><div class="form-grid">
+            <label>金额 ¥<input class="input" id="walAmount" type="number" step="0.01" min="0"></label>
+            <label>方式<select class="input" id="walWay"><option>现金</option><option>转账</option><option>其他</option></select></label>
+            <label class="wide">替他人充值 / 备注<input class="input" id="walNote" placeholder="填对方姓名即记为替他人充值"></label>
+          </div><div class="form-foot"><button class="btn btn-primary btn-sm" type="submit" data-perm="wallet">记录充值</button></div></form>
+          <div class="muted">不产生真实支付、不联网，仅用于本机记账与对账。</div></div>
+        <div class="card"><div class="card-head"><h3>资费设置与结算</h3></div>
+          <form id="formFee"><div class="form-grid">
+            <label>每件入库费 ¥<input class="input" id="walFeeIn" type="number" step="0.01" min="0"></label>
+            <label>每件出库费 ¥<input class="input" id="walFeeOut" type="number" step="0.01" min="0"></label>
+            <label>结算范围<select class="input" id="walRange"></select></label>
+          </div><div class="form-foot">
+            <button class="btn btn-outline btn-sm" type="button" data-act="x-walSettle" data-perm="wallet">按件数结算生成账单</button>
+            <button class="btn btn-primary btn-sm" type="submit" data-perm="wallet">保存资费</button>
+          </div></form>
+          <div id="walFeeText" class="muted"></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h3>账单流水</h3>
+        <div class="row-actions"><select class="input input-sm" id="walFilter"><option value="all">全部类型</option><option value="recharge">充值</option><option value="proxy">替他人充值</option><option value="bill">账单支出</option><option value="reward">活动奖励</option></select>
+        <button class="btn btn-outline btn-sm" data-act="x-walExport">导出 CSV</button></div></div>
+        <div class="table-wrap"><table class="table" id="walTable"></table></div></div>
+      <div class="card"><div class="card-head"><h3>活动与奖励</h3></div>
+        <form id="formActivity"><div class="row-actions">
+          <input class="input input-sm" id="actTitle" placeholder="活动 / 奖励标题">
+          <input class="input input-sm" id="actAmount" type="number" step="0.01" placeholder="奖励金额">
+          <button class="btn btn-outline btn-sm" type="submit" data-perm="wallet">记录</button></div></form>
+        <div id="actList" class="strip-list"></div></div>
+    </section>
+
+    <!-- 服务中心 -->
+    <section class="view" id="view-service" hidden>
+      <div class="page-head"><div><h2>服务中心</h2><p>常见问题、意见反馈、用户指南、关于与免责（本机记录，不联网客服）</p></div></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>常见问题 FAQ</h3><input class="input input-sm" id="faqKw" placeholder="搜索问题"></div>
+          <div id="faqList" class="faq-list"></div></div>
+        <div class="card"><div class="card-head"><h3>意见反馈</h3>
+          <button class="link" data-act="x-fbExport">导出反馈</button></div>
+          <form id="formFeedback"><div class="form-grid">
+            <label class="wide">反馈内容<textarea class="input" id="fbText" rows="3" placeholder="问题 / 建议"></textarea></label>
+            <label>联系方式（选填）<input class="input" id="fbContact"></label>
+          </div><div class="form-foot"><button class="btn btn-primary btn-sm" type="submit" data-perm="service">保存反馈</button></div></form>
+          <div id="fbList" class="strip-list"></div>
+          <div class="muted">反馈只写在本机，可由站长导出后自行提交；不联网、不自动上传。</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>用户指南</h3></div><div id="guideList" class="faq-list"></div></div>
+        <div class="card"><div class="card-head"><h3>关于 / 免责声明 / 联系我们</h3></div>
+          <div id="aboutBox" class="muted"></div></div>
+      </div>
+    </section>
+
     <!-- 帮助 -->
     <section class="view" id="view-help" hidden>
-      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.0.5 · 对照原「驿站助手」实现，明确排除通知类能力</p></div></div>
+      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.1.0 · 对照原「驿站助手」功能实现，仅排除短信与电话通知</p></div></div>
       <div class="card"><div class="card-head"><h3>已实现的功能</h3></div><div id="helpFeatures" class="help-grid"></div></div>
       <div class="card"><div class="card-head"><h3>明确不做的功能</h3></div><div id="helpExcluded" class="help-grid"></div>
-        <div class="muted">短信 / 电话 / 群呼属于通知类，按需求整块排除；其余需要服务端合作、实名资质或厂商 SDK 的能力，在纯静态本地版里无法真实实现，已在 README 中逐条写明替代方式。</div></div>
+        <div class="muted">短信、电话、群呼及一切对外通知发送能力按需求整块排除；其余需要支付 / 服务端合作 / 实名核验 / 厂商 SDK 的能力，均以「本机登记、记账、系统打印」等价实现，页面会明确标注，不假装已联网完成。</div></div>
       <div class="card"><div class="card-head"><h3>数据与隐私</h3></div>
         <div class="muted">台账、客户、账号、设置、照片全部只存在当前浏览器（localStorage + IndexedDB），按站点来源隔离。换浏览器 / 换设备不会自动同步，请用「设置 → 数据备份」导出 JSON 再导入。清除浏览器数据会一并清掉，务必定期备份。</div></div>
     </section>
@@ -567,12 +705,14 @@ window.StationBoot = (function () {
   </div>
 </div>
 
-<script src="rules.js?v=2.0.6"></script>
-<script src="ocr.js?v=2.0.6"></script>
-<script src="db.js?v=2.0.6"></script>
-<script src="auth.js?v=2.0.6"></script>
-<script src="media.js?v=2.0.6"></script>
-<script src="app.js?v=2.0.6"></script>
+<script src="rules.js?v=2.1.0"></script>
+<script src="ocr.js?v=2.1.0"></script>
+<script src="qr.js?v=2.1.0"></script>
+<script src="db.js?v=2.1.0"></script>
+<script src="auth.js?v=2.1.0"></script>
+<script src="media.js?v=2.1.0"></script>
+<script src="extras.js?v=2.1.0"></script>
+<script src="app.js?v=2.1.0"></script>
 <script>
 /* Android WebView 不支持 Service Worker；有些环境属性存在但 register 不可用，必须逐项判空 */
 (function () {
@@ -582,7 +722,7 @@ window.StationBoot = (function () {
   var sw = navigator.serviceWorker;
   if (!sw || typeof sw.register !== 'function') return;
   try {
-    var p = sw.register('sw.js?v=2.0.6');
+    var p = sw.register('sw.js?v=2.1.0');
     if (p && typeof p.catch === 'function') p.catch(function () { });
   } catch (e) {
     if (window.StationBoot) window.StationBoot.report('Service Worker 注册失败：' + e.message);

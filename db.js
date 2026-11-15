@@ -35,12 +35,45 @@
     return -1;
   }
 
+  /* 2.1.0 扩展数据：原版「出库任务 / 代收管理 / 账本资费 / 服务中心」等页面。
+     统一放在 extras 里，旧备份缺这个字段时自动补齐，不影响已有包裹数据。 */
+  function defaultExtras() {
+    return {
+      station: {
+        name: '', address: '', contact: '', hours: '', opened: false, openedAt: '',
+        realName: '', idNo: '', idFront: '', idBack: '', storeFront: '',
+        partners: [], services: ['代收包裹', '取件出库', '上门取件', '货号标签打印', '滞留提醒'],
+        delayUpload: false, delayMinutes: 30
+      },
+      tasks: [], wallet: { balance: 0, records: [], feePerIn: 0, feePerOut: 0 },
+      feedbacks: [], templates: [], queryHistory: [], activities: [], notices: []
+    };
+  }
+  function mergeExtras(base, incoming) {
+    var out = base || defaultExtras();
+    if (!incoming || typeof incoming !== 'object') return out;
+    var st = incoming.station || {};
+    Object.keys(out.station).forEach(function (k) {
+      if (st[k] !== undefined && st[k] !== null) out.station[k] = st[k];
+    });
+    ['tasks', 'feedbacks', 'templates', 'queryHistory', 'activities', 'notices'].forEach(function (k) {
+      if (Array.isArray(incoming[k])) out[k] = incoming[k];
+    });
+    var w = incoming.wallet || {};
+    if (Array.isArray(w.records)) out.wallet.records = w.records;
+    if (w.balance !== undefined) out.wallet.balance = Number(w.balance) || 0;
+    if (w.feePerIn !== undefined) out.wallet.feePerIn = Number(w.feePerIn) || 0;
+    if (w.feePerOut !== undefined) out.wallet.feePerOut = Number(w.feePerOut) || 0;
+    return out;
+  }
+
   function defaultDB() {
     var s = {};
     Object.keys(R.DEFAULT_SETTINGS).forEach(function (k) { s[k] = R.DEFAULT_SETTINGS[k]; });
     return {
       app: 'station-assistant', version: 2, createdAt: iso(),
       settings: s,
+      extras: defaultExtras(),
       parcels: [],
       customers: [],
       companies: JSON.parse(JSON.stringify(R.DEFAULT_COMPANIES)),
@@ -64,6 +97,7 @@
       recipient: str(p.recipient),
       phone: str(p.phone),
       phoneTail: str(p.phoneTail) || tail4(p.phone),
+      hiddenPhone: !!p.hiddenPhone, /* 隐号面单：手机号被遮蔽，不强制录入 */
       slot: upper(p.slot),
       serial: str(p.serial),
       goodsNo: upper(p.goodsNo),
@@ -96,6 +130,7 @@
       if (s[k] !== undefined && s[k] !== null) base.settings[k] = s[k];
     });
     if (!Array.isArray(base.settings.zones) || !base.settings.zones.length) base.settings.zones = ['A'];
+    base.extras = mergeExtras(base.extras, d.extras);
     ['parcels', 'customers', 'companies', 'labels', 'accounts', 'logs', 'uploads', 'collections', 'intercepts'].forEach(function (k) {
       if (Array.isArray(d[k])) base[k] = d[k];
     });
@@ -377,6 +412,7 @@
       var p = normalizeParcel({
         trackingNo: no, carrier: carrier, carrierShort: short,
         recipient: str(input.recipient), phone: phone, phoneTail: t,
+        hiddenPhone: !!input.hiddenPhone,
         slot: slot, serial: str(input.serial) || nums.serial, goodsNo: goodsNo,
         pickupCode: goodsNo, note: str(input.note), label: str(input.label),
         count: Math.max(1, Number(input.count) || 1), status: 'in', inAt: iso(),
@@ -722,6 +758,17 @@
           db[k].forEach(function (x) { ids[x.id] = true; });
           incoming[k].forEach(function (x) { if (!ids[x.id]) db[k].push(x); });
         });
+        /* 扩展数据同样按 id 去重合并；驿站资料 / 余额等本机配置不被备份覆盖 */
+        ['tasks', 'feedbacks', 'templates', 'queryHistory', 'activities', 'notices'].forEach(function (k) {
+          var ids = {};
+          db.extras[k].forEach(function (x) { ids[x.id] = true; });
+          incoming.extras[k].forEach(function (x) { if (x && !ids[x.id]) db.extras[k].push(x); });
+        });
+        (function () {
+          var ids = {};
+          db.extras.wallet.records.forEach(function (x) { ids[x.id] = true; });
+          incoming.extras.wallet.records.forEach(function (x) { if (x && !ids[x.id]) db.extras.wallet.records.push(x); });
+        })();
       } else {
         db = incoming;
       }

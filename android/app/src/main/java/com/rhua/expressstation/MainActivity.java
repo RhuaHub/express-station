@@ -67,7 +67,7 @@ public class MainActivity extends Activity {
     /* 主文档也带版本号：老 WebView 会缓存 shouldInterceptRequest 的响应，
        不带版本号时用户覆盖安装后仍可能拿到上一版 index.html（旧 JS 引用），
        表现正是「改了好几版，点出库还是死」。 */
-    private static final String START_URL = "https://" + HOST + "/index.html?v=2.0.6";
+    private static final String START_URL = "https://" + HOST + "/index.html?v=2.1.0";
     private static final String TAG = "StationFatal";
     private static final int REQ_FILE = 2001;
     private static final int REQ_CAMERA_PERM = 2002;
@@ -318,7 +318,7 @@ public class MainActivity extends Activity {
     private void showFatal(final String detail, String title) {
         if (fatalShown) return;
         fatalShown = true;
-        final String info = "版本 2.0.6 · 最后一步：" + (LAST_STEP == null ? "无" : LAST_STEP)
+        final String info = "版本 2.1.0 · 最后一步：" + (LAST_STEP == null ? "无" : LAST_STEP)
                 + "\n" + Build.MANUFACTURER + " " + Build.MODEL
                 + " · Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
         writePublicCrash(info + "\n" + title + "\n\n" + detail);
@@ -578,7 +578,7 @@ public class MainActivity extends Activity {
             boolean crashed = detail != null && detail.didCrash();
             appendCrash("FATAL 渲染进程退出 didCrash=" + crashed);
             writePublicCrash("渲染进程退出 didCrash=" + crashed
-                    + " · 版本 2.0.6 · Android " + Build.VERSION.SDK_INT);
+                    + " · 版本 2.1.0 · Android " + Build.VERSION.SDK_INT);
             /* 2.0.5 起页面不再修改 URL（老 WebView 会把它当导航），
                视图由 StationNative.setView 同步到 lastHash，重建后直接沿用。 */
             appendCrash("STEP 渲染进程退出前所在视图 " + (lastHash == null ? "" : lastHash));
@@ -823,7 +823,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() {
-            return "2.0.6";
+            return "2.1.0";
         }
 
         /** 页面每做一个关键动作就同步一步，崩溃后能从日志看到最后停在哪 */

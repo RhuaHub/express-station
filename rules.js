@@ -4,7 +4,7 @@
   'use strict';
 
   var api = {};
-  var VERSION = '2.0.5';
+  var VERSION = '2.1.0';
   api.VERSION = VERSION;
 
   function str(v) { return v === null || v === undefined ? '' : String(v); }
@@ -523,6 +523,12 @@
     if (line2.length) rows.push('<div class="lb-line">' + line2.join(' · ') + '</div>');
     if (has('tracking')) rows.push('<div class="lb-no">' + esc(p.trackingNo || '') + '</div>');
     if (has('barcode')) rows.push(code39SVG(p.goodsNo || p.serial || p.trackingNo, { height: 38 }));
+    if (has('qrcode')) {
+      var QR = global.StationQr || (typeof require !== 'undefined' ? require('./qr.js') : null);
+      if (QR && typeof QR.svg === 'function') {
+        rows.push('<div class="lb-qr">' + QR.svg(p.goodsNo || p.trackingNo || '', { size: 96, margin: 1 }) + '</div>');
+      }
+    }
     if (has('label') && p.label) rows.push('<div class="lb-tag">' + esc(p.label) + '</div>');
     if (has('note') && p.note) rows.push('<div class="lb-note">' + esc(p.note) + '</div>');
     return '<div class="label-sheet">' + rows.join('') + '</div>';
