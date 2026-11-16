@@ -89,13 +89,18 @@
   }
 
   /* ---------------- 纯函数解码器（入参：从黑条开始的交替游程宽度数组） ---------------- */
-  function decodeCode128(runs, deadline) {
+  function decodeCode128(runs, deadline, loose) {
     var n = runs.length, s, c, d, i;
     if (n < 20) return '';
-    var maxStart = Math.min(16, n - 20);
-    for (s = 0; s <= maxStart; s++) {
-      if (deadline && Date.now() > deadline) return '';
-      var startCode = -1, best = 0.32;
+    /* loose：细条码 / 取整锯齿导致宽度比例失真时用，仍靠 mod103 校验位把关 */
+    var startLimit = loose ? 0.52 : 0.36, codeLimit = loose ? 0.50 : 0.34,
+      stopLimit = loose ? 0.44 : 0.30;
+    /* 面单上条码左侧常有文字/边框，把整行都纳入起点搜索（只取黑段起点，步进 2）。
+       放宽的匹配阈值由 mod103 校验位兜底，不会因此产生误报。 */
+    var maxStart = n - 20;
+    for (s = 0; s <= maxStart; s += 2) {
+      if (deadline && (s & 15) === 0 && Date.now() > deadline) return '';
+      var startCode = -1, best = startLimit;
       for (c = 103; c <= 105; c++) {
         var v = variance(runs, s, C128[c], 6, 11);
         if (v < best) { best = v; startCode = c; }
@@ -104,8 +109,8 @@
       var codes = [], pos = s + 6, guard = 0, done = false;
       while (pos + 6 <= n && guard++ < 70) {
         if (deadline && (guard % 8 === 0) && Date.now() > deadline) return '';
-        if (variance(runs, pos, C128[106], 6, 11) < 0.30) { done = true; break; }
-        var bv = 0.30, bi = -1;
+        if (variance(runs, pos, C128[106], 6, 11) < stopLimit) { done = true; break; }
+        var bv = codeLimit, bi = -1;
         for (d = 0; d < 106; d++) {
           var dv = variance(runs, pos, C128[d], 6, 11);
           if (dv < bv) { bv = dv; bi = d; }
@@ -153,15 +158,15 @@
     var mask = 0, wide = 0, i;
     for (i = 0; i < 9; i++) {
       mask = mask * 2;
-      if (nine[i] >= narrow * 1.65) { mask += 1; wide++; }
+      if (nine[i] >= narrow * 1.55) { mask += 1; wide++; }
     }
     return wide === 3 ? mask : -1;
   }
   function decodeCode39(runs, deadline) {
     var n = runs.length, s;
     if (n < 30) return '';
-    for (s = 0; s <= Math.min(16, n - 30); s++) {
-      if (deadline && Date.now() > deadline) return '';
+    for (s = 0; s <= n - 30; s += 2) {
+      if (deadline && (s & 15) === 0 && Date.now() > deadline) return '';
       if (narrowWideMask(runs.slice(s, s + 9)) !== C39_STAR) continue;
       var pos = s + 10, out = '', end = false, guard = 0;
       while (pos + 9 <= n && guard++ < 45) {
@@ -182,8 +187,8 @@
   function decodeEAN(runs, deadline) {
     var n = runs.length, s, k, i;
     if (n < 59) return '';
-    for (s = 0; s <= Math.min(16, n - 59); s++) {
-      if (deadline && Date.now() > deadline) return '';
+    for (s = 0; s <= n - 59; s += 2) {
+      if (deadline && (s & 15) === 0 && Date.now() > deadline) return '';
       /* 左护线 101 → 3 段近似等宽 */
       var g = varianceArr(runs, s, [1, 1, 1]);
       if (g > 0.28) continue;
@@ -233,7 +238,7 @@
   }
 
   function itfDigit(five) {
-    var bv = 0.36, bi = -1, i;
+    var bv = 0.40, bi = -1, i;
     for (i = 0; i < 10; i++) {
       var v = varianceArr(five, 0, ITF_PAT[i]);
       if (v < bv) { bv = v; bi = i; }
@@ -243,14 +248,18 @@
   function decodeITF(runs, deadline) {
     var n = runs.length, s;
     if (n < 24) return '';
-    for (s = 0; s <= Math.min(14, n - 24); s++) {
-      if (deadline && Date.now() > deadline) return '';
+    for (s = 0; s <= n - 24; s += 2) {
+      if (deadline && (s & 15) === 0 && Date.now() > deadline) return '';
       var base = (runs[s] + runs[s + 1] + runs[s + 2] + runs[s + 3]) / 4;
-      if (!base || varianceArr(runs, s, [1, 1, 1, 1]) > 0.22) continue;
+      if (!base || varianceArr(runs, s, [1, 1, 1, 1]) > 0.24) continue;
+      /* 无校验码制：要求起始符后确实是密集窄条区，文字行的宽黑块在这里会被排除 */
+      var dense = true, q;
+      for (q = s + 4; q < Math.min(n, s + 14); q++) if (runs[q] > base * 3.2) { dense = false; break; }
+      if (!dense) continue;
       var pos = s + 4, out = '', guard = 0, k;
       while (pos + 10 <= n && guard++ < 30) {
-        /* 终止：宽条 + 窄空 + 窄条；只在接近序列末尾才认，避免把数据里的宽条误判成终止 */
-        if (pos + 3 >= n - 2 && runs[pos] > base * 1.55 &&
+        /* 终止：宽条 + 窄空 + 窄条；只在真正接近序列末尾才认 */
+        if (pos + 8 >= n && runs[pos] > base * 1.55 &&
             runs[pos + 1] < base * 1.35 && runs[pos + 2] < base * 1.35) break;
         var bars = [], spaces = [];
         for (k = 0; k < 5; k++) {
@@ -262,16 +271,20 @@
         out += String(d1) + String(d2);
         pos += 10;
       }
-      if (out.length >= 6 && out.length % 2 === 0) return out;
+      /* 少于 8 位几乎都是噪点误报；真实 ITF 面单至少 8 位 */
+      if (out.length >= 8 && out.length % 2 === 0) return out;
     }
     return '';
   }
-  function decodeAny(runs, deadline) {
+  /* verified = 码制自带校验位（Code128 / EAN），可作为最终结果且优先于无校验候选 */
+  function decodeAny(runs, deadline, loose) {
     var out = [], t;
-    t = decodeCode128(runs, deadline); if (t) out.push({ text: t, format: 'Code128', weight: 0.95 });
-    t = decodeEAN(runs, deadline); if (t) out.push({ text: t, format: 'EAN/UPC', weight: 0.95 });
-    t = decodeCode39(runs, deadline); if (t) out.push({ text: t, format: 'Code39', weight: 0.78 });
-    t = decodeITF(runs, deadline); if (t) out.push({ text: t, format: 'ITF', weight: 0.80 });
+    t = decodeCode128(runs, deadline, loose); if (t) out.push({ text: t, format: 'Code128', weight: loose ? 0.86 : 1.0, verified: true, loose: !!loose });
+    /* 宽松重解只跑自带校验位的 Code128，避免无校验码制借机误报 */
+    if (loose) return out;
+    t = decodeEAN(runs, deadline); if (t) out.push({ text: t, format: 'EAN/UPC', weight: 1.0, verified: true });
+    t = decodeCode39(runs, deadline); if (t) out.push({ text: t, format: 'Code39', weight: 0.62, verified: false });
+    t = decodeITF(runs, deadline); if (t) out.push({ text: t, format: 'ITF', weight: 0.55, verified: false });
     return out;
   }
 
@@ -308,7 +321,8 @@
     return { g: out, w: nw, h: nh };
   }
   /* 局部均值自适应二值化：用积分图，O(w*h)，抗面单明暗不均 */
-  function binarize(g, w, h) {
+  function binarize(g, w, h, factor) {
+    factor = factor || 0.80;
     var integral = new Float64Array((w + 1) * (h + 1)), x, y;
     for (y = 0; y < h; y++) {
       var row = 0;
@@ -326,7 +340,7 @@
           - integral[(y1 + 1) * (w + 1) + x0] + integral[y0 * (w + 1) + x0];
         var area = (x1 - x0 + 1) * (y1 - y0 + 1);
         /* 0.80：浅灰噪点不至于被判成黑条，深色印刷笔画仍保留 */
-        out[y * w + x] = g[y * w + x] < (sum / area) * 0.80 ? 1 : 0;
+        out[y * w + x] = g[y * w + x] < (sum / area) * factor ? 1 : 0;
       }
     }
     return out;
@@ -572,85 +586,341 @@
     }
     return { bw: out, w: nw, h: nh };
   }
-  function scanBinary(bw, w, h, opts) {
-    var budget = (opts && opts.budget) || 2200;
-    var deadline = Date.now() + budget;
-    var votes = {}, order = [], y, x, invert, runs, found, i;
-    var OFFSETS = [0, 2, 4, 8, 16];
-    function collect(raw) {
-      if (!raw || raw.length < 20 || Date.now() > deadline) return;
-      var r = denoiseRuns(raw), k, oi, off, sub, list, t;
-      for (oi = 0; oi < OFFSETS.length; oi++) {
-        if (Date.now() > deadline) return;
-        off = OFFSETS[oi];
-        sub = off === 0 ? r : (r.length > off + 20 ? r.slice(off) : null);
-        if (!sub) continue;
-        list = decodeAny(sub, deadline);
-        for (k = 0; k < list.length; k++) {
-          t = list[k].text;
-          if (!votes[t]) { votes[t] = { text: t, format: list[k].format, weight: list[k].weight, count: 0 }; order.push(t); }
-          votes[t].count++;
+  /* ---------------- 主扫描：多通道投票 ----------------
+     真实面单会有倾斜、模糊、明暗不均、条码左侧一堆文字。单通道扫描在老 WebView 上
+     要么解不出，要么被无校验码制（ITF/Code39）误报盖过。这里按「常规 → 对比度增强
+     → 倾斜校正」逐级加通道，所有通道共用一份投票表，最后统一按可信度裁决。 */
+  function newVotes() {
+    return { map: Object.create ? Object.create(null) : {}, order: [] };
+  }
+  function addVote(V, hit, lineId) {
+    var t = hit.text;
+    if (!t) return;
+    var v = V.map[t];
+    if (!v) {
+      v = V.map[t] = { text: t, format: hit.format, weight: hit.weight,
+        verified: !!hit.verified, strict: !hit.loose, count: 0, lines: 0, seen: {} };
+      V.order.push(t);
+    }
+    v.count++;
+    if (hit.verified) v.verified = true;
+    if (!hit.loose) v.strict = true;
+    var key = String(lineId);
+    if (!v.seen[key]) { v.seen[key] = 1; v.lines++; }
+  }
+  function strongVerified(V) {
+    var i, v;
+    for (i = 0; i < V.order.length; i++) {
+      v = V.map[V.order[i]];
+      /* 提前收工要保守：短串 / 宽松档 / 票数少都不能算「已确定」 */
+      if (v.verified && v.strict && v.count >= 3 && v.lines >= 2 && v.text.length >= 10) return v;
+    }
+    return null;
+  }
+  function collectLine(V, raw, lineId, deadline) {
+    if (!raw || raw.length < 20 || Date.now() > deadline) return;
+    var r = denoiseRuns(raw), k, oi, sub, list;
+    /* 解码器已整行搜起点，只需 0 / 2 两个奇偶偏移应对前导噪点 */
+    for (oi = 0; oi < 2; oi++) {
+      if (Date.now() > deadline) return;
+      sub = oi === 0 ? r : (r.length > 22 ? r.slice(2) : null);
+      if (!sub) continue;
+      list = decodeAny(sub, deadline, false);
+      var hasVerified = false;
+      for (k = 0; k < list.length; k++) {
+        addVote(V, list[k], lineId + ':' + oi);
+        if (list[k].verified) hasVerified = true;
+      }
+      /* 细条码 / 取整锯齿：严格档没解出来时，用宽松档再解一次带校验位的 Code128 */
+      if (!hasVerified && Date.now() < deadline - 40) {
+        var loose = decodeAny(sub, deadline, true);
+        for (k = 0; k < loose.length; k++) {
+          if (loose[k].verified) addVote(V, loose[k], lineId + ':L' + oi);
         }
       }
     }
-    var stepY = Math.max(2, Math.floor(h / 16));
-    for (y = Math.floor(h * 0.06); y < h * 0.94 && Date.now() <= deadline; y += stepY) {
-      for (invert = 0; invert < 2; invert++) collect(smoothRow(bw, w, h, Math.floor(y), invert));
+  }
+  function scanPass(bw, w, h, V, deadline, passId) {
+    /* 倾斜条码常常只有很窄一条「完整行」，步长必须够密 */
+    var y, x, invert, lineId = 0, stepY = Math.max(2, Math.floor(h / 200)), lid;
+    /* 单行游程对倾斜更稳，三行投票对噪点更稳，两条都收 */
+    for (y = Math.floor(h * 0.05); y < h * 0.95 && Date.now() <= deadline; y += stepY) {
+      for (invert = 0; invert < 2; invert++) {
+        lid = passId * 1000000 + lineId++;
+        collectLine(V, rowRuns(bw, w, Math.floor(y), invert), lid, deadline);
+        collectLine(V, smoothRow(bw, w, h, Math.floor(y), invert), lid + 400000, deadline);
+      }
+      if (strongVerified(V)) return true;
     }
-    /* 竖扫：应对面单横过来拍、条码竖着的情况 */
-    var stepX = Math.max(3, Math.floor(w / 10));
-    for (x = Math.floor(w * 0.06); x < w * 0.94 && Date.now() <= deadline; x += stepX) {
-      for (invert = 0; invert < 2; invert++) collect(colRuns(bw, w, h, Math.floor(x), invert));
+    /* 竖扫：面单横过来拍、条码竖着 */
+    var stepX = Math.max(3, Math.floor(w / 12));
+    for (x = Math.floor(w * 0.05); x < w * 0.95 && Date.now() <= deadline; x += stepX) {
+      for (invert = 0; invert < 2; invert++) {
+        collectLine(V, colRuns(bw, w, h, Math.floor(x), invert),
+          passId * 1000000 + 700000 + lineId++, deadline);
+      }
+      if (strongVerified(V)) return true;
     }
-    var barcodes = [], bestWeight = 0, bestFormat = '';
-    order.sort(function (a, b) {
-      var va = votes[a], vb = votes[b];
-      return (vb.count * vb.weight * vb.weight) - (va.count * va.weight * va.weight)
-        || vb.text.length - va.text.length;
-    });
-    for (i = 0; i < order.length && barcodes.length < 4; i++) {
-      var v = votes[order[i]];
-      /* Code39 / ITF 没有校验位，至少要两票才认，避免噪点线误报 */
-      if (v.weight < 0.9 && v.count < 2) continue;
-      if (!/[0-9]/.test(v.text) || v.text.length < 6 || v.text.length > 32) continue;
-      pushUnique(barcodes, v.text);
-      if (v.count * v.weight > bestWeight) { bestWeight = v.count * v.weight; bestFormat = v.format; }
+    return false;
+  }
+  /* 沿斜线取游程：不重建整图，覆盖 ±13° 左右的倾斜 */
+  function skewRuns(bw, w, h, y, slope, invert) {
+    var line = new Uint8Array(w), x, yy;
+    for (x = 0; x < w; x++) {
+      yy = y + Math.round((x - w / 2) * slope);
+      var v = (yy >= 0 && yy < h) ? bw[yy * w + x] : 0;
+      line[x] = invert ? 1 - v : v;
     }
-    /* 数字 OCR 作为补充通道：条码解出来也跑，便于识别货号取件码。
-       大图先降采样，避免老安卓在 1400×1000 的连通域扫描上卡住。 */
-    var texts = [], digitHits = [];
-    if ((!opts || opts.digits !== false) && Date.now() < deadline) {
-      try {
-        var sb = shrinkBinary(bw, w, h, 900);
-        digitHits = readDigits(sb.bw, sb.w, sb.h, deadline);
-      } catch (e) { digitHits = []; }
+    return runsFrom(function (i) { return line[i]; }, w, false);
+  }
+  function scanSkew(bw, w, h, V, deadline, passId, center) {
+    var SLOPES = [], i, j;
+    if (center && Math.abs(center) > 0.02) {
+      var signs = [1, -1], deltas = [-0.10, -0.06, -0.03, 0, 0.03, 0.06, 0.10];
+      for (i = 0; i < signs.length; i++) for (j = 0; j < deltas.length; j++) {
+        SLOPES.push(signs[i] * center + deltas[j]);
+      }
+    } else {
+      SLOPES = [-0.24, -0.18, -0.12, -0.08, -0.04, 0.04, 0.08, 0.12, 0.18, 0.24];
+    }
+    var y, s, invert, lineId = 0, stepY = Math.max(3, Math.floor(h / 16));
+    for (y = Math.floor(h * 0.16); y < h * 0.86 && Date.now() <= deadline; y += stepY) {
+      for (s = 0; s < SLOPES.length && Date.now() <= deadline; s++) {
+        for (invert = 0; invert < 2; invert++) {
+          collectLine(V, skewRuns(bw, w, h, Math.floor(y), SLOPES[s], invert),
+            passId * 1000000 + 850000 + lineId++, deadline);
+        }
+        if (strongVerified(V)) return true;
+      }
+    }
+    return false;
+  }
+  /* 百分位对比度拉伸：模糊 / 低对比照片的笔画边界更清楚 */
+  function stretchGray(g, w, h) {
+    var hist = new Int32Array(256), i, v, total = w * h;
+    for (i = 0; i < total; i++) hist[g[i]]++;
+    var lo = 0, hi = 255, acc = 0, cut = Math.floor(total * 0.02);
+    for (v = 0; v < 256; v++) { acc += hist[v]; if (acc >= cut) { lo = v; break; } }
+    acc = 0;
+    for (v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= cut) { hi = v; break; } }
+    if (hi - lo < 70) return g;
+    var out = new Uint8Array(total), scale = 215 / (hi - lo), nv;
+    for (i = 0; i < total; i++) {
+      nv = (g[i] - lo) * scale + 20;
+      out[i] = nv < 0 ? 0 : nv > 255 ? 255 : nv;
+    }
+    return out;
+  }
+  /* 细条码 / 拍得太远：把面单中部条带做 2 倍双线性放大再二值化。
+     取整锯齿在放大后被摊开，游程宽度比例更接近真实模块宽度。
+     只放大中部条带并限制尺寸，避免老安卓 WebView 上积分图占太多内存。 */
+  function upscaleGrayBand(g, w, h, f) {
+    var y0 = Math.floor(h * 0.22), y1 = Math.min(h, Math.ceil(h * 0.88));
+    var bh = y1 - y0, nw = w * f, nh = bh * f;
+    var out = new Uint8Array(nw * nh), y, x, sy, sx, yA, yB, xA, xB, wy, wx, v, a, b, c, d;
+    for (y = 0; y < nh; y++) {
+      sy = y / f; yA = Math.floor(sy); yB = Math.min(bh - 1, yA + 1); wy = sy - yA;
+      for (x = 0; x < nw; x++) {
+        sx = x / f; xA = Math.floor(sx); xB = Math.min(w - 1, xA + 1); wx = sx - xA;
+        a = g[(y0 + yA) * w + xA]; b = g[(y0 + yA) * w + xB];
+        c = g[(y0 + yB) * w + xA]; d = g[(y0 + yB) * w + xB];
+        v = (a * (1 - wx) + b * wx) * (1 - wy) + (c * (1 - wx) + d * wx) * wy;
+        out[y * nw + x] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
+    }
+    return { g: out, w: nw, h: nh };
+  }
+  /* 用相隔 d 的两行做互相关，估计条码竖条的倾斜斜率 */
+  function estimateSkew(bw, w, h) {
+    var d = Math.min(48, Math.max(12, Math.floor(h / 8)));
+    var YS = [0.2, 0.35, 0.5, 0.65, 0.8], vals = [], k, sh, x, y0, y1, score, best, bestShift;
+    for (k = 0; k < YS.length; k++) {
+      y0 = Math.floor(h * YS[k]); y1 = Math.min(h - 1, y0 + d);
+      best = 0; bestShift = 0;
+      for (sh = -18; sh <= 18; sh++) {
+        score = 0;
+        for (x = 20; x < w - 20; x += 3) {
+          var xx = x + sh;
+          if (xx < 0 || xx >= w) continue;
+          if (bw[y0 * w + x] === 1 && bw[y1 * w + xx] === 1) score += 2;
+        }
+        if (score > best) { best = score; bestShift = sh; }
+      }
+      if (best > 25) vals.push(bestShift / d);
+    }
+    if (!vals.length) return 0;
+    vals.sort(function (a, b) { return a - b; });
+    var m = vals[Math.floor(vals.length / 2)];
+    return Math.abs(m) > 0.30 ? 0 : m;
+  }
+  function shearBinary(bw, w, h, slope) {
+    var out = new Uint8Array(w * h), y, x, sx, off;
+    for (y = 0; y < h; y++) {
+      off = Math.round((y - h / 2) * slope);
+      for (x = 0; x < w; x++) {
+        sx = x + off;
+        out[y * w + x] = (sx >= 0 && sx < w) ? bw[y * w + sx] : 0;
+      }
+    }
+    return out;
+  }
+  /* 条码值通常也印在条码下方：用印刷数字串给无校验候选做交叉印证 */
+  function corroborate(code, texts) {
+    var i, t, j, k, best, prev, cur, tmp;
+    for (i = 0; i < texts.length; i++) {
+      t = texts[i];
+      if (!t || t.length < 6) continue;
+      if (code.indexOf(t) >= 0 || t.indexOf(code) >= 0) return true;
+      best = 0;
+      prev = new Int32Array(t.length + 1); cur = new Int32Array(t.length + 1);
+      for (j = 1; j <= code.length; j++) {
+        for (k = 1; k <= t.length; k++) {
+          cur[k] = code.charAt(j - 1) === t.charAt(k - 1) ? prev[k - 1] + 1 : 0;
+          if (cur[k] > best) best = cur[k];
+        }
+        tmp = prev; prev = cur; cur = tmp;
+      }
+      if (best >= 6) return true;
+    }
+    return false;
+  }
+  function voteScore(a, b) {
+    return (b.count * b.weight * b.weight + b.lines * 2)
+      - (a.count * a.weight * a.weight + a.lines * 2)
+      || b.text.length - a.text.length;
+  }
+  function finalize(V, digitHits) {
+    var i, v, verified = [], unverified = [], texts = [], barcodes = [];
+    var bestWeight = 0, bestFormat = '', source = '', confidence = 0;
+    var hasTexts, hasCorrobHit = false;
+    function rank(a, b) {
+      return ((b.corrob ? 1000 : 0) - (a.corrob ? 1000 : 0)) || voteScore(a, b);
     }
     for (i = 0; i < digitHits.length; i++) pushUnique(texts, digitHits[i].text);
-    var confidence = 0;
-    if (barcodes.length) confidence = Math.min(0.99, bestWeight >= 2 ? 0.9 + bestWeight * 0.01 : 0.86);
-    else if (texts.length) confidence = Math.max(0.55, Math.min(0.8, digitHits[0] ? digitHits[0].confidence : 0.6));
+    hasTexts = texts.length > 0;
+    for (i = 0; i < V.order.length; i++) {
+      v = V.map[V.order[i]];
+      if (!/[0-9]/.test(v.text) || v.text.length < 6 || v.text.length > 32) continue;
+      v.corrob = hasTexts ? corroborate(v.text, texts) : false;
+      (v.verified ? verified : unverified).push(v);
+    }
+    /* 面单上条码值通常也印成数字。互证命中的候选排最前；对不上的候选要按可信度收紧，
+       否则倾斜 / 模糊照片里 ITF、宽松 Code128 的校验碰撞会把错码当成识别结果。 */
+    verified.sort(rank); unverified.sort(rank);
+    if (verified.length) {
+      for (i = 0; i < verified.length && barcodes.length < 2; i++) {
+        v = verified[i];
+        if (v.count < 2) continue;
+        if (hasTexts && !v.corrob && (!v.strict || v.count < 3 || hasCorrobHit)) continue;
+        pushUnique(barcodes, v.text);
+        if (v.corrob) hasCorrobHit = true;
+        if (!bestFormat) { bestFormat = v.format; bestWeight = v.count * v.weight; }
+      }
+      source = 'verified';
+    } else {
+      /* 无校验码制：多票 + 多行 + 必须与印刷数字互证，宁可空着也不报错码 */
+      for (i = 0; i < unverified.length && barcodes.length < 2; i++) {
+        v = unverified[i];
+        if (v.count < 4 || v.lines < 3) continue;
+        if (junkDigitString(v.text)) continue;
+        /* Code39 有起止符保护，误报远少于 ITF；印刷数字读糊时仍可采信 */
+        var code39 = v.format === 'Code39';
+        if (hasTexts && !v.corrob && !code39) continue;
+        pushUnique(barcodes, v.text);
+        if (!bestFormat) { bestFormat = v.format; bestWeight = v.count * v.weight; }
+      }
+      source = 'unverified';
+    }
+    if (barcodes.length) confidence = source === 'verified'
+      ? Math.min(0.99, 0.90 + bestWeight * 0.01)
+      : Math.min(0.88, 0.70 + bestWeight * 0.01);
+    else if (texts.length) confidence = Math.max(0.55,
+      Math.min(0.8, digitHits[0] ? digitHits[0].confidence : 0.6));
     return {
-      barcodes: barcodes, texts: texts, format: bestFormat,
+      barcodes: barcodes, texts: texts, format: bestFormat, source: source,
       engine: barcodes.length ? '离线条码 · ' + bestFormat : (texts.length ? '离线数字 OCR' : '离线识别'),
       confidence: confidence
     };
   }
+  function readDigitsSafe(bw, w, h, deadline) {
+    try {
+      var sb = shrinkBinary(bw, w, h, 900);
+      return readDigits(sb.bw, sb.w, sb.h, deadline);
+    } catch (e) { return []; }
+  }
+  function scanBinary(bw, w, h, opts) {
+    var budget = (opts && opts.budget) || 2200;
+    var deadline = Date.now() + budget;
+    var V = newVotes();
+    scanPass(bw, w, h, V, deadline, 0);
+    var digitHits = (!opts || opts.digits !== false) && Date.now() < deadline
+      ? readDigitsSafe(bw, w, h, deadline) : [];
+    return finalize(V, digitHits);
+  }
 
   function emptyResult(err) {
     return { supported: true, barcodes: [], texts: [], engine: '离线识别', confidence: 0,
-      error: err || '', format: '', elapsed: 0 };
+      error: err || '', format: '', source: '', elapsed: 0 };
   }
   function scanCanvas(source, opts) {
     var t0 = Date.now();
     try {
       var px = pixelsOf(source);
       if (!px) return emptyResult('无法读取照片像素');
+      var budget = (opts && opts.budget) || 2800;
+      var deadline = t0 + budget;
       var small = downGray(grayOf(px), px.w, px.h, (opts && opts.maxSide) || 1400);
-      var bw = despeckle(binarize(small.g, small.w, small.h), small.w, small.h);
-      var r = scanBinary(bw, small.w, small.h, opts);
+      var g = small.g, w = small.w, h = small.h;
+      var V = newVotes();
+      var bwA = despeckle(binarize(g, w, h, 0.80), w, h);
+      var slope = 0, digitHits = [], digitsDone = false;
+      /* 通道 1：常规二值化，密集行采样 + 单行 / 三行投票双取 */
+      scanPass(bwA, w, h, V, Math.min(deadline, t0 + Math.round(budget * 0.30)), 0);
+      /* 通道 2：对比度拉伸 + 高阈值，救模糊 / 低对比 */
+      if (!strongVerified(V)) {
+        var bwB = despeckle(binarize(stretchGray(g, w, h), w, h, 0.88), w, h);
+        scanPass(bwB, w, h, V, Math.min(deadline, t0 + Math.round(budget * 0.46)), 1);
+      }
+      /* 印刷数字先取，保证即使增强通道耗尽预算也有手输候选可用 */
+      if ((!opts || opts.digits !== false) && Date.now() < deadline - 100) {
+        digitHits = readDigitsSafe(bwA, w, h,
+          Math.min(deadline - 60, Date.now() + Math.round(budget * 0.14)));
+        digitsDone = true;
+      }
+      /* 通道 3：以估计斜率为中心的斜线扫描，覆盖倾斜面单 */
+      if (!strongVerified(V)) {
+        slope = estimateSkew(bwA, w, h);
+        scanSkew(bwA, w, h, V, Math.min(deadline, t0 + Math.round(budget * 0.68)), 3, slope);
+      }
+      /* 通道 4：错切校正（正负两个方向都试），让整块条码重新水平 */
+      if (!strongVerified(V) && Math.abs(slope) > 0.02) {
+        scanPass(shearBinary(bwA, w, h, slope), w, h, V,
+          Math.min(deadline, t0 + Math.round(budget * 0.78)), 2);
+        if (!strongVerified(V)) {
+          scanPass(shearBinary(bwA, w, h, -slope), w, h, V,
+            Math.min(deadline, t0 + Math.round(budget * 0.84)), 4);
+        }
+      }
+      /* 通道 5：2 倍超采样，救拍得太远 / 模块只有 1~2px 的细条码 */
+      if (!strongVerified(V) && w <= 1300 && h <= 1000 && Date.now() < deadline - 150) {
+        var up = upscaleGrayBand(g, w, h, 2);
+        var bwU = despeckle(binarize(up.g, up.w, up.h, 0.82), up.w, up.h);
+        scanPass(bwU, up.w, up.h, V, Math.min(deadline, t0 + Math.round(budget * 0.96)), 5);
+      }
+      if (!digitsDone && (!opts || opts.digits !== false) && Date.now() < deadline - 40) {
+        digitHits = readDigitsSafe(bwA, w, h, deadline);
+      }
+      var r = finalize(V, digitHits);
       r.supported = true;
       r.error = (r.barcodes.length || r.texts.length) ? '' : '没读到条码或数字，请对准面单再拍一次，或直接手输';
       r.elapsed = Date.now() - t0;
+      if (opts && opts.debug) {
+        r.votes = V.order.map(function (k) {
+          var x = V.map[k];
+          return { text: x.text, format: x.format, count: x.count, lines: x.lines,
+            verified: x.verified, strict: x.strict, corrob: !!x.corrob };
+        });
+      }
       return r;
     } catch (e) {
       var out = emptyResult('识别未完成，可直接手输单号 / 货号');
@@ -696,13 +966,16 @@
 
   /* ---------------- 导出 ---------------- */
   var api = {
-    version: '2.0.6',
+    version: '2.3.0',
     scan: scan, scanCanvas: scanCanvas, scanBinary: scanBinary,
     decode: { code128: decodeCode128, code39: decodeCode39, ean: decodeEAN, itf: decodeITF, any: decodeAny },
     grayscale: grayOf, binarize: binarize, despeckle: despeckle, rowRuns: rowRuns, colRuns: colRuns,
     smoothRow: smoothRow, denoiseRuns: denoiseRuns, shrinkBinary: shrinkBinary,
     readDigits: readDigits, matchGlyph: matchGlyph, templates: templates,
     narrowWideMask: narrowWideMask, junkDigitString: junkDigitString,
+    stretchGray: stretchGray, estimateSkew: estimateSkew, shearBinary: shearBinary,
+    skewRuns: skewRuns, scanPass: scanPass, newVotes: newVotes, finalize: finalize,
+    corroborate: corroborate, strongVerified: strongVerified,
     /* 供测试与标签生成用的编码辅助 */
     encodeCode128: encodeCode128, encodeCode39: encodeCode39, encodeEAN13: encodeEAN13, encodeITF: encodeITF,
     modulesToRuns: modulesToRuns

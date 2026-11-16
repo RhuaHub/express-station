@@ -176,6 +176,31 @@
       try { img.src = u; } catch (e4) { reject(e4); }
     });
   }
+  /* ---------- 预览连续识别 ----------
+     相机预览期间定时抓一帧到小画布，用离线引擎同步解一次；命中带校验位的条码就
+     自动拍照。全程只改相机面板里的提示文字，不触碰表格 / 列表，避免老 WebView 重绘。 */
+  function frameCanvas(video, maxSide) {
+    var vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+    var scale = Math.min(1, (maxSide || 900) / Math.max(vw, vh));
+    var c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(vw * scale));
+    c.height = Math.max(1, Math.round(vh * scale));
+    c.getContext('2d').drawImage(video, 0, 0, c.width, c.height);
+    return c;
+  }
+  function liveScan(canvas, budget) {
+    var out = { barcodes: [], texts: [], confidence: 0, engine: '离线识别', source: '' };
+    if (!OCR || !canvas) return out;
+    try {
+      var r = OCR.scanCanvas(canvas, { budget: budget || 420, maxSide: 900, digits: false });
+      out.barcodes = r.barcodes || [];
+      out.texts = r.texts || [];
+      out.confidence = r.confidence || 0;
+      out.engine = r.engine || '离线识别';
+      out.source = r.source || '';
+    } catch (e) { }
+    return out;
+  }
   function pushRes(arr, s) {
     s = String(s || '');
     if (!s) return;
@@ -188,6 +213,7 @@
     for (i = 0; i < (r.barcodes || []).length; i++) pushRes(res.barcodes, r.barcodes[i]);
     for (i = 0; i < (r.texts || []).length; i++) pushRes(res.texts, r.texts[i]);
     if (r.format) res.format = r.format;
+    if (r.source) res.source = r.source;
     if (r.confidence && r.confidence > res.confidence) res.confidence = r.confidence;
     if (r.barcodes && r.barcodes.length) res.offlineHit = true;
     if (r.engine) res.offlineEngine = r.engine;
@@ -204,10 +230,11 @@
     }
     return res;
   }
-  function recognize(blob) {
+  function recognize(blob, opts) {
     var e = engines();
+    var photoBudget = (opts && opts.budget) || 2400;
     var res = { supported: !!(OCR || QR || e.any), barcode: e.barcode, text: e.text, js: !!(OCR || QR),
-      barcodes: [], texts: [], engine: '离线 OCR', confidence: 0, format: '', error: '' };
+      barcodes: [], texts: [], engine: '离线 OCR', confidence: 0, format: '', source: '', error: '' };
     if (!OCR && !QR && !e.any) {
       res.error = '识别引擎未加载，请刷新页面；也可直接手输单号 / 货号';
       return Promise.resolve(res);
@@ -245,8 +272,8 @@
     function offlineOf(canvas) {
       if (OCR) {
         try {
-          /* scanCanvas 是同步的，内部自带 1.5s 预算上限，不会把老 WebView 卡死 */
-          mergeOCR(res, OCR.scanCanvas(canvas, { budget: 1500, maxSide: 1400 }));
+          /* scanCanvas 是同步的，内部按预算分阶段执行，不会把老 WebView 卡死 */
+          mergeOCR(res, OCR.scanCanvas(canvas, { budget: photoBudget, maxSide: 1400 }));
         } catch (err) {
           res.error = '离线识别未完成，可直接手输单号 / 货号';
         }
@@ -276,7 +303,7 @@
     }).catch(function (err) {
       /* 画布解码失败时再让 OCR 自己解一次 Blob，仍然不抛 */
       if (!OCR || !OCR.scan) { res.error = (err && err.message) || '识别失败'; return finish(res, false); }
-      return Promise.resolve(OCR.scan(blob, { budget: 1500 })).then(function (r) {
+      return Promise.resolve(OCR.scan(blob, { budget: photoBudget })).then(function (r) {
         mergeOCR(res, r);
         if (r && r.error && !res.barcodes.length && !res.texts.length) res.error = r.error;
         return finish(res, false);
@@ -322,9 +349,44 @@
       var root = null, video = null, hint = null;
       var stream = null, facing = 'environment', closed = false, torchOn = false;
       var files = [], thumbs = [], timer = null;
+      var liveTimer = null, liveTill = 0, liveFrames = 0, liveHit = false;
+
+      function stopLive() {
+        try { if (liveTimer) clearInterval(liveTimer); } catch (e) { }
+        liveTimer = null;
+      }
+      function liveTick() {
+        if (closed || settled || liveHit || !stream || !video || !video.videoWidth) return;
+        if (Date.now() > liveTill) { stopLive(); return; }
+        if (typeof document !== 'undefined' && document.hidden) return;
+        if (liveFrames++ > (opts.liveFrames || 12)) { stopLive(); return; }
+        try {
+          var fr = frameCanvas(video, opts.liveSide || 900);
+          var r = liveScan(fr, opts.liveBudget || 420);
+          if (r.barcodes.length && (r.source === 'verified' || r.confidence >= 0.86)) {
+            liveHit = true; stopLive();
+            if (hint) hint.textContent = '已识别 ' + r.barcodes[0] + ' · 正在拍照…';
+            if (opts.autoShootOnHit !== false) {
+              setTimeout(function () { if (!closed && !settled) shoot(); }, 120);
+            }
+          } else if (hint && liveFrames % 3 === 1) {
+            var msg = r.barcodes.length ? '好像读到 ' + r.barcodes[0] + '，请拿稳…'
+              : '正在自动识别条码…把面单条码放进框内';
+            if (hint.textContent !== msg) hint.textContent = msg;
+          }
+        } catch (e) { stopLive(); }
+      }
+      function startLive() {
+        stopLive();
+        if (opts.live === false || !OCR || typeof setInterval !== 'function') return;
+        liveTill = Date.now() + (opts.liveTimeout || 9000);
+        liveFrames = 0;
+        liveTimer = setInterval(liveTick, opts.liveInterval || 750);
+      }
 
       function cleanup() {
         try { if (timer) clearTimeout(timer); } catch (e) { }
+        stopLive();
         timer = null;
         try { if (stream) stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
         stream = null;
@@ -379,6 +441,7 @@
           return (play && typeof play.then === 'function') ? play.catch(function () { }) : null;
         }).then(function () {
           if (hint) hint.textContent = (facing === 'environment' ? '后置' : '前置') + '摄像头 · 把面单条码放入框内';
+          startLive();
           if (autoTorch) setTimeout(function () { toggleTorch(true); }, 200);
         }).catch(function (e) {
           if (facing === 'environment') { facing = 'user'; return start(); }
@@ -568,7 +631,8 @@
   var out = {
     openDB: openDB, put: put, get: get, url: url, del: del, list: list,
     exportAll: exportAll, importAll: importAll, compress: compress,
-    engines: engines, recognize: recognize, barcodeOf: barcodeOf,
+    engines: engines, recognize: recognize, liveScan: liveScan, frameCanvas: frameCanvas,
+    barcodeOf: barcodeOf,
     supported: supported, capture: capture, pickFiles: pickFiles,
     beep: beep, vibrate: vibrate, speak: speak, feedback: feedback, listen: listen
   };

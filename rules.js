@@ -4,7 +4,7 @@
   'use strict';
 
   var api = {};
-  var VERSION = '2.2.0';
+  var VERSION = '2.3.0';
   api.VERSION = VERSION;
 
   function str(v) { return v === null || v === undefined ? '' : String(v); }
@@ -438,17 +438,29 @@
   }
   api.cleanBarcode = cleanBarcode;
 
-  function barcodeOf(detected) {
-    var d = detected || {};
-    var list = (d.barcodes || []).concat(d.texts || []);
-    var best = '';
-    list.forEach(function (t) {
-      var c = cleanBarcode(t);
-      if (c && c.length > best.length) best = c;
-    });
-    return best;
+  /* 识别结果分两级：真正解出的一维 / 二维码，和条码下方印刷数字 OCR。
+     条码优先；只有条码没解出来时才退化用印刷数字，并明确告诉用户「请核对」。
+     以前两者混在一起取最长，会把 OCR 读出的数字串当成条码去命名、去匹配包裹。 */
+  function detectedInfo(detected) {
+    var d = detected || {}, bars = [], digits = [], i, c, best = '', from = '';
+    for (i = 0; i < (d.barcodes || []).length; i++) {
+      c = cleanBarcode(d.barcodes[i]);
+      if (c && bars.indexOf(c) < 0) bars.push(c);
+    }
+    for (i = 0; i < (d.texts || []).length; i++) {
+      c = cleanBarcode(d.texts[i]);
+      if (c && bars.indexOf(c) < 0 && digits.indexOf(c) < 0) digits.push(c);
+    }
+    for (i = 0; i < bars.length; i++) if (bars[i].length > best.length) { best = bars[i]; from = 'barcode'; }
+    if (!best) {
+      for (i = 0; i < digits.length; i++) if (digits[i].length > best.length) { best = digits[i]; from = 'digits'; }
+    }
+    return { code: best, from: from, barcodes: bars, digits: digits,
+      confidence: d.confidence || 0, engine: d.engine || '离线识别', source: d.source || '' };
   }
+  function barcodeOf(detected) { return detectedInfo(detected).code; }
   api.barcodeOf = barcodeOf;
+  api.detectedInfo = detectedInfo;
 
   function inboundPhotoName(code, at) {
     return safeFileName('RK_' + stamp(at) + '_' + (code || '未识别') + '_' + randSuffix() + '.jpg');

@@ -224,7 +224,7 @@
       return {
         accounts: accounts().length, logged: status().logged, user: status().user,
         role: status().role, storageOk: store.storageOk(), sessionMemory: !!sess._memory,
-        locked: locked, fail: failState(), build: '2.2.0'
+        locked: locked, fail: failState(), build: '2.3.0'
       };
     }
 

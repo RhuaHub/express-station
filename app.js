@@ -67,7 +67,7 @@
     var nativeLog = '';
     try { nativeLog = window.StationNative.crashLog() || ''; } catch (e) { }
     var info = {
-      app: 'station-assistant', version: '2.2.0', build: 19,
+      app: 'station-assistant', version: '2.3.0', build: 20,
       ua: String(navigator.userAgent || ''), time: new Date().toISOString(),
       bootErrors: window.StationBoot ? window.StationBoot.errors() : [],
       storageOk: store.storageOk(), safeMode: !!store.settings().safeMode,
@@ -456,11 +456,16 @@
 
   function nameInFiles(fileList) {
     var files = Array.prototype.slice.call(fileList || []).filter(function (f) { return /^image\//.test((f.blob || f).type || ''); }).slice(0, 12);
+    var pending = $('inOcrState');
+    if (pending && files.length) {
+      pending.hidden = false; pending.className = 'ocr-state busy';
+      pending.textContent = '正在识别条码…';
+    }
     var jobs = files.map(function (f) {
       return Media.recognize(f.blob).then(function (d) {
-        var code = R.barcodeOf(d);
-        return { blob: f.blob, type: f.type, name: R.inboundPhotoName(code), code: code,
-          engine: d.engine || '离线 OCR', confidence: d.confidence || 0 };
+        var info = R.detectedInfo(d);
+        return { blob: f.blob, type: f.type, name: R.inboundPhotoName(info.code), code: info.code,
+          from: info.from, engine: d.engine || '离线 OCR', confidence: d.confidence || 0 };
       });
     });
     S.inOcrPending = Promise.all(jobs).then(function (out) {
@@ -470,14 +475,19 @@
         if (hit) { $('inNo').value = hit.code; syncCarrier(); }
       }
       var hits = out.filter(function (x) { return x.code; });
-      var ok = hits.length;
+      var bars = hits.filter(function (x) { return x.from === 'barcode'; });
+      var digs = hits.filter(function (x) { return x.from === 'digits'; });
       var eng = out.length ? (out[0].engine || '离线 OCR') : '离线 OCR';
       var low = out.length && out[0].confidence && out[0].confidence < 0.75;
       var st = $('inOcrState'); st.hidden = false;
-      st.className = 'ocr-state ' + (ok ? 'ok' : 'err');
+      st.className = 'ocr-state ' + (bars.length ? 'ok' : (digs.length ? 'busy' : 'err'));
       st.textContent = out.length
-        ? (ok ? '识别到条码 ' + hits.map(function (x) { return x.code; }).join('、') + '（' + eng + '），照片已按条码命名'
-          : '未识别到条码（' + eng + '），照片按时间命名，运单号请手输或扫码枪录入')
+        ? (bars.length
+          ? '识别到条码 ' + bars.map(function (x) { return x.code; }).join('、') + '（' + eng + '），照片已按条码命名'
+          : digs.length
+            ? '条码没解出，读到面单印刷数字 ' + digs.map(function (x) { return x.code; }).join('、') +
+              '，已填入运单号（可能缺前缀），请核对或重拍'
+            : '未识别到条码（' + eng + '），照片按时间命名，运单号请手输或扫码枪录入')
           + (low ? ' · 把握较低，请核对运单号' : '')
         : '';
       renderInbound();
@@ -562,7 +572,7 @@
     var set = store.settings();
     /* 切视图时不探测识别引擎：老 WebView 上 BarcodeDetector / getSupportedFormats
        属于原生能力探测，可能在渲染进程里直接抛错。只在真正点拍照时探测。 */
-    $('outEngine').textContent = '离线 OCR：拍照后本机解码 Code128 / EAN / ITF / Code39 条码与印刷数字，不联网；识别不准可直接手输货号出库';
+    $('outEngine').textContent = '拍照取件：开镜头后连续自动识别，对准条码即自动拍照；离线解码 Code128 / EAN / ITF / Code39，不联网、不上传；读不出会提示重拍或手输货号';
     var mode = $('outMode').value || set.queryMode || 'fuzzy';
     $('outMode').value = mode;
     $('outReasonBox').hidden = S.outType !== 'refund';
@@ -647,7 +657,8 @@
     } else run();
   }
   function captureOutProof() {
-    return safeChain(Media.capture({ title: '拍出库凭证', max: 6, prefix: 'CK', torch: store.settings().torch }).then(function (r) {
+    return safeChain(Media.capture({ title: '拍出库凭证', max: 6, prefix: 'CK',
+      torch: store.settings().torch, live: false }).then(function (r) {
       if (!r || r.cancelled) { toast('未拍照，已取消出库', 'err'); return false; }
       S.outFiles = S.outFiles.concat(r.files).slice(0, 12);
       renderOutbound();
@@ -658,17 +669,23 @@
     if (!guard('outbound')) return Promise.resolve(false);
     if (!auto) S.manualCaptureUsed = true;  /* 只有用户主动拍过，才允许连续取件自动再开镜头 */
     return safeChain(Media.capture({ title: '拍照取件 · 对准面单条码', single: true, prefix: 'CK',
-      torch: store.settings().torch }).then(function (r) {
+      torch: store.settings().torch, live: !store.settings().safeMode }).then(function (r) {
       if (!r || r.cancelled || !r.files.length) return false;
       var f = r.files[0];
+      var st0 = $('outOcrState');
+      if (st0) { st0.hidden = false; st0.className = 'ocr-state busy'; st0.textContent = '正在识别条码…'; }
       return Media.recognize(f.blob).then(function (d) {
-        var code = R.barcodeOf(d);
+        var info = R.detectedInfo(d);
+        var code = info.code;
         var st = $('outOcrState'); st.hidden = false;
         st.className = 'ocr-state ' + (code ? 'busy' : 'err');
         var eng = d.engine || '离线 OCR';
         var low = d.confidence && d.confidence < 0.75;
-        st.textContent = (code ? '识别串：' + code + '（' + eng + '）· 正在匹配在库包裹…'
-          : '没读到条码（' + eng + '），请手输货号 / 单号，照片仍会按货号自动命名')
+        st.textContent = (info.from === 'barcode'
+          ? '识别到条码 ' + code + '（' + eng + '）· 正在匹配在库包裹…'
+          : code
+            ? '没解出条码，读到印刷数字 ' + code + '（可能缺前缀，请核对）· 正在匹配…'
+            : '没读到条码（' + eng + '），请手输货号 / 单号，照片仍会按货号自动命名')
           + (low ? ' · 把握较低，请核对' : '');
         var hits = code ? store.findByCode(code) : [];
         if (hits.length === 1) {
@@ -678,14 +695,16 @@
           f.name = R.outboundPhotoName(p);
           S.outScanPhoto = f;
           st.className = 'ocr-state ok';
-          st.textContent = '已匹配 ' + p.goodsNo + ' · ' + p.trackingNo + ' · ' + p.slot + '，确认无误后点「确认出库」';
+          st.textContent = '已匹配 ' + p.goodsNo + ' · ' + p.trackingNo + ' · ' + p.slot +
+            '，确认无误后点「确认出库」' + (info.from === 'digits' ? '（来自印刷数字，请核对）' : '');
           $('outCandidates').innerHTML = '';
         } else if (hits.length > 1) {
           $('outCandidates').innerHTML = '<span class="muted">多个匹配，请点选：</span>' + hits.map(function (p) {
             return '<button class="btn btn-outline btn-sm" data-act="pickCandidate" data-id="' + esc(p.id) + '">' +
               esc(p.goodsNo) + ' · ' + esc(p.trackingNo.slice(-6)) + '</button>';
           }).join('');
-          st.textContent = '识别到 ' + code + '，有 ' + hits.length + ' 件匹配，请手动点选，不会自动出库';
+          st.textContent = (info.from === 'barcode' ? '识别到条码 ' : '读到印刷数字 ') + code +
+            '，有 ' + hits.length + ' 件匹配，请手动点选，不会自动出库';
         } else {
           $('outCandidates').innerHTML = '';
           S.outScanPhoto = null;
@@ -989,7 +1008,7 @@
     ['OCR / 二维码', '内置离线引擎：Code128 / EAN-13 / UPC-A / ITF / Code39 + 印刷数字 + 二维码生成与解码；拍照自动填单号、按码命名照片，照片不上传'],
     ['编号货号', '连续 / 按日 / 按货架 / 尾号四种编号模式，五种货号模式 + 自定义模板，批量改号'],
     ['出库', '取件 / 货号 / 电话 / 扫描 / 退件五种出库，合并出库、出库任务整批出库、出库拍照、出库备注、撤销出库'],
-    ['拍照取件', '点按钮开镜头，拍面单自动识别并匹配在库件；不自动开摄像头，识别不到可手输'],
+    ['拍照取件', '点按钮开镜头后预览连续自动识别，对准条码即自动拍照并匹配在库件；不自动开摄像头，识别不到可手输'],
     ['查件台账', '多条件组合查询、在库天数、滞留筛选、详情、修改、照片、批量移库与打印'],
     ['移库', '扫描或勾选加入移库列表，换货架号并可重算货号，留移库流水'],
     ['客户管理', '按尾号自动归档、VIP / 老客户 / 黑名单、星标备注、号码导入导出与去重'],
@@ -1281,20 +1300,27 @@
     on('formIn', 'submit', submitInbound);
     on('inNo', 'input', syncCarrier);
     on('btnInScan', 'click', function () {
-      safeChain(Media.capture({ title: '扫描面单条码', single: true, prefix: 'RK', torch: store.settings().torch }).then(function (r) {
+      safeChain(Media.capture({ title: '扫描面单条码', single: true, prefix: 'RK',
+        torch: store.settings().torch, live: !store.settings().safeMode }).then(function (r) {
         if (!r || r.cancelled || !r.files.length) return;
         var f = r.files[0];
+        $('inOcrState').hidden = false;
+        $('inOcrState').className = 'ocr-state busy';
+        $('inOcrState').textContent = '正在识别条码…';
         return Media.recognize(f.blob).then(function (d) {
-          var code = R.barcodeOf(d);
+          var info = R.detectedInfo(d);
+          var code = info.code;
           if (code) { $('inNo').value = code; syncCarrier(); }
           f.name = R.inboundPhotoName(code);
           S.inFiles.push(f);
-          $('inOcrState').hidden = false;
-          $('inOcrState').className = 'ocr-state ' + (code ? 'ok' : 'err');
-          $('inOcrState').textContent = code ? '识别到条码 ' + code + '（' + (d.engine || '离线 OCR') + '），已填入运单号，照片按条码命名'
-            : '没读到条码（' + (d.engine || '离线 OCR') + '），照片按时间命名，请手输运单号';
+          $('inOcrState').className = 'ocr-state ' + (info.from === 'barcode' ? 'ok' : (code ? 'busy' : 'err'));
+          $('inOcrState').textContent = info.from === 'barcode'
+            ? '识别到条码 ' + code + '（' + (d.engine || '离线 OCR') + '），已填入运单号，照片按条码命名'
+            : code
+              ? '条码没解出，读到印刷数字 ' + code + '（可能缺前缀），已填入运单号，请核对或重拍'
+              : '没读到条码（' + (d.engine || '离线 OCR') + '），照片按时间命名，请手输运单号';
           renderInbound();
-          toast(code ? '已识别 ' + code : '未识别到条码', code ? 'ok' : 'err');
+          toast(code ? '已读取 ' + code : '未识别到条码', info.from === 'barcode' ? 'ok' : 'err');
         });
       }), '扫描面单条码');
     });
@@ -1305,7 +1331,8 @@
       }), '语音录入');
     });
     on('btnInCamera', 'click', function () {
-      safeChain(Media.capture({ title: '入库面单拍照', max: 12, prefix: 'RK', torch: store.settings().torch })
+      safeChain(Media.capture({ title: '入库面单拍照', max: 12, prefix: 'RK',
+        torch: store.settings().torch, live: !store.settings().safeMode })
         .then(function (r) { if (r && !r.cancelled && r.files.length) return nameInFiles(r.files); }), '入库面单拍照');
     });
     on('btnInAlbum', 'click', function () { $('inPhotos').click(); });
@@ -1769,7 +1796,7 @@
   window.StationApp = {
     store: store, auth: auth, state: S, switchView: switchView, renderAll: renderAll,
     rules: R, media: Media, ocr: window.StationOcr, qr: window.StationQr,
-    extras: window.StationExtras, notify: window.StationNotify, version: '2.2.0',
+    extras: window.StationExtras, notify: window.StationNotify, version: '2.3.0',
     bootErrors: function () { return window.StationBoot ? window.StationBoot.errors() : []; }
   };
 })();

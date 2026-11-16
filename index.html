@@ -62,9 +62,9 @@ window.StationBoot = (function () {
   return { report: report, errors: function () { return errs.slice(); } };
 })();
 </script>
-<link rel="manifest" href="manifest.webmanifest?v=2.2.0">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.2.0">
-<link rel="stylesheet" href="styles.css?v=2.2.0">
+<link rel="manifest" href="manifest.webmanifest?v=2.3.0">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png?v=2.3.0">
+<link rel="stylesheet" href="styles.css?v=2.3.0">
 </head>
 <body>
 
@@ -100,7 +100,7 @@ window.StationBoot = (function () {
     <pre class="diag" id="authDiag" hidden></pre>
     <input type="file" id="authImportFile" accept="application/json,.json" hidden>
     <div class="auth-foot">
-      <span id="gateVersion"><b>2.2.0</b> · 重建版 · build 19</span>
+      <span id="gateVersion"><b>2.3.0</b> · 重建版 · build 20</span>
       <span class="gate-tools"><label class="inline"><input type="checkbox" id="gateSafeMode"> 老设备兼容模式</label>
         <button type="button" class="link" id="btnExportLog">导出运行日志</button></span>
       <span>无短信 / 电话 / 群呼能力</span>
@@ -833,7 +833,7 @@ window.StationBoot = (function () {
 
     <!-- 帮助 -->
     <section class="view" id="view-help" hidden>
-      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.2.0 · 对照原「驿站助手」全面实现，含短信与电话通知</p></div></div>
+      <div class="page-head"><div><h2>帮助 / 关于</h2><p>重建版 2.3.0 · 对照原「驿站助手」全面实现，含短信与电话通知、拍照自动识别条码</p></div></div>
       <div class="card"><div class="card-head"><h3>已实现的功能</h3></div><div id="helpFeatures" class="help-grid"></div></div>
       <div class="card"><div class="card-head"><h3>边界与安全限制</h3></div><div id="helpExcluded" class="help-grid"></div>
         <div class="muted">2.2.0 起短信、电话、群呼、语音播报全部实现。默认走系统应用由人最后确认；本机直发 / 直拨需运行时授权并逐批二次确认，带免打扰、单批与每日限额、完整流水与失败重发。微信模板消息、隐私号中转、公众号推送、语音外呼等依赖认证资质 / 运营商 / 服务端的能力，以本机文案、二维码、登记等价实现，页面会明确标注，不假装已联网完成。</div></div>
@@ -860,15 +860,15 @@ window.StationBoot = (function () {
   </div>
 </div>
 
-<script src="rules.js?v=2.2.0"></script>
-<script src="ocr.js?v=2.2.0"></script>
-<script src="qr.js?v=2.2.0"></script>
-<script src="db.js?v=2.2.0"></script>
-<script src="auth.js?v=2.2.0"></script>
-<script src="media.js?v=2.2.0"></script>
-<script src="extras.js?v=2.2.0"></script>
-<script src="notify.js?v=2.2.0"></script>
-<script src="app.js?v=2.2.0"></script>
+<script src="rules.js?v=2.3.0"></script>
+<script src="ocr.js?v=2.3.0"></script>
+<script src="qr.js?v=2.3.0"></script>
+<script src="db.js?v=2.3.0"></script>
+<script src="auth.js?v=2.3.0"></script>
+<script src="media.js?v=2.3.0"></script>
+<script src="extras.js?v=2.3.0"></script>
+<script src="notify.js?v=2.3.0"></script>
+<script src="app.js?v=2.3.0"></script>
 <script>
 /* Android WebView 不支持 Service Worker；有些环境属性存在但 register 不可用，必须逐项判空 */
 (function () {
@@ -878,7 +878,7 @@ window.StationBoot = (function () {
   var sw = navigator.serviceWorker;
   if (!sw || typeof sw.register !== 'function') return;
   try {
-    var p = sw.register('sw.js?v=2.2.0');
+    var p = sw.register('sw.js?v=2.3.0');
     if (p && typeof p.catch === 'function') p.catch(function () { });
   } catch (e) {
     if (window.StationBoot) window.StationBoot.report('Service Worker 注册失败：' + e.message);

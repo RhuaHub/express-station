@@ -1,13 +1,15 @@
-# 安卓壳 · 驿站助手 2.0.5
+# 安卓壳 · 驿站助手 2.3.0
 
 一个 `WebView` 壳，把仓库根目录的静态页面打包进 `assets`，不依赖 Gradle / Android Studio。
 
-- 产物：`android/dist/station-assistant-2.0.5.apk`
+- 产物：`android/dist/station-assistant-2.3.0.apk`
 - 页面入口：`https://appassets.androidplatform.net/index.html`（用 `shouldInterceptRequest` 映射到 assets，保证是安全上下文，摄像头 / localStorage / IndexedDB 才可用）
 - 打包脚本：`bash android/build-apk.sh`（需 JDK 17 + Android SDK platform / build-tools）
-- 版本：`versionName 2.0.5` / `versionCode 16`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
+- 版本：`versionName 2.3.0` / `versionCode 20`，包名沿用 `com.rhua.expressstation`，可直接覆盖安装旧版
 
-打包进 assets 的页面文件：`index.html`、`styles.css`、`rules.js`、`db.js`、`auth.js`、`media.js`、`app.js`、`sw.js`、`manifest.webmanifest`。改了前端就要重跑脚本，否则手机还是旧页面。
+打包进 assets 的页面文件：`index.html`、`styles.css`、`rules.js`、`ocr.js`、`qr.js`、`db.js`、`auth.js`、`media.js`、`extras.js`、`notify.js`、`app.js`、`sw.js`、`manifest.webmanifest`（共 13 个）。改了前端就要重跑脚本，否则手机还是旧页面。
+
+**2.3.0 拍照识别**：预览连续自动识别由前端 `media.js` + `ocr.js` 完成，不调用安卓原生扫码 SDK、不联网。相机权限沿用 `CAMERA`；识别只在本机 canvas 里跑，照片存 IndexedDB。
 
 `StationNative` 提供 `saveText(name, content, mime)`（导出 CSV / JSON）、`toastMsg`、`platform`、`version`、`logError`、`crashLog`、`lastFatal`、`logStep`（步骤日志）、`setView`（记住当前视图）。JS 对话框、文件选择器、相机权限都有对应处理。
 
@@ -43,4 +45,4 @@
 - **步骤日志**：原生桥新增 `logStep()` / `setView()`；关键步骤与致命异常自动覆盖写入「下载/快递驿站/驿站助手-运行日志.txt」，诊断屏显示「最后一步」，登录门可一键「导出运行日志」并显示 `2.0.5 · build 16`。
 - **兼容模式**：登录门可勾选「老设备兼容模式」，延迟渲染、列表减半、跳过语音播报与振动。
 
-权限只有 `INTERNET`、`CAMERA`、`READ_MEDIA_IMAGES`（Android 13+）与旧版存储写入；**没有短信、电话、通讯录权限**。
+权限包含 `INTERNET`、`CAMERA`、`READ_MEDIA_IMAGES`（Android 13+）、`SEND_SMS`、`CALL_PHONE`、`READ_CALL_LOG` 与旧版存储写入。短信 / 电话权限只在通知功能里按需运行时申请；**不申请通讯录权限**，也不上传任何号码或照片。
